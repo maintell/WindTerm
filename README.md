@@ -16,7 +16,7 @@
 | IPC 数据面（`wt-ipc`） | ✅ 完成 | 会话注册表 + 拉取式二进制读取 + 未确认字节背压 + 事件节流；7 个测试 |
 | MobaXterm 迁移（`SES-020`） | ✅ 可用 | `wt session import/list`：树结构还原、Rlogin 跳过并说明、重复导入按 name+host+port 与会话/文件夹去重 |
 | 其余协议（SFTP / RDP / VNC / 隧道） | ⬜ 未开始 | — |
-| UI 壳（Tauri 2 + xterm.js） | ✅ 可交互 | 本地终端全链路端到端验收 15 项通过（`scripts/e2e-desktop.mjs`）：点击建会话、真实键盘输入、命令输出渲染、尺寸同步、关闭后句柄失效 |
+| UI 壳（Tauri 2 + xterm.js） | ✅ 可交互 | 端到端验收 21 项通过（`scripts/e2e-desktop.mjs`）：本地终端全链路 + SSH 连接/TOFU/回显/重连/错误路径 |
 
 实现按 [`docs/spec/14-roadmap-acceptance.md`](docs/spec/14-roadmap-acceptance.md) 的里程碑推进。
 
@@ -30,11 +30,12 @@ cargo run -p wt-cli -- local exec -- cmd /c "echo hello"     # Windows
 cargo run -p wt-cli -- local exec -- sh -c "echo hello"      # Unix
 cargo run -p wt-cli -- ssh exec --host H --user U --password P --insecure-host-key -- uptime
 
-# 桌面壳（会打开窗口）
+# 桌面壳（会打开窗口）：填主机/用户名/密码点「连接 SSH」，或「新建本地终端」
 cargo run -p wt-desktop
 
-# 桌面端端到端验收（自动点击、打字、断言界面输出；会自己起停窗口）
-cargo build -p wt-desktop && node scripts/e2e-desktop.mjs
+# 桌面端端到端验收（自动点按钮、打字、断言界面输出；会自己起停窗口）
+# 必须带 e2e-mock：界面要验 SSH，就得有一台「服务器」，本机没有 sshd
+cargo build -p wt-desktop --features e2e-mock && node scripts/e2e-desktop.mjs
 
 # 从 MobaXterm 迁移
 cargo run -p wt-cli -- session import --file "C:\Users\me\Documents\MobaXterm\MobaXterm.ini"
@@ -54,7 +55,7 @@ cargo run -p wt-cli -- session list
 | ~~G2~~ | ~~SSH 正向路径无自动化测试~~ | ✅ 已补齐：进程内 mock 服务端，覆盖握手/认证/exec/PTY/TOFU | — |
 | G3 | agent 转发、keepalive、PuTTY `.ppk` 未实现 | 无法用 ssh-agent；空闲连接可能被中间设备断开；PPK 需先转换 | 下一迭代 |
 | ~~G4~~ | ~~本地 PTY 关闭挂起~~ | ✅ 已修复：根因是未应答 ConPTY 的 `ESC[6n` 光标查询，补上应答后子进程输出与关闭均正常 | — |
-| G5 | 界面只有本地终端，没有 SSH 会话入口与会话列表 | 图形界面还不能连远程主机（CLI 可以） | 下一步接 `ssh_open` + 会话树 |
+| G5 | 界面没有会话列表：连 SSH 要手填主机/用户名/密码，密码不保存 | 每次连都要重输；还没法从 MobaXterm 导入的会话直接双击连接 | 下一步接 `session list` 与会话树 |
 | G6 | 界面没有标签页、分屏、搜索、字体与主题设置 | 单会话可用，多会话要开多个窗口 | 随 `TER-01x` / `SET-00x` 推进 |
 
 ---

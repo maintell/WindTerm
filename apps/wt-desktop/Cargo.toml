@@ -12,5 +12,11 @@ tauri-build = { version = "2", features = [] }
 wt-common = { path = "../../crates/wt-common" }
 wt-term = { path = "../../crates/wt-term" }
 wt-ipc = { path = "../../crates/wt-ipc" }
+wt-ssh = { path = "../../crates/wt-ssh" }
 tauri = { version = "2", features = [] }
 serde = { workspace = true }
+
+[features]
+# 端到端验收用：在应用内起一个进程内 SSH 服务端，让界面真的去连一台「服务器」。
+# 生产构建不开启，mock 服务端代码不会进二进制。
+e2e-mock = ["wt-ssh/test-util"]

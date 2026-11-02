@@ -101,6 +101,133 @@ fn term_close(state: State<'_, AppState>, handle: String) {
     state.registry.close(&h);
 }
 
+// ── SSH ─────────────────────────────────────────────────────
+
+/// 应用数据目录。
+///
+/// `WT_DATA_DIR` 供便携模式与端到端验收覆盖——验收必须用干净目录，
+/// 否则上一轮记下的主机密钥会让 TOFU 分支测不到。
+fn data_dir() -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var("WT_DATA_DIR") {
+        if !dir.trim().is_empty() {
+            return std::path::PathBuf::from(dir);
+        }
+    }
+    let base = std::env::var("APPDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    base.join("WindTerm")
+}
+
+fn known_hosts_path() -> std::path::PathBuf {
+    data_dir().join("known_hosts")
+}
+
+fn load_known_hosts() -> wt_ssh::KnownHosts {
+    match std::fs::read_to_string(known_hosts_path()) {
+        Ok(text) => wt_ssh::KnownHosts::parse(&text).0,
+        // 文件不存在就是空库：首次连接走 accept-new
+        Err(_) => wt_ssh::KnownHosts::new(),
+    }
+}
+
+fn save_known_hosts(known: &wt_ssh::KnownHosts) -> Result<(), String> {
+    let path = known_hosts_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("无法创建数据目录 {}：{e}", dir.display()))?;
+    }
+    std::fs::write(&path, known.to_text())
+        .map_err(|e| format!("无法写入 {}：{e}", path.display()))
+}
+
+#[derive(serde::Serialize)]
+struct SshOpenDto {
+    handle: String,
+    fingerprint: String,
+    /// 本次是否把主机密钥写进了 known_hosts（首次连接）
+    host_key_added: bool,
+}
+
+/// 建立 SSH 交互式终端。
+///
+/// 主机密钥策略是 OpenSSH 的 `accept-new`：第一次见到某台主机就记住指纹，
+/// 之后指纹变化一律拒绝。用户不需要理解 TOFU，但中间人换证书会被挡住。
+///
+/// `SshConnection` 在命令返回后会被释放——这是安全的：`russh` 的
+/// `Handle::drop` 只打日志，连接任务由 tokio 持有，直到通道关闭。
+/// 若将来 russh 改成 drop 即 abort，这条注释就是排查线索。
+#[tauri::command]
+async fn ssh_open(
+    state: State<'_, AppState>,
+    host: String,
+    port: Option<u16>,
+    user: String,
+    password: String,
+    cols: u16,
+    rows: u16,
+) -> Result<SshOpenDto, String> {
+    let cfg = wt_ssh::SshConfig {
+        host: host.trim().to_string(),
+        port: port.unwrap_or(22),
+        user: user.trim().to_string(),
+        ..Default::default()
+    };
+    if cfg.host.is_empty() {
+        return Err("[SSH_BAD_ARGUMENT] 主机不能为空".into());
+    }
+    if cfg.user.is_empty() {
+        return Err("[SSH_BAD_ARGUMENT] 用户名不能为空".into());
+    }
+
+    let mut known = load_known_hosts();
+    let mut host_key_added = false;
+
+    let conn = match wt_ssh::SshConnection::connect_password(
+        &cfg,
+        &password,
+        wt_ssh::HostKeyPolicy::Known(Box::new(known.clone())),
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) if e.code == wt_common::codes::SSH_HOSTKEY_UNKNOWN => {
+            let observed = wt_ssh::SshConnection::probe_host_key(&cfg)
+                .await
+                .map_err(|e| e.to_string())?;
+            known.add(&cfg.endpoint(), &observed.key_type, &observed.blob, false);
+            save_known_hosts(&known)?;
+            host_key_added = true;
+            wt_ssh::SshConnection::connect_password(
+                &cfg,
+                &password,
+                wt_ssh::HostKeyPolicy::Known(Box::new(known.clone())),
+            )
+            .await
+            .map_err(|e| e.to_string())?
+        }
+        Err(e) => return Err(e.to_string()),
+    };
+
+    let fingerprint = conn.server_fingerprint().unwrap_or_default();
+    let session = wt_ssh::SshTermSession::open(
+        &conn,
+        &cfg.term_type,
+        cols.max(20),
+        rows.max(4),
+        wt_term::RingBuffer::with_defaults(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let handle = state.registry.register(Box::new(session));
+    Ok(SshOpenDto {
+        handle: handle.as_str().to_string(),
+        fingerprint,
+        host_key_added,
+    })
+}
+
 #[derive(serde::Serialize)]
 struct StatsDto {
     buffered: usize,
@@ -118,6 +245,7 @@ fn main() {
         })
         .setup(|app| {
             create_main_window(app)?;
+            start_mock_ssh_if_requested();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -127,7 +255,8 @@ fn main() {
             term_write,
             term_resize,
             term_stats,
-            term_close
+            term_close,
+            ssh_open
         ])
         .run(tauri::generate_context!())
         .expect("启动 WindTerm 失败");
@@ -167,3 +296,21 @@ fn create_main_window(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Er
     win.build()?;
     Ok(())
 }
+
+/// 端到端验收专用：`WT_MOCK_SSH=1` 时在应用内起一个 SSH 服务端，端口打到 stdout。
+///
+/// 本机没有 sshd，界面要验 SSH 就只能自带一台「服务器」。
+/// 只在 `e2e-mock` feature 下编译，生产构建里这段代码根本不存在。
+#[cfg(feature = "e2e-mock")]
+fn start_mock_ssh_if_requested() {
+    if std::env::var("WT_MOCK_SSH").is_err() {
+        return;
+    }
+    tauri::async_runtime::spawn(async {
+        let server = wt_ssh::testing::MockSshServer::start().await;
+        println!("WT_MOCK_SSH_PORT={}", server.port);
+    });
+}
+
+#[cfg(not(feature = "e2e-mock"))]
+fn start_mock_ssh_if_requested() {}

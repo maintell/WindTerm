@@ -122,9 +122,19 @@ def test_ssh_connect(server, wt):
 | `Input.dispatchKeyEvent` 必须带 `windowsVirtualKeyCode` | xterm 按 `ev.keyCode` 分支，只给 `text` 时 keyCode 为 0，字符被丢掉 |
 | 调试参数必须由代码传，不能用 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` | `wry` 每次都会 `set_additional_browser_arguments`，会覆盖该环境变量 |
 
-当前覆盖 15 项断言：页面加载与 Tauri 桥接、启动自检、点击建会话、句柄可取、
-首屏输出渲染、焦点在终端、键盘输入、命令输出、统计字段非零值、前后端行列一致、
-ack 回流归零、resize 传播、关闭后句柄失效、页面无未捕获异常。
+当前覆盖 21 项断言：
+
+- 本地终端：页面加载与 Tauri 桥接、启动自检、点击建会话、句柄可取、首屏输出渲染、
+  焦点在终端、键盘输入、命令输出、统计字段非零值、前后端行列一致、ack 回流归零、
+  resize 传播、关闭后句柄失效；
+- SSH：连接成功、首次连接记录主机密钥（TOFU accept-new）、服务端横幅与逐键回显、
+  重连不再重复记录、`known_hosts` 落盘、连不上时给出 `SSH_CONNECT_FAILED` 而非静默失败；
+- 全程断言页面无未捕获异常。
+
+SSH 那几项需要一台「服务器」。本机没有 sshd，所以 `wt-desktop` 带 `e2e-mock` feature 编译时
+会在 `WT_MOCK_SSH=1` 下用 `wt-ssh` 的进程内 mock 服务端起一台，把端口打到 stdout 给验收脚本读。
+生产构建不开启该 feature，mock 代码不进二进制；验收另用 `WT_DATA_DIR` 指向临时目录，
+保证 `known_hosts` 是干净的，否则 TOFU 分支测不到。
 
 ```js
 // scripts/e2e-desktop.mjs（节选）

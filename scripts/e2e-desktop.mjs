@@ -14,7 +14,7 @@
 //   WT_DESKTOP_EXE=path/to/wt-desktop.exe WT_E2E_PORT=9333 node scripts/e2e-desktop.mjs
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -47,23 +47,47 @@ function die(msg) {
 }
 
 // ── 启动应用 ────────────────────────────────────────────────
-if (!existsSync(EXE)) die(`找不到 ${EXE}，先执行 cargo build -p wt-desktop`);
+if (!existsSync(EXE)) {
+  die(
+    `找不到 ${EXE}\n先执行：cargo build -p wt-desktop --features e2e-mock（界面要验 SSH 需要内建 mock 服务端）`,
+  );
+}
+
+// 验收用的数据目录必须是干净的：上一轮记下的主机密钥会让 TOFU 分支测不到
+const DATA_DIR = join(root, "target", "e2e-data");
+rmSync(DATA_DIR, { recursive: true, force: true });
 
 let stderr = "";
+let stdout = "";
 const child = spawn(EXE, [], {
   env: {
     ...process.env,
     // 由 wt-desktop 在创建 WebView2 时转成 --remote-debugging-port。
     // 不能用 WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS：wry 会覆盖它。
     WT_CDP_PORT: String(PORT),
+    // 应用内起一台 mock SSH 服务端（仅 e2e-mock feature 编译进来的代码会响应）
+    WT_MOCK_SSH: "1",
+    WT_DATA_DIR: DATA_DIR,
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
 child.stderr?.on("data", (d) => (stderr += d.toString()));
-child.stdout?.on("data", () => {});
+child.stdout?.on("data", (d) => (stdout += d.toString()));
 child.on("exit", (code) => {
   if (!closing) die(`应用提前退出（code=${code}）\n${stderr}`);
 });
+
+/** mock SSH 服务端监听的端口，由应用打到 stdout */
+async function mockSshPort() {
+  const m = await waitFor(
+    () => {
+      const hit = stdout.match(/WT_MOCK_SSH_PORT=(\d+)/);
+      return hit ? Number(hit[1]) : null;
+    },
+    { timeout: 15000, label: "mock SSH 端口" },
+  );
+  return m;
+}
 
 let closing = false;
 function cleanup() {
@@ -254,6 +278,23 @@ async function clickElement(selector) {
   await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...base });
 }
 
+/**
+ * 往输入框里填值。
+ *
+ * 走 CDP 的 `Input.insertText`（焦点必须先到位），而不是直接改 `el.value`——
+ * 后者绕过了真实的输入路径，测不出「焦点错了填不进去」这类问题。
+ */
+async function fillInput(selector, text) {
+  await cdp.eval(`(() => {
+    const el = document.querySelector(${JSON.stringify(selector)});
+    el.focus();
+    if (el.select) el.select();
+    return true;
+  })()`);
+  if (text.length > 0) await cdp.send("Input.insertText", { text });
+  else await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Delete", windowsVirtualKeyCode: 46, nativeVirtualKeyCode: 46 });
+}
+
 // ── 主流程 ──────────────────────────────────────────────────
 let cdp = null;
 
@@ -412,7 +453,103 @@ try {
     `${closed?.status} / ${closed?.stale}`,
   );
 
-  // 12. 页面无未捕获异常
+  // ── SSH：用应用内建的 mock 服务端验证整条链路 ──────────────
+  const sshPort = await mockSshPort();
+  check("应用内 mock SSH 服务端已启动", sshPort > 0, `127.0.0.1:${sshPort}`);
+
+  // 12. 首次连接：TOFU 应记住主机密钥
+  await fillInput("#host", "127.0.0.1");
+  await fillInput("#port", String(sshPort));
+  await fillInput("#user", "tester");
+  await fillInput("#password", "secret");
+  await clickElement("#ssh");
+  const sshStatus = await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      if (s.startsWith("已连接")) return s;
+      if (s === "连接失败") {
+        const scr = await cdp.eval(`window.__wt.screen()`);
+        throw new Error(`SSH 连接失败：${scr.split(/\r?\n/).filter(Boolean).slice(-3).join(" | ")}`);
+      }
+      return null;
+    },
+    { timeout: 30000, label: "SSH 连接" },
+  );
+  check(
+    "SSH 首次连接成功并记录主机密钥",
+    sshStatus.includes("tester@127.0.0.1") && sshStatus.includes("已记录主机密钥"),
+    sshStatus,
+  );
+
+  // 13. 在 SSH 通道里输入：mock 先送 WELCOME 横幅，之后把收到的每个数据帧回显成 `echo:<data>`
+  //     （逐键发送 → 逐键回显，所以断言用「有序序列」而不是整串）
+  await typeText("hello");
+  const sshOut = await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.screen()`);
+      const echoed =
+        /echo:h[\s\S]*?echo:e[\s\S]*?echo:l[\s\S]*?echo:l[\s\S]*?echo:o/.test(t);
+      return t.includes("WELCOME") && echoed ? t : null;
+    },
+    { timeout: 15000, label: "SSH 回显" },
+  );
+  check(
+    "SSH 通道双向通（服务端横幅 + 逐键回显）",
+    true,
+    `累计 ${sshOut.length} 字符`,
+  );
+
+  // 14. 关闭后重连：主机密钥已在 known_hosts 里，不该再报「已记录」
+  await clickElement("#close");
+  await waitFor(
+    async () => (await cdp.eval(`document.getElementById("status").textContent`)) === "已关闭",
+    { timeout: 10000, label: "SSH 会话关闭" },
+  );
+  await clickElement("#ssh");
+  const secondStatus = await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      return s.startsWith("已连接") || s === "连接失败" ? s : null;
+    },
+    { timeout: 30000, label: "SSH 重连" },
+  );
+  check(
+    "重连不再重复记录主机密钥（known_hosts 已持久化）",
+    secondStatus.startsWith("已连接") && !secondStatus.includes("已记录主机密钥"),
+    secondStatus,
+  );
+
+  // known_hosts 必须真的落盘，而不是只存在内存里
+  const khPath = join(DATA_DIR, "known_hosts");
+  const khText = existsSync(khPath) ? readFileSync(khPath, "utf8") : "";
+  check(
+    "known_hosts 已写入磁盘",
+    khText.includes("127.0.0.1") && khText.includes("ssh-ed25519"),
+    `${khPath}（${khText.split("\n").filter(Boolean).length} 条）`,
+  );
+
+  // 15. 连不上的错误路径：必须给出稳定错误码，不能静默失败
+  await clickElement("#close");
+  await waitFor(
+    async () => (await cdp.eval(`document.getElementById("status").textContent`)) === "已关闭",
+    { timeout: 10000, label: "关闭第二次会话" },
+  );
+  await fillInput("#port", "1");
+  await clickElement("#ssh");
+  const errScreen = await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.screen()`);
+      return t.includes("SSH_CONNECT_FAILED") ? t : null;
+    },
+    { timeout: 20000, label: "连接失败提示" },
+  );
+  check(
+    "连不上时给出稳定错误码而非静默失败",
+    true,
+    errScreen.split(/\r?\n/).find((l) => l.includes("SSH_CONNECT_FAILED"))?.trim() ?? "",
+  );
+
+  // 16. 页面无未捕获异常
   check("页面无未捕获异常", cdp.exceptions.length === 0, cdp.exceptions.join(" | ") || "0 条");
 
   ws.close();

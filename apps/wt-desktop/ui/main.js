@@ -28,7 +28,12 @@ if (typeof Terminal !== "function" || typeof FitAddon !== "function") {
 
 const hostEl = document.getElementById("term");
 const openBtn = document.getElementById("open");
+const sshBtn = document.getElementById("ssh");
 const closeBtn = document.getElementById("close");
+const hostInput = document.getElementById("host");
+const portInput = document.getElementById("port");
+const userInput = document.getElementById("user");
+const passInput = document.getElementById("password");
 
 const term = new Terminal({
   fontFamily: '"JetBrains Mono", Consolas, "Cascadia Mono", monospace',
@@ -65,6 +70,7 @@ function setStatus(text) {
 
 function setConnected(on) {
   openBtn.disabled = on;
+  sshBtn.disabled = on;
   closeBtn.disabled = !on;
 }
 
@@ -106,22 +112,65 @@ async function pump() {
   }
 }
 
+/** 会话建立后的公共收尾：状态、焦点、拉取循环 */
+function afterOpen(statusText) {
+  running = true;
+  pending = 0;
+  setConnected(true);
+  setStatus(statusText);
+  term.focus();
+  pump();
+}
+
 async function openLocal() {
   if (handle) return;
   fit.fit();
+  term.reset();
   try {
     handle = await invoke("local_open", { cols: term.cols, rows: term.rows });
   } catch (e) {
     setStatus(`打开失败：${e}`);
     return;
   }
-  running = true;
-  pending = 0;
+  afterOpen(`已连接 ${handle.slice(0, 8)}`);
+}
+
+async function openSsh() {
+  if (handle) return;
+  const host = hostInput.value.trim();
+  const user = userInput.value.trim();
+  const port = Number.parseInt(portInput.value, 10) || 22;
+  if (!host || !user) {
+    setStatus("请先填主机与用户名");
+    (host ? userInput : hostInput).focus();
+    return;
+  }
+
+  fit.fit();
   term.reset();
-  setConnected(true);
-  setStatus(`已连接 ${handle.slice(0, 8)}`);
-  term.focus();
-  pump();
+  setStatus(`正在连接 ${user}@${host}…`);
+  sshBtn.disabled = true;
+  try {
+    const r = await invoke("ssh_open", {
+      host,
+      port,
+      user,
+      password: passInput.value,
+      cols: term.cols,
+      rows: term.rows,
+    });
+    handle = r.handle;
+    afterOpen(
+      `已连接 ${user}@${host}${r.host_key_added ? "（已记录主机密钥）" : ""}`,
+    );
+    if (r.fingerprint) term.write(`\x1b[2m主机密钥 ${r.fingerprint}\x1b[0m\r\n`);
+  } catch (e) {
+    // 失败原因写进终端：状态栏放不下 hints，而且用户需要能复制下来
+    term.write(`\r\n\x1b[31m${String(e)}\x1b[0m\r\n`);
+    setStatus("连接失败");
+  } finally {
+    if (!handle) sshBtn.disabled = false;
+  }
 }
 
 async function closeTerm() {
@@ -169,7 +218,18 @@ window.addEventListener("resize", () => {
 hostEl.addEventListener("mousedown", () => term.focus());
 
 openBtn.addEventListener("click", openLocal);
+sshBtn.addEventListener("click", openSsh);
 closeBtn.addEventListener("click", closeTerm);
+
+// 填完密码直接回车就能连（用户最自然的动作）
+for (const el of [hostInput, portInput, userInput, passInput]) {
+  el.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      openSsh();
+    }
+  });
+}
 
 setInterval(() => void ackPending(), ACK_INTERVAL);
 

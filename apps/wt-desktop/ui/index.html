@@ -22,7 +22,8 @@
       }
       #bar {
         display: flex;
-        gap: 8px;
+        flex-wrap: wrap;
+        gap: 6px;
         align-items: center;
         padding: 6px 10px;
         border-bottom: 1px solid #33333a;
@@ -30,16 +31,21 @@
         color: var(--muted);
         flex: none;
       }
+      #bar input,
       #bar button {
         background: #2a2a30;
         color: var(--fg);
         border: 1px solid #3a3a44;
         border-radius: 4px;
-        padding: 3px 10px;
-        cursor: pointer;
+        padding: 3px 8px;
         font: inherit;
       }
+      #bar input { width: 112px; }
+      #bar #port { width: 56px; }
+      #bar #password { width: 120px; }
+      #bar button { cursor: pointer; }
       #bar button:hover { border-color: var(--accent); }
+      #bar input:focus { outline: 1px solid var(--accent); }
       #bar button:disabled { opacity: 0.45; cursor: default; border-color: #3a3a44; }
       #status { margin-left: auto; }
       /* xterm 需要容器有确定尺寸：flex:1 撑开，min-height:0 防止被内容顶高 */
@@ -48,6 +54,11 @@
   </head>
   <body>
     <div id="bar">
+      <input id="host" placeholder="主机" spellcheck="false" />
+      <input id="port" placeholder="端口" value="22" inputmode="numeric" />
+      <input id="user" placeholder="用户名" spellcheck="false" />
+      <input id="password" type="password" placeholder="密码" />
+      <button id="ssh">连接 SSH</button>
       <button id="open">新建本地终端</button>
       <button id="close" disabled>关闭</button>
       <span id="status">未连接</span>
