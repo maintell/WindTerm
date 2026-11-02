@@ -2,8 +2,60 @@
 
 > 一个开源、跨平台、可替代 MobaXterm 的 SSH / RDP / VNC / SFTP 一体化远程运维工作台。
 
-**当前状态：规格与设计阶段（M0 之前）。** 本仓库现阶段只包含产品规格说明书与详细设计文档，尚无代码实现。
-实现工作将按 [`docs/spec/14-roadmap-acceptance.md`](docs/spec/14-roadmap-acceptance.md) 中的里程碑推进。
+**当前状态：M1 收尾（基础设施 + 本地终端 + SSH 协议层 + 桌面壳可交互）。**
+
+| 层 | 状态 | 证据 |
+|---|---|---|
+| 规格与详细设计 | ✅ 完成 | `docs/`，244→229 条需求基线，`scripts/check-docs.ps1` 通过 |
+| 基础设施（错误/模型/配置/加密/存储/导入） | ✅ 完成 | 6 个 crate，111 个测试 |
+| 终端传输侧（环形缓冲/背压/ANSI 剥离） | ✅ 完成 | `wt-term`，28 个测试 |
+| 本地终端（ConPTY + TermSession） | ✅ 完成 | `wt-term` 40 个测试；真实 shell 启停、输入回显、resize、背压 ack、反复开关 |
+| SSH 协议层（算法/主机密钥/连接/通道/双认证/TOFU/终端会话） | ✅ 完成 | `wt-ssh` 57 个测试，含进程内 mock 服务端的正向路径与终端回显验收 |
+| 统一终端抽象 | ✅ 完成 | `TerminalSession` trait：本地 PTY 与 SSH 通道同一套 read/ack 背压模型 |
+| `wt` CLI | ✅ 可用 | `version` / `doctor` / `local exec` / `ssh exec`（密码与密钥认证、known_hosts 校验）；ANSI 默认剥离、退出码透传 |
+| IPC 数据面（`wt-ipc`） | ✅ 完成 | 会话注册表 + 拉取式二进制读取 + 未确认字节背压 + 事件节流；7 个测试 |
+| MobaXterm 迁移（`SES-020`） | ✅ 可用 | `wt session import/list`：树结构还原、Rlogin 跳过并说明、重复导入按 name+host+port 与会话/文件夹去重 |
+| 其余协议（SFTP / RDP / VNC / 隧道） | ⬜ 未开始 | — |
+| UI 壳（Tauri 2 + xterm.js） | ✅ 可交互 | 本地终端全链路端到端验收 15 项通过（`scripts/e2e-desktop.mjs`）：点击建会话、真实键盘输入、命令输出渲染、尺寸同步、关闭后句柄失效 |
+
+实现按 [`docs/spec/14-roadmap-acceptance.md`](docs/spec/14-roadmap-acceptance.md) 的里程碑推进。
+
+```bash
+cargo test --workspace      # 215 个测试
+cargo clippy --workspace --all-targets   # 零告警
+
+# 跑一下 CLI（真实 PTY）
+cargo run -p wt-cli -- doctor
+cargo run -p wt-cli -- local exec -- cmd /c "echo hello"     # Windows
+cargo run -p wt-cli -- local exec -- sh -c "echo hello"      # Unix
+cargo run -p wt-cli -- ssh exec --host H --user U --password P --insecure-host-key -- uptime
+
+# 桌面壳（会打开窗口）
+cargo run -p wt-desktop
+
+# 桌面端端到端验收（自动点击、打字、断言界面输出；会自己起停窗口）
+cargo build -p wt-desktop && node scripts/e2e-desktop.mjs
+
+# 从 MobaXterm 迁移
+cargo run -p wt-cli -- session import --file "C:\Users\me\Documents\MobaXterm\MobaXterm.ini"
+cargo run -p wt-cli -- session list
+```
+
+前端没有构建步骤：`apps/wt-desktop/ui/vendor/` 里内联了 xterm.js 6.0.0 与 addon-fit 0.11.0
+（MIT，许可证随文件一起放在同目录）。`scripts/e2e-desktop.mjs` 靠 `WT_CDP_PORT`
+让 `wt-desktop` 给 WebView2 打开 CDP 端口，再用可信鼠标/键盘事件驱动界面——
+不是 `el.click()` 那种假事件，因此能覆盖键位编码与焦点链路。
+
+### 已知缺口（不隐藏）
+
+| # | 缺口 | 影响 | 计划 |
+|---|---|---|---|
+| G1 | `Algos` / `CompatFlags` 未映射到 `russh::Preferred` | 连老服务器时无法开启弱算法（`SES-001` AC-2） | 需手写 `kex::Name` 等枚举映射表 |
+| ~~G2~~ | ~~SSH 正向路径无自动化测试~~ | ✅ 已补齐：进程内 mock 服务端，覆盖握手/认证/exec/PTY/TOFU | — |
+| G3 | agent 转发、keepalive、PuTTY `.ppk` 未实现 | 无法用 ssh-agent；空闲连接可能被中间设备断开；PPK 需先转换 | 下一迭代 |
+| ~~G4~~ | ~~本地 PTY 关闭挂起~~ | ✅ 已修复：根因是未应答 ConPTY 的 `ESC[6n` 光标查询，补上应答后子进程输出与关闭均正常 | — |
+| G5 | 界面只有本地终端，没有 SSH 会话入口与会话列表 | 图形界面还不能连远程主机（CLI 可以） | 下一步接 `ssh_open` + 会话树 |
+| G6 | 界面没有标签页、分屏、搜索、字体与主题设置 | 单会话可用，多会话要开多个窗口 | 随 `TER-01x` / `SET-00x` 推进 |
 
 ---
 

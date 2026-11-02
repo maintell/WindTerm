@@ -11,9 +11,17 @@ ui/dist/
 /data
 /config.toml
 *.log
+*.db
+*.db-wal
+*.db-shm
+
+# 验收脚本的临时输出
+/e2e-out.txt
+/probe-out.txt
 
 # 编辑器 / 系统
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
+*.swp

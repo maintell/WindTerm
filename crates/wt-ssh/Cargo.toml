@@ -1,0 +1,21 @@
+[package]
+name = "wt-ssh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+# 打开后导出 `testing::MockSshServer`，供上层测试用
+test-util = []
+
+[dependencies]
+wt-common = { path = "../wt-common" }
+wt-term = { path = "../wt-term" }
+sha2 = { workspace = true }
+sha1 = { workspace = true }
+hmac = { workspace = true }
+base64 = { workspace = true }
+rand = { workspace = true }
+tokio = { workspace = true }
+russh = { workspace = true }

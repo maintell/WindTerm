@@ -1,0 +1,23 @@
+[package]
+name = "wt-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wt"
+path = "src/main.rs"
+
+[dependencies]
+wt-common = { path = "../../crates/wt-common" }
+wt-term = { path = "../../crates/wt-term" }
+wt-ssh = { path = "../../crates/wt-ssh" }
+wt-store = { path = "../../crates/wt-store" }
+wt-import = { path = "../../crates/wt-import" }
+wt-core = { path = "../../crates/wt-core" }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+wt-ssh = { path = "../../crates/wt-ssh", features = ["test-util"] }

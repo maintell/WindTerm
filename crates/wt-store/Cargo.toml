@@ -1,0 +1,16 @@
+[package]
+name = "wt-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+wt-common = { path = "../wt-common" }
+wt-core = { path = "../wt-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+[dev-dependencies]
+wt-import = { path = "../wt-import" }

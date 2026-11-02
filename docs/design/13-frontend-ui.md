@@ -18,6 +18,20 @@
 
 **为什么不用 React**：终端相关的状态更新频率高（每帧的滚动位置、光标、活动指示），React 的 VDOM diff 在 60 fps 下会明显增加 CPU。Solid 的细粒度更新直接改 DOM 属性，成本低一个数量级。
 
+### 1.1 现状（M1 的偏差，必须显式记录）
+
+当前 `apps/wt-desktop/ui/` 是**纯静态 HTML + JS**，没有 SolidJS、没有 TypeScript、没有 Vite：
+
+| 目标 | 现状 | 为什么先这样 |
+|---|---|---|
+| SolidJS 1.9 | 无框架，直接操作 DOM | 这一阶段只验证「数据能从 Rust 到界面、输入能从界面到 PTY」，框架选型不影响 IPC 形状 |
+| Vite 6 | 无构建步骤，`frontendDist: "ui"` 直接内联 | 避免 npm 依赖与构建链；`cargo build` 一步出可运行产物 |
+| `@xterm/xterm` 5.x | 6.0.0（UMD 静态文件内联在 `ui/vendor/`） | 6.x 是当前版本；UMD 版可零构建使用，许可证随文件存放 |
+
+偏差的代价是**可维护性**：`main.js` 约 230 行、单文件，够用但没有组件化。
+补上 SolidJS + Vite 是纯前端工作，不影响 Rust 侧与 IPC 契约；
+届时 `terminal-pump.ts` 可以直接照抄现在的 `pump()` 逻辑。
+
 ## 2. 目录结构
 
 ```

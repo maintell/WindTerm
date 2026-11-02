@@ -1,0 +1,50 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/wt-common",
+    "crates/wt-core",
+    "crates/wt-config",
+    "crates/wt-crypto",
+    "crates/wt-store",
+    "crates/wt-import",
+    "crates/wt-term",
+    "crates/wt-ssh",
+    "crates/wt-ipc",
+    "apps/wt-cli",
+    "apps/wt-desktop",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "Apache-2.0"
+repository = "https://github.com/windterm/windterm"
+authors = ["WindTerm Contributors"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+toml_edit = "0.22"
+thiserror = "1"
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+rand = "0.8"
+zeroize = { version = "1", features = ["derive"] }
+base64 = "0.22"
+uuid = { version = "1", features = ["v7"] }
+sha2 = "0.10"
+sha1 = "0.10"
+hmac = "0.12"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
+# 用 ring 后端而不是默认的 aws-lc-rs：后者在 Windows 上需要 NASM 才能编译
+russh = { version = "0.65", default-features = false, features = ["ring", "flate2", "rsa"] }
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+# 不用 panic = "abort"：会话 task 依赖 catch_unwind 做隔离（design/01 §2.1）
+panic = "unwind"

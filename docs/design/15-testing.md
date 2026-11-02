@@ -10,7 +10,7 @@
 | L1 单元 | 纯函数、解析器、状态机 | `cargo test` | 每次保存（watch） | 快（< 10 s），覆盖边界 |
 | L2 集成 | crate 间协作，mock 外部 | `cargo test --test` | 提交前 | 中（< 2 min） |
 | L3 协议互通 | 真实服务端（容器） | `pytest` 驱动 `wt` CLI | 提交前（子集）/ 每日（全量） | 慢（10~30 min） |
-| L4 E2E | 六条 FLOW | Playwright + `wt` CLI | 提交前（冒烟）/ 每日（全量） | 慢（15 min） |
+| L4 E2E | 六条 FLOW | CDP 直驱 WebView2（`scripts/e2e-desktop.mjs`）+ `wt` CLI | 提交前（冒烟）/ 每日（全量） | 慢（15 min） |
 | L5 性能 | `NFR-*` 基准 | `wt bench` | 每日 + 发版前 | 10 min |
 | L6 结构 | 需求闭合、i18n、文档 | 自研脚本 | 每次提交 | 快（< 5 s） |
 
@@ -109,7 +109,35 @@ def test_ssh_connect(server, wt):
 
 ### 2.4 L4 E2E
 
-六条 FLOW 逐条实现，用例名带需求 ID：
+**现状（M1）**：`scripts/e2e-desktop.mjs`，零 npm 依赖。
+
+做法是让 `wt-desktop` 在创建 WebView2 时打开 CDP 调试端口（环境变量 `WT_CDP_PORT`），
+验收脚本用 HTTP 发现页面、用 WebSocket 说 CDP，在真实窗口里点按钮、敲键盘、读终端缓冲。
+
+三个必须遵守的细节（都踩过）：
+
+| 细节 | 原因 |
+|---|---|
+| 不能用 `el.click()` / 合成 `KeyboardEvent` | 不是用户手势，页面拿不到 user activation；且 xterm 的键位编码挂在真实 keydown 上，合成事件进不去 |
+| `Input.dispatchKeyEvent` 必须带 `windowsVirtualKeyCode` | xterm 按 `ev.keyCode` 分支，只给 `text` 时 keyCode 为 0，字符被丢掉 |
+| 调试参数必须由代码传，不能用 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` | `wry` 每次都会 `set_additional_browser_arguments`，会覆盖该环境变量 |
+
+当前覆盖 15 项断言：页面加载与 Tauri 桥接、启动自检、点击建会话、句柄可取、
+首屏输出渲染、焦点在终端、键盘输入、命令输出、统计字段非零值、前后端行列一致、
+ack 回流归零、resize 传播、关闭后句柄失效、页面无未捕获异常。
+
+```js
+// scripts/e2e-desktop.mjs（节选）
+await clickElement("#open");                       // 可信鼠标点击
+await typeText("echo windtermok");                 // 可信键盘输入
+await waitFor(async () => {
+  const screen = await cdp.eval(`window.__wt.screen()`);
+  return screen.split("\n").some((l) => l.trim() === "windtermok");
+});                                                // 断言命令输出
+```
+
+**全量 FLOW 用例**（六条）等界面有会话树、标签页、搜索之后再补，
+仍按下面的 Playwright 形状写；CDP 客户端已经就绪，可以直接复用：
 
 ```ts
 // ui/tests/e2e/flow-02-troubleshoot.spec.ts

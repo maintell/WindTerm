@@ -1,0 +1,16 @@
+[package]
+name = "wt-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+wt-common = { path = "../../crates/wt-common" }
+wt-term = { path = "../../crates/wt-term" }
+wt-ipc = { path = "../../crates/wt-ipc" }
+tauri = { version = "2", features = [] }
+serde = { workspace = true }

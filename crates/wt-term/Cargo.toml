@@ -1,0 +1,10 @@
+[package]
+name = "wt-term"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+wt-common = { path = "../wt-common" }
+portable-pty = "0.9"
