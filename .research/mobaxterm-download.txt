@@ -1,0 +1,52 @@
+MobaXterm Xserver with SSH, telnet, RDP, VNC and X11 - Download
+Customer login
+Home
+Demo
+Features
+Download
+Plugins
+Help
+Contact
+MobaXterm
+Home
+Demo
+Features
+Download
+Plugins
+Help
+Contact
+Customer area
+Buy
+Home Edition
+Free
+Full X server and SSH support
+Remote desktop (RDP, VNC, Xdmcp)
+Remote terminal (SSH, telnet, rlogin, Mosh)
+X11-Forwarding
+Automatic SFTP browser
+Master password protection
+Plugins support
+Portable and installer versions
+Full documentation
+Max. 12 sessions
+Max. 2 SSH tunnels
+Max. 4 macros
+Max. 360 seconds for Tftp, Nfs and Cron
+Download now
+Professional Edition
+$69 / 49€ per user*
+* Excluding tax. Volume discounts available
+Every feature from Home Edition +
+Customize your startup message and logo
+Modify your profile script
+Remove unwanted games, screensaver or tools
+Unlimited number of sessions
+Unlimited number of tunnels and macros
+Unlimited run time for network daemons
+Enhanced security settings
+12-months updates included
+Deployment inside company
+Lifetime right to use
+Subscribe online / Get a quote
+About us | Home License | Pro License | Terms&Conditions | Export rules
+© 2008 - 2026 Mobatek. MobaXterm ® is a registered trademark of Mobatek

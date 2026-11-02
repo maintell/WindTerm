@@ -1,0 +1,19 @@
+# Rust
+/target
+**/*.rs.bk
+*.pdb
+
+# 前端
+node_modules/
+ui/dist/
+
+# 运行时数据（本地配置、凭据、日志，绝不入库）
+/data
+/config.toml
+*.log
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

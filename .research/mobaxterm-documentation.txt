@@ -1,0 +1,1097 @@
+MobaXterm Xserver with SSH, telnet, RDP, VNC and X11 - Documentation
+Customer login
+Home
+Demo
+Features
+Download
+Plugins
+Help
+Contact
+MobaXterm
+Home
+Demo
+Features
+Download
+Plugins
+Help
+Contact
+Customer area
+Buy
+MobaXterm documentation
+1. General
+1.1. Presentation
+1.2. Sessions
+1.3. Multitab environment
+1.4. X11 server
+1.5. Unix-like terminal
+1.6. Built-in graphical tools
+2. MobaXterm interface
+2.1. Different integration modes
+Tab interface
+Split modes
+Detach tab feature
+Services
+SSH tunnels (port forwarding)
+Global settings
+Sessions manager
+2.2. Local terminal features
+open command
+cygpath command
+/drives mount path
+/registry virtual folder
+// mount point
+Executing native Windows programs
+Other useful commands
+2.3. Network utilities
+Remote computing
+DISPLAY settings
+File transfer
+Network monitoring
+2.4. Other utilities
+Editors
+Miscellaneous
+Plugins
+MobApt package manager
+3. Global settings
+3.1. "General" tab settings
+Persistent home directory
+Default text editor program
+Right-click menu on Windows folders
+MobaXterm passwords management
+MobaXterm keyboard shortcuts
+Manage my shared sessions
+Persistent root (/) directory
+3.2. "Terminal" tab settings
+Customize
+Font
+Charset
+Display separation line
+Use Windows PATH environment
+Paste using right-click
+Backspace sends ^H
+Show confirmation on terminal exit
+Display scrollbar
+Track terminal activity
+Warn before pasting multiple lines
+Log terminal output to the following directory
+Customize syntax highlighting definitions
+3.3. "X11" tab settings
+Engine
+Keyboard
+Unix-compatible keyboard
+Automatically start X server at MobaXterm start up
+Run on monitor
+Display offset
+Clipboard
+Xorg version
+OpenGL acceleration
+X11 remote access
+3.4. "Display" tab settings
+Flicker-free main window
+4. Sessions settings
+4.1. SSH settings
+Remote host
+Specify username
+Port
+Do not exit after command ends
+Execute command
+X11-Forwarding
+Compression
+Remote environment
+Use private key
+Follow SSH path (experimental)
+Adapt locales on remote server
+SSH-browser type
+4.2. Telnet settings
+Remote host
+Username
+Port
+Prevent MobaXterm from closing when this session is active
+4.3. Xdmcp settings
+Connect to any server
+Specify server to connect to
+Start XDMCP on screen number
+Set Numlock off
+Clipboard
+4.4. Rdp settings
+Remote host
+Port
+Username
+Connect to console (/admin)
+Redirect ports
+Redirect drives
+Use smartcard for login
+Redirect printers
+Enhanced graphics
+Redirect clipboard
+Forward keyboard shortcuts
+Use CredSSP if available
+4.5. Vnc settings
+Remote hostname or IP address
+4.6. Ftp settings
+Remote host
+Passive mode
+FTPS mode
+Encrypt data channel
+ASCII mode
+4.7. Sftp settings
+Remote host
+ASCII mode
+Use private key
+4.8. Mosh settings
+Remote host
+Use SSH private key
+SSH port
+4.9. Terminal settings
+Customize
+Customize
+Terminal font settings
+Backspace sends ^H
+Use Windows PATH
+Log terminal output to
+Paste delay
+4.10. Network settings
+Connect through SSH gateway (jump host)
+4.11. Bookmark settings
+Lock terminal title
+Display reconnection message at session end
+5. How to
+5.1. Set up a passwordless ssh connection
+On client side
+On server side
+5.2. Set up a passwordless rsh connection
+Using /etc/hosts.equiv
+Using ~/.rhosts
+5.3. Use keyboard shortcuts in MobaXterm
+Navigate through tabs
+Inside MobaXterm terminal
+Inside MobaXterm local bash shell
+Configurable shortcuts
+5.4. Execute a shell script at MobaXterm startup
+Using commandline parameters
+Using bookmarks
+5.5. Share sessions with my team members
+Share my sessions
+Use sessions shared by someone else
+6. Frequently Asked Questions
+6.1. General
+What is the purpose of MobaXterm?
+What are the main advantages of using MobaXterm over other SSH/SFTP/FTP/RDP/VNC/X11 solutions in Windows?
+Does MobaXterm perform unwanted internet connections?
+6.2. X11 server
+What is X11? Why would I need an X server?
+What does X11-Forwarding means?
+How does X11-Forwarding work?
+Why is my remote DISPLAY variable configured to "localhost:10.0"?
+I want to change MobaXterm X server DISPLAY address to my second network adapter (or my VPN adapter). How can I do this?
+I have an issue with an X11 remote program (Java/X11/Motif) which does not accept keyboard input: everytime I press a keyboard key, nothing is written on the text field
+How do the X11 tabs with DWM work? Why does MobaXterm include this "tiling" window manager?
+How can I simply launch the X11 server without starting the full MobaXterm environment?
+Does MobaXterm X server support OpenGL? How can I use hardware acceleration?
+How can I display a full remote desktop from a Unix/Linux server in MobaXterm (Gnome, KDE, FVWM, Openbox, Fluxbox, IceWM, XFCE, Blackbox, DWM, Enlightenment, LXDE, ...)?
+6.3. SSH client
+What is SSH?
+How can I use public SSH keys with MobaXterm?
+Can I perform a SSH connection through my SOCKS proxy?
+6.4. RDP client
+What is RDP?
+How can I send Ctrl+Alt+Del through RDP (terminal service)?
+6.5. SSH tunnelling (a.k.a. "Port forwarding")
+What is the purpose of the "tunneling" tool?
+6.6. MobaXterm terminal
+MobaXterm does not display correctly some special characters? I encounter problems with my country charset/encoding?
+I can not run a Windows application inside MobaXterm. My Windows PATH is not taken into account in MobaXterm.
+I want to paste in the terminal using right-click / I am using a laptop and I do not have any middle button on my trackpad. How can I paste text in the terminal?
+How can I specify the characters delimiters used for selection when I double-click in the terminal
+6.7. Advanced features
+I would like to start MobaXterm from a BATCH script. How do I use MobaXterm inside my script? What are the command line switches available?
+I have a small screen and I would like MobaXterm to be more "compact" in order to maximize the terminal area (or remote desktop area) on screen.
+I would like to create a new plugin for MobaXterm. How can I do that?
+What is the best way to secure my MobaXterm installation?
+How can I backup/export my sessions?
+Is it possible to share a MobaXterm configuration between multiple users?
+Where does MobaXterm store its configuration or sessions?
+How can I select where to put the configuration (MobaXterm.ini) file?
+MobaXterm fonts are too small / too big. How can I change MobaXterm interface font size?
+I have a group policy which prevents MobaXterm from running tools from the TEMP folder / MobaXterm does not run because the slash folder is not writable
+How to disable the penguins screensaver? How to remove the "Games" menu and games entries from MobaXterm?
+I love the penguins screensaver! Can I subscribe to MobaXterm Professional Edition and keep it?
+I want to save my terminal output but when I choose the "Log all terminal activity to the following directory", I get a hardly readable file with special characters in it.
+6.8. Miscellaneous troubleshooting
+MobaXterm does not run on Windows 2000: it says that the "gdiplus.dll" is missing...
+Why does the SSH-browser tab not pop up when I launch a SSH session? / Why does MobaXterm prompt me for a password each time the SSH-browser is started?
+After connecting using SSH, I immediately get "Connection reset by peer" or "Software caused connection abort" error.
+My SSH connection freezes or drops out after N seconds of inactivity.
+When connecting using a SSH key, I get the following error message: "WARNING: UNPROTECTED PRIVATE KEY FILE!"
+When connecting to a SSH server, I get the following error message: "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!"
+When I hit the "backspace" key, it does not work (or it outputs ^H or ^?).
+I want to ask for some support. Can you help me?
+I sent an email but you never answered
+1. General
+1.1. Presentation
+MobaXterm is your ultimate toolbox for remote computing. In a single Windows application, it provides loads of functions that are tailored for programmers, webmasters, IT administrators and pretty much all users who need to handle their remote jobs in a more simple fashion.
+MobaXterm provides all the important remote network tools (SSH, RDP, X11, SFTP, FTP, Telnet, Rlogin, ...) to Windows desktop, in a single portable exe file which works out of the box. Some plugins can be used to add functions to MobaXterm such as Unix commands (bash, ls, cat, sed, grep, awk, rsync, ...).
+MobaXterm main window
+1.2. Sessions
+MobaXterm allows you to launch remote sessions.
+You just have to click on the "Sessions"
+button to start a new session.
+The Session button
+You can then choose to create a new SSH, Telnet, Rlogin, RDP, VNC, XDMCP, FTP,
+SFTP, Mosh or Serial session. Every session you start is automatically saved.
+The sessions manager window
+You can edit, delete, move, import or export
+sessions by right-clicking on them in the left MobaXterm sidebar. You
+can also create a desktop shortcut in order to automatically launch a
+session or a group of sessions at MobaXterm startup.
+Right-clicking on a session folder allows you to launch many sessions at once. It can be really useful when you often work using the same environment and the same opened sessions.
+1.3. Multitab environment
+The multitab environment allows you to work with many terminals or
+remote sessions at the same time. You can toggle between
+"multitab" mode, "2-terminals" mode and "4-terminals" mode by clicking
+on the "Split" button.
+The "Split mode" button
+MobaXterm brings another really useful mode called "Multi-execution" mode. This
+mode allows you to display all your terminals at the same time and to
+write your commands to all of them at once: when you press a keyboard
+key, it will write the same letters on all your terminals at once. This
+mode can be activated by pressing the "MultiExec" button.
+The "MultiExec mode" button
+1.4. X11 server
+A X11 server is embedded into MobaXterm executable. This X server is based on the well-known Xorg server and compiled in order to run natively on Windows platform.
+The X server supports OpenGL rendering and the latest extensions in order to allow you to run up-to-date applications through it.
+This embedded X server can also be used to render remote desktops: just create a new "XDMCP" session, then select your settings, verify that your remote server supports XDMCP and start your session. If this does not work or if you need some better security, you can also access your remote desktop through a secure SSH connection: start a new SSH session and in the "Remote environment" setting, choose the correct desktop you want to run a the remote server.
+You can tune your X server settings in MobaXterm global settings --> X11 tab. Be sure to select the right settings for your configuration. If you have a very old application which does not behave correctly with default settings, be sure to try one of the "Windowed" modes.
+1.5. Unix-like terminal
+MobaXterm features a great terminal emulator based on the efficient PuTTY program (by Simon Tatham).
+This terminal allows you to run remote commands through SSH, telnet, rlogin or serial
+connections, but also to run Unix commands on your local Windows computer thanks to
+the use of dedicated plugins.
+There are many Unix commands which can be used inside the local terminal when using the "CygUtils" or other dedicated plugins:
+ssh, telnet, rlogin, rsh, rsync, wget, vim, corkscrew, httping, fdupes,
+iperf, mathomatic, xhost, xprop, xdpyinfo, xmodmap, xkill, Xorg...
+If you need an Unix command that is not included into MobaXterm, you can ask us to develop a plugin containing the required program(s)
+The terminal provides a bunch of settings that can be tuned in order to suit your
+needs (font, background/foreground colors, antialiasing, old keyboards
+compatibility, ...). The default terminal parameters can be set by
+clicking on the "Settings" button.
+The settings button
+1.6. Built-in graphical tools
+MobaXterm comes with useful Unix command-line utilities, but also built-in
+graphical tools such as a fast picture viewer, a developers text
+editor, a file/folder comparison tool, a ports analyzer and a packet
+capture tool.
+The feature which is in our opinion the most useful
+may be the graphical SSH-browser: when you log to a remote server
+using SSH, a graphical SSH-browser pops up on in the left sidebar
+allowing you to drag and drop files directly from or to the remote
+server using your secure SSH connection and SFTP or SCP protocol.
+In the SSH side browser, you can double-click on a remote file in order to edit it directly using your favorite program. Your changes will be saved to the remote server automatically!
+2. MobaXterm interface
+2.1. Different integration modes
+Tab interface
+MobaXterm can start
+many independent sessions thanks to a tab-based interface.
+Use the appropriate button to create new tabs, close existing tabs,
+cycling through tabs or rename tabs.
+Split modes
+MobaXterm allows you to
+display some terminals in the same Window just as you would do using
+the "screen" utility.
+You can display 2 terminals in horizontal or vertical mode, or even 4
+terminals in the same Window
+The "Split mode" button
+Detach tab feature
+MobaXterm allows you to detach tabs in order to display them in a separate window. You can detach, reattach tabs or go fullscreen using the
+right-click menu on your tab.
+Services
+MobaXterm allows you to launch some light daemons (TFTP, HTTP, FTP, SSH/SFTP, TELNET) from the main interface. You can manage these daemons by clicking on the appropriate button from the top toolbar.
+The "Services" button
+SSH tunnels (port forwarding)
+MobaXterm allows you to create some SSH tunnels (a.k.a. "port forwarding") with a nice and intuitive interface: you can manage these SSH tunnels by clicking on the appropriate button from the top toolbar.
+The "Tunneling" button
+Global settings
+You can edit your
+options using the corresponding button from the top
+toolbar. Your options will be saved to an INI file. You can select a
+persistent home directory for keeping your files and parameters instead
+of having your home directory in a temporary folder. You can also
+select the terminal fonts, colors, skin, transparency, keyboard
+shortcuts, specify a font server, etc...
+The "Settings" button
+The settings dialog
+Sessions manager
+You can store your
+connection settings in bookmarks that are stored in
+your INI file. Sessions can be accessed easily through the
+corresponding menu in the top toolbar or in the left sidebar, but you can also create a
+desktop shortcut to each session in order to launch them easily.
+The "sessions" button
+The "sessions" window
+2.2. Local terminal features
+MobaXterm features a great terminal emulator based on the efficient PuTTY program (by Simon Tatham).
+This terminal allows you to run remote commands through SSH, RDP, Telnet, Rsh or serial
+connections, but also to run Unix commands on your local Windows computer thanks to
+the use of the "CygUtils" plugin:
+open command
+This command allows you
+to open your local files. This command will
+open your documents using the Windows default association for your
+document type.
+open https://www.google.com
+open MyDocuments/MyWork.pdf
+You can open files, directories or URL directly from the terminal by simply Ctrl+clicking on them.
+cygpath command
+This command allows you
+to work with dos/unix paths. You can obtain the
+Dos path from a given Unix path and vice-versa. You can also list your
+computer paths like the Windows, System, Desktop, Profiles and Start
+Menu paths.
+echo "/bin PATH = $(cygpath -w /bin)"
+echo "System PATH = $(cygpath -u -S)"
+/drives mount path
+This directory contains a mount point for each drive of your computer.
+You can for example browse your system drive by cd to /drives/c/
+cat /drives/c/Windows/win.ini
+PicView /drives/d/MyPhotos/Photo36.jpg
+/registry virtual folder
+This folder is a virtual
+directory containing your registry keys and
+values. You can open and read a registry key by doing a simple "cat" of
+these virtual files.
+cat /registry/HKEY_LOCAL_MACHINE/SOFTWARE/Microsoft/Windows/CurrentVersion/DevicePath
+cat "/registry/HKEY_LOCAL_MACHINE/SOFTWARE/Microsoft/Windows/CurrentVersion/Explorer/Shell Folders/CommonPictures"
+// mount point
+You can also browse
+computers from your network neighborhood by typing
+//<remote_computer>
+PicView //server1/share1/Photo36.jpg
+edit //server2/Documents/program.c
+Executing native Windows programs
+You can execute native
+Windows programs from MobaXterm as you would in a "cmd" console.
+ipconfig /all
+netsh -c interface dump
+regedit
+net user
+calc
+notepad
+Other useful commands
+There are many other
+useful commands for interacting with Windows,
+like editrights, shutdown, regtool, ps, passwd, MobaControl,
+mkshortcut, MobaSwInfo, MobaHwInfo, MobaTaskList, MobaKillTask,
+MobaControl[...]
+2.3. Network utilities
+Remote computing
+MobaXterm includes some
+useful command line clients for executing commands on remote computers:
+. ssh (utility to access shell accounts using a secure crypted
+connection)
+. telnet (useful to login to remote system hosts)
+. rlogin (same aim as telnet but using a different protocol)
+. rsh (useful for sending commands on remote computers, especially
+using the passwordless feature)
+Do not forget that you can bookmark your connections using the
+bookmarks feature (see the corresponding section for more information).
+You can also set up passwordless connections with rsh or ssh, there is
+also a corresponding section to this feature.
+DISPLAY settings
+MobaXterm includes an X
+server so that it can display X11-based graphical programs.
+By default, an X server is started at MobaXterm startup. Your DISPLAY
+environment variable is automatically set and it is written in your
+terminal startup message. When you use a remote computing client to
+connect to a Unix computer, you can export your DISPLAY to your local
+Windows desktop thanks to MobaXterm. When you use a SSH connection, if
+the remote server supports X11-Forwarding, your DISPLAY is
+automatically set and it will be sent through the SSH connection to
+your Windows desktop.
+With this icon, you can monitor the X-server state
+telnet remoteserver1
+export DISPLAY=localcomputer1:0.0
+nedit
+exit
+ssh -l root remoteserver1
+nedit
+File transfer
+MobaXterm includes some
+useful clients for transferring files
+. ftp (File Transfert Protocol)
+. sftp/scp (File Transfert using a secure crypted SSH connection)
+. rcp (Copy files to/from remote computers using the rsh protocol)
+. wget (download files through http/ftp protocol with enhanced settings)
+. rsync (synchronize directories through a network with incremental
+capabilities and enhanced options)
+scp /drives/c/Photo36.jpg root@server1:/tmp/
+Network monitoring
+MobaXterm includes 2
+useful utilities for monitoring your network:
+. TCPCapture (allows you to capture network packets)
+. MobaListPorts (allows you to list all open ports with their current
+state)
+. httping (monitor your web server)
+. iperf (monitor the available bandwidth on your network)
+2.4. Other utilities
+Editors
+MobaXterm includes
+everything you need to edit text files: vi on
+command line, nedit for a graphical editor or MobaTextEditor which is a
+light but powerful editor for developers with textdiff utilities.
+Miscellaneous
+. MobaPictureViewer
+(Display pictures in fullscreen with zoom features)
+. MobaTextDiff (Diff utility for text files)
+. MobaFoldersDiff (Diff utility for folders)
+. fdupes (Find and erase duplicate files)
+. mathomatic (computer algebra system)
+Plugins
+Some commands can be
+added to MobaXterm thanks to the use of plugins. You can download some
+ready-to-use plugins at https://mobaxterm.mobatek.net/plugins.html
+.
+MobApt package manager
+If you want to add more embedded tools to MobaXterm, you can download them easily using the "MobApt" package manager.
+3. Global settings
+The "global settings" window can be accessed through the "Settings" menu.
+In this window, you can configure and tune MobaXterm parameters in order to better suit your needs.
+The global settings window
+3.1. "General" tab settings
+Persistent home directory
+Choose a folder that MobaXterm will use as its HOME directory (/home/mobaxterm). This directory will persist upon MobaXterm restarts, so you can store your SSH keys in it.
+Default text editor program
+Define the text editor that will be used for text files edition. By default, MobaXterm will use its embedded text editor "MobaTextEditor".
+Right-click menu on Windows folders
+Put a new entry to the right-click menu of Windows explorer "Start MobaXterm here".
+MobaXterm passwords management
+Configure MobaXterm password management:
+- Define whether MobaXterm should store passwords
+- Define a master password
+- Manage MobaXterm stored passwords
+MobaXterm keyboard shortcuts
+Define MobaXterm hotkeys
+Manage my shared sessions
+Point to sessions files shared by your team members in order to easily share your sessions definitions with colleagues
+Persistent root (/) directory
+Choose a folder that MobaXterm will use as its ROOT directory ("/" folder).
+This directory will persist upon MobaXterm restarts, so you can store your programs in it.
+Note : This is especially useful if you use the MobApt tool.
+3.2. "Terminal" tab settings
+Customize
+Customize terminal colors scheme
+Font
+Define MobaXterm terminal font. This setting can be overriden in each session.
+Charset
+Define MobaXterm terminal default charset. This setting can be overriden in each session.
+Display separation line
+Show/hide the separation line between each command in local terminal.
+Use Windows PATH environment
+Append Windows PATH to the shell environment
+This allows you to launch Windows commands like "ipconfig"
+Paste using right-click
+Use the right mouse button for pasting
+Note : when this option is checked, contextual menu is still available using Ctrl+Right-click or Shift+Right-click .
+Backspace sends ^H
+Check this option if you want the backspace key to send ^H
+Uncheck this if you want the backspace key to send ^?
+Show confirmation on terminal exit
+Show a confirmation dialog on terminal close request when a command is still running inside it
+Display scrollbar
+Show/hide the terminal scrollbar.
+Note : If you hide the scrollbar, you will still be able to scroll the terminal using Shift+PgUp or Shift + PgDown .
+Track terminal activity
+Icon of terminal tab is displayed with a blue dot if some activity is detected and title of inactive terminal tab is displayed using blue color if terminal has been modified
+Warn before pasting multiple lines
+Show a confirmation message before pasting multiple lines into the terminal
+Log terminal output to the following directory
+Check this option if you want to copy all terminal activity to a text file for further analyzis
+Customize syntax highlighting definitions
+Create your own syntax coloration definition
+3.3. "X11" tab settings
+Engine
+Choose rendering engine for X11 server
+Keyboard
+Choose keyboard language
+Unix-compatible keyboard
+Use a keyboard compatible with old Unix systems
+(for instance, erase key performs a "^H" instead of "^?")
+Automatically start X server at MobaXterm start up
+Check this option in order to start X11 server at each MobaXterm startup.
+Run on monitor
+Run X11 server on the selected monitor
+Warning : fullscreen mode only works on first screen.
+Display offset
+Starting offset for the "DISPLAY" parameter.
+By default, MobaXterm will try to open the ":0.0" DISPLAY, and will increment this variable if another X server already exists on this port.
+If you choose the "36" offset for instance, MobaXterm will start probing at DISPLAY ":36.0".
+Clipboard
+Define the way MobaXterm will handle copy/paste operations between X11 applications and Windows applications:
+- disabled : copy/paste from and to X11 applications will not work
+- enabled : copy/paste from and to X11 applications will work
+- disable "copy on select" : selecting some text will not automatically copy it, only explicit requests to copy text will be handled.
+Xorg version
+Choose Xorg version.
+If you have some troubles with a certain version of Xorg, this allows you to try an older Xorg release.
+OpenGL acceleration
+OpenGL acceleration type:
+- choose "Hardware" if your graphic adapter supports HW OpenGL acceleration
+- choose "Software" if you need OpenGL capabilities rendered using software
+- choose "None" otherwise
+X11 remote access
+Choose access control mode for Cygwin X11 server:
+- Restricted : Access control is enabled. You can use the "xhost +[...]" command in order to allow remote hosts to connect.
+- Full : Access control is disabled. Any remote X11 application can connect to the X11 server. Warning: remote applications can listen or simulate key strokes.
+In any case, X11-Forwarding will work flawlessly, without any popup warning, as the X11-forwarding connection is made locally using a secure connection.
+3.4. "Display" tab settings
+Flicker-free main window
+Check this setting if you want to avoid flickering effect on MobaXterm main window, especially when resizing terminal or when hovering buttons.
+Warning : this can slow down MobaXterm graphical interface.
+4. Sessions settings
+The "sessions manager" window can be accessed through the "Session" menu.
+The session manager window allows you you to create remote sessions, configure them using advanced settings and save them for further use.
+The session manager window
+4.1. SSH settings
+Remote host
+SSH server name or IP address
+Specify username
+Check this option if you do not want to see
+the "Login:" prompt before connect
+Port
+SSH server listening port
+Do not exit after command ends
+Stay connected to the remote server after command has been executed
+Execute command
+Specified command will be executed on the remote server after connect.
+You can specify multiple commands and separate them with ";" or "&&".
+For instance:
+pwd; ls -al; date; uname -a
+X11-Forwarding
+X11-Forwarding (automatic DISPLAY redirection through SSH channel)
+X11-Forwarding is a mechanism that allows the X11 protocol to be routed through an existing SSH channel. The main advantages of this solution are:
+- X11 protocol will be encrypted
+- X11 protocol can be compressed
+- There is no need to set up a new communication channel (and to open communication ports in your firewall) for X11: the network packets go through the already existing SSH connection
+Compression
+Compress data transfered through the SSH channel
+This is useful for slow connections (WAN)
+Remote environment
+Start a full desktop from your remote server in a new window.
+For instance, on Raspberry Pi device, you can start LXDE.
+Use private key
+Specify a private key for passwordless login.
+A new key can be generated using the following command:
+ssh-keygen -t rsa
+or
+ssh-keygen -t dsa
+You can also create and manage your SSH keys using the embedded MobaKeyGen application (available in the "Tools" menu).
+Follow SSH path (experimental)
+Automatically place the graphical SSH-browser in the same directory than the SSH terminal.
+Note : This feature is experimental and it will not work on old Unix systems.
+Adapt locales on remote server
+Try to send the local language settings to the remote server:
+this allows the remote server to be aware of the language and charset settings used locally.
+Note : the remote server should support these language settings.
+SSH-browser type
+Display a graphical SSH-browser which allows you to browse your remote server content.
+Available settings:
+- None: SSH-browser is disabled
+- SFTP protocol: SSH-browser is enabled and uses SFTP protocol
+- SCP (enhanced speed): SSH-browser is enabled and uses latest SCP protocol implementation for maximum transfer speed
+- SCP (normal speed): SSH-browser is enabled and uses old SCP protocol implementation for legacy support
+Note : unlike FTP protocol, SSH-browser uses a secured encrypted SSH channel for transport.
+4.2. Telnet settings
+Remote host
+Telnet Remote Hostname
+Username
+Type telnet username or leave this field empty if you want to use the "Login:" prompt instead.
+Note : Some telnet servers do not support this feature: even if you choose a login, they will still prompt you at each connection.
+Port
+Telnet server listening port
+Prevent MobaXterm from closing when this session is active
+If you check this setting, you will not be able to close MobaXterm as long as this session is running.
+4.3. Xdmcp settings
+Connect to any server
+Use this setting if you want to connect to the first available server
+Specify server to connect to
+Choose this option if you want to specify the server name or IP address you want to connect to
+Start XDMCP on screen number
+Warning: fullscreen mode only work on first screen.
+Set Numlock off
+Some old Unix systems (AIX, Solaris, HP-UX) need this in order to properly work
+Clipboard
+Define the way MobaXterm will handle copy/paste operations between X11 applications and Windows applications:
+- disabled : copy/paste from and to X11 applications will not work
+- enabled : copy/paste from and to X11 applications will work
+- disable "copy on select" : selecting some text will not automatically copy it, only explicit requests to copy text will be handled.
+4.4. Rdp settings
+Remote host
+RDP server name or IP address
+Port
+RDP server listening port
+Username
+RDP user name
+leave this field empty if you want to use the remote logon screen
+Connect to console (/admin)
+Connect to server console
+Redirect ports
+Show local ports on remote server
+Redirect drives
+Show local drives on remote server
+Use smartcard for login
+Use smartcard for remote server authentication
+Redirect printers
+Show local printers on remote server
+Enhanced graphics
+Use Enhanced settings for remote desktop
+Redirect clipboard
+Allow copy/paste from/to RDP tab
+Forward keyboard shortcuts
+Keyboard shortcuts will be forwarded to remote desktop instead of being handled by local Windows environment
+Use CredSSP if available
+Enable or disable Credential Security Support Provider (CredSSP) for authentication
+4.5. Vnc settings
+Remote hostname or IP address
+VNC Remote Hostname
+4.6. Ftp settings
+Remote host
+FTP Remote Hostname
+Passive mode
+This mode is recommended, especially if you are behind a firewall.
+In this mode, FTP client initiates the 2 connections (control and data), whereas in active mode, control connection is initiated by the client and data connection by the server.
+FTPS mode
+If this option is checked, MobaXterm will attempt to perform a FTPS connection to the server.
+Encrypt data channel
+If this option is checked, the channel used for data transfer (files, directory listings) will be encrypted, otherwise only command channel will be encrypted.
+ASCII mode
+Text files will be converted to Unix/Dos format during transfer.
+Warning : This feature is not suitable for binary files!!
+4.7. Sftp settings
+Remote host
+SFTP Remote Hostname
+ASCII mode
+Text files will be converted to Unix/Dos format during transfer.
+Warning : This feature is not suitable for binary files!!
+Use private key
+Specify a private key for passwordless login.
+A new key can be generated using the following command:
+ssh-keygen -t rsa
+or
+ssh-keygen -t dsa
+You can also create and manage your SSH keys using the embedded MobaKeyGen application (available in the "Tools" menu).
+4.8. Mosh settings
+Remote host
+Remote hostname
+(mosh-server must be installed on this server)
+Use SSH private key
+Specify a private key for passwordless login.
+A new key can be generated using the following command:
+ssh-keygen -t rsa
+or
+ssh-keygen -t dsa
+You can also create and manage your SSH keys using the embedded MobaKeyGen application (available in the "Tools" menu).
+SSH port
+SSH server listening port
+4.9. Terminal settings
+Customize
+Customize terminal colors scheme
+Customize
+Create your own syntax coloration definition
+Terminal font settings
+Select terminal font, choose encoding and font size.
+You can also force a fixed number of rows/columns.
+Backspace sends ^H
+Check this option if you want the backspace key to send ^H
+Uncheck this if you want the backspace key to send ^?
+Use Windows PATH
+Append Windows PATH to the shell environment
+This allows you to launch Windows commands like "ipconfig"
+Log terminal output to
+Check this option if you want to copy all terminal activity to a text file for further analyzis
+Paste delay
+This allows you to set a line delay for paste operations:
+if your remote server is slow or cannot handle large paste buffers all at once, this setting can be helpful: when pasting huge buffers of data, it will add a small time delay after pasting each line in the terminal.
+4.10. Network settings
+Connect through SSH gateway (jump host)
+Use a gateway SSH server in order to reach your end server
+MobaXterm will
+1. open a SSH tunnel to your gateway SSH server
+2. use this tunnel to connect directly to the end server
+Note 1 : if you use X11-forwarding, DISPLAY will be automatically redirected
+Note 2 : if you use the SFTP browser, it will also be automatically redirected
+4.11. Bookmark settings
+Lock terminal title
+Terminal title will be set to the session name
+If you check this option, any attempt by the shell to set tab title will fail.
+Uncheck this option if you want to allow the shell to change tab title.
+Display reconnection message at session end
+A message will be shown after session end asking you if you want to restart the session
+5. How to
+5.1. Set up a passwordless ssh connection
+You can connect to an SSH server without supplying any password: this
+is useful if you want to run shell scripts that are not interactive.
+This can be done in 2 steps:
+On client side
+You will have to
+generate a public rsa key on the client. This can be done by launching the "MobaKeyGen" tool (from the "Tools" menu) or by typing
+ssh-keygen -t rsa -N '' -q -f ~/.ssh/id_rsa
+On server side
+Copy the file that has
+been generated on the client (".ssh/id_rsa.pub")
+to the ~/.ssh/ directory of the server and rename it to
+"authorized_keys".
+scp .ssh/id_rsa.pub user1@server1:.ssh/authorized_keys
+5.2. Set up a passwordless rsh connection
+You can connect to an RSH server without supplying any password: this
+is useful if you want to run shell scripts that are not interactive.
+This can be done in 1 step:
+Using /etc/hosts.equiv
+Edit the
+/etc/hosts.equiv file on server side: you can specify in this
+file the authorized users that will be able to connect to the server
+without supplying any password. The file syntax is:
+<computer_name> <user_name>
+Using ~/.rhosts
+Edit the ~/.rhosts file
+on server side: you can specify in this file
+the authorized users that will be able to connect to the server using
+the current account without supplying any password. The file syntax is:
+<computer_name> <user_name>
+5.3. Use keyboard shortcuts in MobaXterm
+Navigate through tabs
+Navigate forward: Ctrl + TAB
+Navigate forward: Ctrl + Alt + RightArrow
+Navigate backward: Ctrl + Shift + TAB
+Navigate backward: Ctrl + Alt + LeftArrow
+Navigate to tab number 6: Ctrl + Alt + F6
+Inside MobaXterm terminal
+Scroll Up: Shift + PageUp
+Scroll Up line per line: Shift + ArrowUp
+Scroll Up to the begining: Shift + Home
+Scroll Down: Shift + PageDown
+Scroll Down line per line: Shift + ArrowDown
+Scroll Down to the end: Shift + End
+Column mode selection: Ctrl + Alt + Click
+Inside MobaXterm local bash shell
+Interrupt/kill current task/program: Ctrl + C
+Exit current shell: Ctrl + D
+Begining of the line: Ctrl + A (or HOME)
+Begining of the line: Ctrl + E (or END)
+Previous command: ArrowUp
+Next command: ArrowDown
+Back one character: ArrowLeft
+Back one word: Alt + B
+Forward one character: ArrowRight
+Forward one word: Alt + F
+Recall the last command (history): Ctrl + R (searches the command history as you type)
+Clear screen: Ctrl + L
+Configurable shortcuts
+Note that all these shortcuts can be configured through "Settings" --> "Configuration" --> "MobaXterm keyboard shortcuts" button.
+Start a new terminal: Ctrl + Alt + T
+Close current tab: Ctrl + Alt + Q
+Previous tab: Ctrl + Alt + LEFT
+Next tab: Ctrl + Alt + RIGHT
+Toggle fullscreen mode: F11
+Start/stop X server: Ctrl + Shift + X
+Save terminal output: Ctrl + Shift + S
+Print terminal output: Ctrl + Shift + P
+1-terminal mode: Ctrl + Alt + 1
+2-terminals mode (vertical split): Ctrl + Alt + 2
+2-terminals mode (horizontal split): Ctrl + Alt + 3
+4-terminals mode: Ctrl + Alt + 4
+Start a new remote session: Ctrl + Shift + N
+Show/hide sidebar: Ctrl + Shift + B
+Start MobaTextEditor: Ctrl + Shift + M
+Cycle through tabs: Ctrl + TAB
+Reverse cycle: Ctrl + Shift + TAB
+Find in terminal: Ctrl + Shift + F
+Find next: Ctrl + Shift + F3
+Paste in terminal: Shift + INSERT
+Quick connect: Ctrl + Shift + Q
+Detach/reattach tab: Ctrl + Shift + D
+Duplicate current tab: Ctrl + Shift + U
+Help and documentation: Ctrl + Shift + H
+Exit MobaXterm: Alt + F4
+Show MobaXterm / hide to systray: Ctrl + M
+Show / hide popup terminal: Ctrl + Alt + M
+5.4. Execute a shell script at MobaXterm startup
+Using commandline parameters
+You can edit a shell
+script (be careful, it has to be in Unix and not
+Dos format) and run it at MobaXterm startup. You just have to launch
+MobaXterm with the following command line:
+MobaXterm.exe <script_file>
+MobaXterm also uses some internal commandline parameters that can be used by advanced users in order to integrate MobaXterm in their own environment:
+MobaXterm.exe -exec "<Command>"
+This command can be used to start a new instance of MobaXterm and immediately execute a given MobaXterm command
+MobaXterm.exe -newtab ["<Command>"]
+This command can be used to start a new tab inside a running instance of MobaXterm (or start a new instance of MobaXterm if no other instance is running) and immediately execute a given MobaXterm command
+MobaXterm.exe -bookmark "<Bookmark_name>"
+This command can be used to start a bookmark by specifying its name. (Note: this only work for 1st level bookmarks: bookmarks from subfolders can not be invoked by this command)
+MobaXterm.exe -runmacro "<Macro_name>"
+This command can be used to start a macro by specifying its name.
+MobaXterm.exe -openfolder "<Folder_name>"
+This command can be used to start MobaXterm in the specified folder
+MobaXterm.exe -hideterm
+This command can be used to start MobaXterm that is immediately minimized into the system tray
+MobaXterm.exe -exitwhendone
+This command can be used to exit MobaXterm when the given action is finished. This parameter should be combined with -bookmark or -exec
+MobaXterm.exe -i "<Ini_file_path>"
+This command can be used to specify a path for MobaXterm configuration file (MobaXterm.ini)
+MobaXterm.exe -log
+This command can be used to write down some debug information in a log file
+MobaXterm.exe -installshellext
+This command can be used to install the right-click context menu in Windows explorer
+MobaXterm.exe -installprotohandler
+This command can be used to install the URL protocol handler, in order for MobaXterm to be able to execute sessions from HTML pages
+MobaXterm.exe -config
+This command can be used to start MobaXterm configuration window
+MobaXterm.exe -shortcuts
+This command can be used to start MobaXterm keyboard shortcuts configuration window
+MobaXterm.exe -doc
+This command can be used to start MobaXterm documentation
+MobaXterm.exe -picview
+This command can be used to start MobaXterm embedded picture viewer program
+MobaXterm.exe -edit "<File1>"
+This command can be used to start MobaXterm embedded text editor (MobaTextEditor)
+MobaXterm.exe -compfiles "<File1>" "<File2>"
+This command can be used to start MobaXterm embedded diff tool
+MobaXterm.exe -compfolders
+This command can be used to start MobaXterm embedded folders-diff tool
+MobaXterm.exe -noX
+This command can be used to disable X server for the given MobaXterm instance
+MobaXterm.exe -dpi 120
+This command can be used to scale MobaXterm interface if the fonts are too small. You can try the following values: 120 (x1.25), 144 (x1.50) or 192 (x2.00)
+Using bookmarks
+Create a new bookmark,
+select the "Custom shell script" option in the
+dropdown menu and edit your shell script. You can then click on your
+bookmark and choose to create a desktop shortcut to this bookmark.
+5.5. Share sessions with my team members
+Share my sessions
+In order to easily share sessions, the sessions owner should:
+right-click on a folder in the sessions tree
+click on "Share these sessions with my team"
+put the sessions file in a location accessible by team members
+Use sessions shared by someone else
+In order to display sessions shared by one of your colleagues in your sessions tree, you can:
+click on "Settings", then on "Manage shared sessions"
+click on "Add" to add a new shared session file location
+choose a name for the shared sessions node
+choose a backend protocol (shared folder, http/https, ftp/ftps or ssh/sftp) in order to retrieve the shared sessions file
+configure the shared sessions file settings and click on "Save" and "Apply" when done
+This will add a new tree node in your sessions tree, in which you will find the shared sessions.
+6. Frequently Asked Questions
+6.1. General
+What is the purpose of MobaXterm?
+MobaXterm is an enhanced terminal for Windows with an X11 server, many network tools for remote computing and network commands packaged into a single portable exe file. MobaXterm has been designed to suit the needs of computer users, sysadmins, developers and webmasters by providing:
+- a multitab terminal with embedded Unix commands (ls, cd, cat, sed, grep, awk, rsync, wget, ...)
+- an embedded X11 server for easily exporting your Unix/Linux display
+- a session manager with many network utilities: SSH, RDP, SFTP, FTP, Telnet, Rlogin and XDMCP
+- some basic network daemons (TFTP, FTP, HTTP, ...)
+- a graphical SSH tunnels builder
+What are the main advantages of using MobaXterm over other SSH/SFTP/FTP/RDP/VNC/X11 solutions in Windows?
+MobaXterm has many advantages over its competitors:
+- a full All-In-One solution: it features an X11 server, a terminal with embedded Unix/Linux commands and a complete collection of network tools (SSH, SFTP, telnet, rlogin, RDP, VNC, XDMCP, FTP and Serial console)
+- a portable solution without the need to install and without the need of administrator privileges: MobaXterm is a single executable self-contained file which does not need to be installed or run with administrator privileges
+- no complex settings: there is no need to set up your environment or to tune settings: MobaXterm default parameters have been chosen in order for it to be immediately usable
+- some unique features like the remote sessions with saved passwords or the SSH-browser: when you connect to a remote server through SSH, a graphical remote file browser will automatically be displayed allowing you to transfer files or to edit them directly using the integrated text editor "MobaTextEditor"
+- a robust terminal based on PuTTY with clean fonts, tabs, split modes (2 or 4 terminals side by side), Multi-execution (write once, execute everywhere), copy/paste, save/print text and much more
+- a non-intrusive program: MobaXterm does not connect to the Internet or write entries into your Windows registry without asking before. It does not automatically check for updates. There is no time limit for using it.
+Does MobaXterm perform unwanted internet connections?
+No, MobaXterm has been designed to just perform the connections you request: no background internet connection is done without your consent. Even the update mechanism is manual: MobaXterm will not search for updates if you do not click on the "Check for updates" menu entry.
+6.2. X11 server
+What is X11? Why would I need an X server?
+The X server (a.k.a. X11) is something very important in an Unix/Linux environment: it is the graphical layer on which all graphical applications are based.
+As X11 is a network protocol, applications that can display their graphical interface on a Linux/Unix desktop can also display it through the network on another computer as well. This 2nd computer only needs to run an X11 server to display them.
+MobaXterm includes an X11 server, based on "X.Org", that allows you to display remote graphical Linux/Unix applications on your local Windows computer with great speed and performances.
+Example: On your remote Unix/Linux computer, you just have to perform the following command:
+DISPLAY=MY_WINDOWS_HOST_RUNNING_MOBAXTERM:0.0 xclock
+...and you will see the "xclock" interface on your Windows desktop
+What does X11-Forwarding means?
+X11-Forwarding is a mechanism that allows the X11 protocol to be routed through an existing SSH channel. The main advantages of this solution are:
+- X11 protocol will be encrypted
+- X11 protocol can be compressed
+- There is no need to set up a new communication channel (and to open communication ports in your firewall) for X11: the network packets go through the already existing SSH connection
+How does X11-Forwarding work?
+With MobaXterm, it is really easy to use X11-Forwarding: just connect to your server and keep the "X11-Forwarding" setting checked in your SSH session. Then, from the remote server prompt, run "xclock". You will see the "xclock" interface which has been transfered through SSH on your Windows desktop.
+Why is my remote DISPLAY variable configured to "localhost:10.0"?
+If you check the "DISPLAY" environment variable on your remote server, you will notice that it is set to something like "DISPLAY=localhost:10.0". This is the standard behaviour for X11-Forwarding: it means that any program will use a local virtual display (:10.0) which is created by SSH and which will be automatically forwarded trhough the SSH connection to MobaXterm display.
+I want to change MobaXterm X server DISPLAY address to my second network adapter (or my VPN adapter). How can I do this?
+By default, MobaXterm Xserver listens on all your network adapters.
+The banner message will say that your DISPLAY environment is set to "<some_ip_address>:0.0", but this is an informational message only: it is printed here in order to help users set their "DISPLAY" environment variable when connected to a remote server. However, the embedded X11 server listens on all network interfaces, not only the one which is written in. It does not matter which IP address you see in the "DISPLAY" variable: as MobaXterm X server listens on all your network interfaces, it also listens on the 2nd, 3rd, (...) network interfaces.
+For instance, if your computer has 2 network adapters (192.168.0.10 and 10.10.10.36): MobaXterm says your DISPLAY is set to "192.168.0.10:0.0". However the X server really listens on "127.0.0.1" (localhost), "192.168.0.10:0.0" (1st adapter) and "10.10.10.36:0.0" (2nd adapter).
+I have an issue with an X11 remote program (Java/X11/Motif) which does not accept keyboard input: everytime I press a keyboard key, nothing is written on the text field
+This problem can generally be solved easily by using X11 with a window manager instead of using X11 in "multiwindow" (transparent) mode: go to MobaXterm "Settings" window --> "X11" tab --> select "Windowed mode with Fvwm" setting in the combo box and apply. Restart your remote program and it should take keyboard input correctly.
+If you want to use the standard "multiwindow" (transparent) X11 server and occasionally use the windowed X11 server with the window manager, you can go to MobaXterm "Settings" window --> "X11" tab --> select "Multiwindow mode" setting in the combo box and apply, then open the "tools" menu and select either "X11 tab with Dwm" or "X11 window with Fvwm2".
+How do the X11 tabs with DWM work? Why does MobaXterm include this "tiling" window manager?
+DWM is a powerful and robust window manager which implements a smart way of arranging windows in order to gain space. Windows are automatically placed side by side so that they all occupy the maximum available space on the desktop.
+- To move a window, use "Alt + Left click"
+- To resize a window, use "Alt + Right click"
+How can I simply launch the X11 server without starting the full MobaXterm environment?
+You can launch the X11 server at MobaXterm startup and completely hide the terminal by using the "-hideterm" command:
+C:\Some\Place\MobaXterm.exe -hideterm
+This will launch MobaXterm minimzed in the system tray and start the X11 server.
+Does MobaXterm X server support OpenGL? How can I use hardware acceleration?
+MobaXterm X server supports OpenGL application with hardware or software rendering.
+- In order to switch from software rendering to hardware rendering (and vice-versa), you can use the appropriate setting in "Configuration" --> "Settings" --> "X11" tab --> "Enable hardware OpenGL acceleration"
+- For remote clients, client-side rendering is used by default. In order to force indirect rendering, you must perform the following command on your remote server before starting the OpenGL application:
+export LIBGL_ALWAYS_INDIRECT=1
+How can I display a full remote desktop from a Unix/Linux server in MobaXterm (Gnome, KDE, FVWM, Openbox, Fluxbox, IceWM, XFCE, Blackbox, DWM, Enlightenment, LXDE, ...)?
+You can use 2 different solutions:
+- Configure your Linux/Unix distribution for enabling XDMCP remote access. You will find the appropriate procedure in your distribution documentation or by searching for "<My_Distribution_name> activate XDMCP" on any search engine. You will then be able to display the full remote desktop by starting a new "XDMCP" session in MobaXterm
+- Go to MobaXterm "Settings" window --> "X11" tab --> select "Windowed mode" setting in the combo box and apply. This will run a windowed X11 server at MobaXterm startup instead of the default "transparent" X11 server. Connect to your remote server using "ssh -Y MY_REMOTE_SERVER" and then, run "gnome-session" or whatever window manager you want.
+If you want to use the standard "multiwindow" (transparent) X11 server and occasionally start your full remote desktop in a windowed X11 server, you can go to MobaXterm "Settings" window --> "X11" tab --> select "Multiwindow mode" setting in the combo box and apply, then start a new SSH session and choose the appropriate desktop in the "Remote environment" field.
+6.3. SSH client
+What is SSH?
+MobaXterm includes a SSH client (with SFTP and SCP) which allows secure encrypted connections to be set up through the network. The SSH client embedded in MobaXterm is based on the efficient and secure SSH client PuTTY by Simon Tatham.
+How can I use public SSH keys with MobaXterm?
+On client side, you have to generate a public rsa key:
+ssh-keygen -t rsa -N '' -q -f ~/.ssh/id_rsa
+Note: You can also use the graphical SSH keys manager "MobaKeyGen" (from the "Tools" menu).
+Then copy the file that has been generated on the client (".ssh/id_rsa.pub") to the ~/.ssh/ directory of the server and rename it to "authorized_keys":
+scp .ssh/id_rsa.pub user1@server1:.ssh/authorized_keys
+If the ".ssh/authorized_keys" file already exists, just append your own public key to the file:
+cat .ssh/id_rsa.pub user1@server1:/tmp/tmpkey && ssh user1@server1 "cat /tmp/tmpkey >> ~/.ssh/authorized_keys && rm /tmp/tmpkey"
+Of course, you will have to set a persistent home directory if you want your generated keys to persist through MobaXterm restarts. A persistent home directory can be set in "Settings" --> "Configuration" --> "General" tab.
+Can I perform a SSH connection through my SOCKS proxy?
+Yes, since version 6.6 of MobaXterm, this feature can be set directly in your SSH sessions.
+6.4. RDP client
+What is RDP?
+RDP (a.k.a. "Terminal Services" or "TS") is a remote display protocol introduced by Microsoft for Windows OS. It allows users to connect to a remote host while displaying and interacting with the remote desktop using the local keyboard and mouse.
+How can I send Ctrl+Alt+Del through RDP (terminal service)?
+You can send the Ctrl+Alt+Del keys combination to your RDP remote server by using the "Ctrl+Alt+END" keys combination
+6.5. SSH tunnelling (a.k.a. "Port forwarding")
+What is the purpose of the "tunneling" tool?
+The Tunneling tool embedded inside MobaXterm ("MobaSSHTunnel) is a graphical interface for easily creating SSH tunnels. SSH tunnels (a.k.a. "port forwarding") allow users to redirect traffic from one port on one computer to another computer and port. The main advantages of this solution are:
+- No need to open new connection ports inside firewalls
+- No need to set up a proxy or a gateway when remote computers are not accessible directly
+- Redirected traffic is secured by SSH encryption
+6.6. MobaXterm terminal
+MobaXterm does not display correctly some special characters? I encounter problems with my country charset/encoding?
+You can tell MobaXterm to use "UTF-8" character set by going to the "Settings" menu --> "configuration" --> "Terminal" tab --> choose the "UTF-8 (unicode)" entry from the "Charset" setting.
+I can not run a Windows application inside MobaXterm. My Windows PATH is not taken into account in MobaXterm.
+You can tell MobaXterm to use the Windows PATH by going to the "Settings" menu --> "configuration" --> "Terminal" tab --> check the "Append Windows PATH environment variable to MobaXterm" setting.
+I want to paste in the terminal using right-click / I am using a laptop and I do not have any middle button on my trackpad. How can I paste text in the terminal?
+You can tell MobaXterm to use right click for pasting by going to the "Settings" menu --> "configuration" --> "Terminal" tab --> check the "Paste using right click" setting.
+If you are using a session, edit your session, go to the "Terminal settings" tab and check the "Paste using right-click" setting.
+When this option is checked, contextual menu is still available using Ctrl+Right-click or Shift+Right-click
+How can I specify the characters delimiters used for selection when I double-click in the terminal
+It is possible to specify the characters that MobaXterm will consider as "not-delimiters" in order to tune the automatic selection when double-clicking in the terminal:
+- Close MobaXterm
+- edit your "MobaXterm.ini" file using a text editor
+- under the "[Misc]" section, just create a new entry
+LeftDelimChars=<characters_I_dont_want_to_be_treated_as_delimiters> (alphanumerical characters are automatically taken into account)
+RightDelimChars=<characters_I_dont_want_to_be_treated_as_delimiters> (alphanumerical characters are automatically taken into account)
+for instance:
+LeftDelimChars=/~+-.&?$%
+RightDelimChars=/~+-.&?%
+- Restart MobaXterm and try to double-click in the terminal in order to test your new selection setting.
+6.7. Advanced features
+I would like to start MobaXterm from a BATCH script. How do I use MobaXterm inside my script? What are the command line switches available?
+About launching MobaXterm from a batch file, you have many possibilities. For instance, let's say you need to start an SSH session from a batch file, keeping MobaXterm hidden and to launch an X application from that remote ssh server.
+You can do this by using
+- the "-hideterm" switch for hidding MobaXterm
+- the "-exitwhendone" switch for closing MobaXterm after session exits
+- the "-exec" switch for executing a command
+For instance, this command launches an "xclock" window from MYREMOTESERVER:
+C:\Some\place\MobaXterm.exe -hideterm -exitwhendone -exec "waitforX; ssh MYREMOTESERVER 'xclock' "
+A full list of command line arguments is available in the "Execute a shell script at MobaXterm startup" section.
+I have a small screen and I would like MobaXterm to be more "compact" in order to maximize the terminal area (or remote desktop area) on screen.
+There is a "Compact mode" setting which should suit your need: You just have to click on "View" --> "Compact mode" in order to put MobaXterm in a very basic interface mode.
+Note that you can still access the menu by clicking on the button at the right of the tabs bar.
+You can also detach MobaXterm tab by dragging and dropping the tab outside MobaXterm.
+I would like to create a new plugin for MobaXterm. How can I do that?
+- Download an existing plugin file (for instance " Midnight commander ")
+- Rename plugin extension from ".mxt3" to ".zip"
+- Open the ".zip" file
+You will notice that creating MobaXterm plugins only consists in putting the required commands (executables, libraries and configuration files) into a ZIP file, keeping the same folders tree than in MobaXterm ("/bin", "/lib", "/usr", "/etc").
+- If you want to add a simple Windows program (exe file), you will just have to copy the executable file into the "/bin" directory, create the ZIP archive, rename it to ".mxt3" and put it in the same directory than MobaXterm executable.
+- If you want to add a Linux program, you will have to get it from the Cygwin project or to recompile it using make, gcc, g++ or other compilers that are available from the MobaXterm "Development" plugin.
+What is the best way to secure my MobaXterm installation?
+MobaXterm is already a secure program: its SSH connections are encrypted using well-known algorithms, its sources are available so that anyone can audit them, its passwords can be stored with strong encryption. However, depending on your company security rules, you can disable some features which may be considered as unsafe: in the "customizer" program, go to the "Settings" tab, then to the "Security" tab. Each setting can be leaved unchecked (less secure) or checked (more secure), you will have to make some choices between features and security.
+For instance:
+- if users do not use any of the embedded servers, we recommend to check the "Disable servers" box.
+- if users do not need any packet capture or network scanner / port scanner tools, we recommend to check the corresponding items
+- we would also recommend to disable unsecure protocols, such as telnet or rlogin and use SSH instead. In case an unsecure protocol is needed and cannot be replaced by SSH, then it can be "tunneled" through a secure SSH connection (you can use the "SSH gateway" setting in telnet sessions to do so).
+How can I backup/export my sessions?
+You can export your sessions by right-clicking on a sessions folder and choose "Export sessions from this folder". This will export your sessions to a file. You can then import these sessions to another computer using right-click on the sessions folder and choose "Import sessions into this folder".
+Is it possible to share a MobaXterm configuration between multiple users?
+There are 3 ways to share the same MobaXterm configuration between your team members:
+- With the professional edition of MobaXterm, the "customizer" program allows you to hardcode some sessions into MobaXterm executable and to generate an executable which will contain these sessions. You can then distribute this exeucutable to all your team members.
+or
+- Using any edition of MobaXterm, you can store MobaXterm executable and its "MobaXterm.ini" configuration file on a shared folder and tell your users to launch MobaXterm from there in order for them to get the sessions you previously configured. However, if you do not want any user to add sessions to the shared "MobaXterm.ini" configuration file, you should set this shared folder as read only.
+or
+- You can put the "MobaXterm.ini" configuration file on a shared folder or on a web server. Then, if your users launch MobaXterm using the appropriate command line, it will tell MobaXterm to get its sessions from there.
+For instance, you can start MobaXterm using the following command:
+C:\Some\place\MobaXterm.exe -i "https://myintranet/MobaXterm.ini"
+C:\Some\place\MobaXterm.exe -i "\\MySharedFolder\MobaXterm.ini"
+Where does MobaXterm store its configuration or sessions?
+MobaXterm stores its configuration and sessions settings in a file called "MobaXterm.ini".
+This file can be found
+- in the "MyDocuments\MobaXterm" folder if you use the installed edition
+- in the same folder than MobaXterm program if you use the portable edition
+- in the "%AppData%\MobaXterm" folder with some versions of MobaXterm
+How can I select where to put the configuration (MobaXterm.ini) file?
+You can use the "-i" commandline setting in order to determine the configuration file path for MobaXterm.
+For instance, you can start MobaXterm using the following command:
+C:\Some\place\MobaXterm.exe -i "D:\Data\MobaXterm.ini"
+or
+C:\Some\place\MobaXterm.exe -i "\\MySharedFolder\MobaXterm.ini"
+MobaXterm fonts are too small / too big. How can I change MobaXterm interface font size?
+You can use the "-dpi" commandline setting in order to determine the scaling factor used by MobaXterm for its graphical interface.
+The dpi value van vary from 96 (normal fonts) to 240 (very big fonts)
+For instance, if you want very big fonts you can start MobaXterm using the following command:
+C:\Some\place\MobaXterm.exe -dpi 240
+I have a group policy which prevents MobaXterm from running tools from the TEMP folder / MobaXterm does not run because the slash folder is not writable
+In order to make this work, you have to follow this procedure:
+- using an admin account, put MobaXterm executable file in a folder from which your policy allows you to run executables
+- run MobaXterm with admin privileges using the commandline "MobaXterm.exe -justunpack". This will uncompress the core files of MobaXterm in the "AdmSlash" subfolder and display a message when it is done
+- as a "normal" user with no admin rights, run MobaXterm from there. This will create the folders structure in the user directory, but will execute files from the read-only directory
+How to disable the penguins screensaver? How to remove the "Games" menu and games entries from MobaXterm?
+The penguins screensaver and the games have been added to bring fun to MobaXterm terminal. Users who use MobaXterm inside a company might want to disable these tools in order to have a more convenient tool for working. That is why the Professional edition of MobaXterm allows you to disable the screensaver and to remove the games and corresponding menu entries from the program.
+I love the penguins screensaver! Can I subscribe to MobaXterm Professional Edition and keep it?
+We are glad you enjoy this screensaver: we spent a lot of time developing it! Of course, in the Professional Edition of MobaXterm, you can keep the penguins screensaver (and the games) if you want.
+I want to save my terminal output but when I choose the "Log all terminal activity to the following directory", I get a hardly readable file with special characters in it.
+If you just want to save the output from a terminal, please use the "Terminal" menu --> "Save terminal text". About the terminal logging, it can be used to log anything that is displayed inside the terminal. If you want to re-open a log file, please use MobaTextEditor in order to remove these special characters from the file.
+6.8. Miscellaneous troubleshooting
+MobaXterm does not run on Windows 2000: it says that the "gdiplus.dll" is missing...
+MobaXterm is compatible with Windows 2000, but on old Windows 2000 installations, it can display an error message about a missing dll "gdiplus.dll", but you can download it for free and put it in the same folder as mobaxterm executable in order to make it work: https://www.dll-files.com/dllindex/dll-files.shtml?gdiplus
+Why does the SSH-browser tab not pop up when I launch a SSH session? / Why does MobaXterm prompt me for a password each time the SSH-browser is started?
+This means that your SSH server authentication is set to "Keyboard-interactive" mode.
+In order for MobaXterm to be able to save SSH passwords or to launch the SSH-browser without asking for password twice, you will have to re-enable "normal" password authentication on your server:
+- Edit the "/etc/ssh/sshd_config" file on your server, and comment the following line:
+PasswordAuthentication no
+- Restart your SSH server using the following command:
+/etc/init.d/sshd restart
+- Connect using MobaXterm SSH client and you will notice that:
+- the SFTP tab will be correctly launched
+- you will be prompted to save your password if you want
+You should also verify if you have any "echo" commands in your profiling scripts on server side: as per the openssh FAQ at https://www.openssh.com/faq.html, if your startup scripts echo any kind of output, SFTP will not work.
+After connecting using SSH, I immediately get "Connection reset by peer" or "Software caused connection abort" error.
+This can happen if an old or light SSH product installed on your remote server. As a workaround, you can try to
+- Check the "Workaround for connection reset by peer issue" box under "Settings" --> "Configuration" --> "SSH" tab
+- Uncheck the "Compression" box in your SSH session settings
+- Uncheck the "SSH-browser" box in your SSH session settings
+My SSH connection freezes or drops out after N seconds of inactivity.
+This is usually the result of a packet filter or NAT device timing out your TCP connection due to inactivity. You can check the "Enable SSH keepalive" box under "Settings" --> "Configuration" --> "SSH" tab.
+Enabling this option will ensure that the connection is kept "fresh" in the device's connection table.
+When connecting using a SSH key, I get the following error message: "WARNING: UNPROTECTED PRIVATE KEY FILE!"
+This can happen on some configurations: the "/home/mobaxterm/.ssh" folder belongs to no group. In order to correct this, you will have to type the following command in a new MobaXterm terminal:
+chgrp UsersGrp *
+When connecting to a SSH server, I get the following error message: "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!"
+This warning is displayed when your remote host unique identifier has changed. This can be caused by a server re-installation, but it can also be a "man-in-the-middle" attack.
+If you changed or re-install this server recently, and if you are really sure that no other computer is using its IP address, then you can reset this alarm by deleting MobaXterm ~/.ssh/known_hosts file: open a new MobaXterm terminal tab and type the following command:
+rm ~/.ssh/known_hosts
+When I hit the "backspace" key, it does not work (or it outputs ^H or ^?).
+Some console utilities don't interpret the backspace character (^H) as a backspace and need a delete instead.
+In this case, you can edit your session, go to the "Terminal settings" tab and toggle the "Backspace sends ^H" setting. It should allow for the "Backspace" key to function correctly without affecting how the command shell works.
+If you are using a session, edit this session and in the "Terminal settings" sub-section, toggle the "Backspace sends ^H" setting.
+I want to ask for some support. Can you help me?
+Please send us an email by going to the "Help" menu --> "About MobaXterm" --> "Send us an email". In this email, please tell us:
+- Which version and which edition (personal or professional) of MobaXterm you are using
+- Which Windows version you are using
+- In case you encounter an issue, please describe precisely what happens (error message, freeze, etc...) and try to give us a step by step procedure we can follow in order to reproduce the bug.
+I sent an email but you never answered
+Please allow the "mobatek.net" domain in your email server so that our emails will not go to your SPAM folder. Also verify that you correctly wrote your email address in the contact form.
+About us | Home License | Pro License | Terms&Conditions | Export rules
+© 2008 - 2026 Mobatek. MobaXterm ® is a registered trademark of Mobatek

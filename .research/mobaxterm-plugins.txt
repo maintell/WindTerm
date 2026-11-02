@@ -1,0 +1,71 @@
+MobaXterm Xserver with SSH, telnet, RDP, VNC and X11 - Plugins
+Customer login
+Home
+Demo
+Features
+Download
+Plugins
+Help
+Contact
+MobaXterm
+Home
+Demo
+Features
+Download
+Plugins
+Help
+Contact
+Customer area
+Buy
+MobaXterm plugins
+In order to install these plugins, just download them and put them in the same directory than MobaXterm executable.
+If you need to enhance MobaXterm with extra tools and commands, you can also use the MobApt package manager : type "MobApt" (or "apt-get") inside MobaXterm terminal.
+CygUtils.plugin : Collection of core UNIX tools for Windows
+Cmake : Cross-platform makefile generation system
+Corkscrew : Corkscrew allows to tunnel TCP connections through HTTP proxies
+Curl : Curl is a command line tool for transferring data with URL syntax
+CvsClient : A command line tool to access CVS repositories
+Gcc, G++ and development tools : the GNU C/C++ compiler and other development tools
+DnsUtils : This plugin includes some useful utilities for host name resolution: dig, host, nslookup and nsupdate.
+E2fsProgs : Utilities for creating, fixing, configuring, and debugging ext2/3/4 filesystems.
+Emacs : The extensible, customizable, self-documenting real-time display editor
+Exif : Command-line utility to show EXIF information hidden in JPEG files.
+FVWM2 : A light but powerful window manager for X11.
+File : Determines file type using magic numbers.
+Fontforge : A complete font editor with many features
+GFortran : The GNU Fortran compiler.
+Git : A fast and powerful version control system.
+Git v2.17.2 : A fast and powerful version control system.
+Gvim : The Vim editor with a GTK interface
+Httperf : A tool for measuring web server performance.
+Joe : Fast and simple editor which emulates 5 other editors.
+Lftp : Sophisticated file transfer program and ftp/http/bittorrent client.
+Lrzsz : Unix communication package providing the XMODEM, YMODEM ZMODEM file transfer protocols.
+Lynx : A text-mode web browser.
+MPlayer : The ultimate video player
+Midnight Commander : Midnight Commander is a feature rich text mode visual file manager.
+Multitail : Program for monitoring multiple log files, in the fashion of the original tail program.
+NEdit : NEdit is a multi-purpose text editor for the X Window System.
+Node.js : Node.js is a platform built on Chrome's JavaScript runtime for easily building fast, scalable network applications. This plugin does not include NPM.
+OpenSSL : A toolkit implementing SSL v2/v3 and TLS protocols.
+PdKsh : A KSH shell open-source implementation.
+Perl : Larry Wall's Practical Extracting and Report Language
+Png2Ico : Png2Ico Converts PNG files to Windows icon resource files.
+Python : An interpreted, interactive object-oriented programming language.
+Ruby : Interpreted object-oriented scripting language.
+Screen : Screen is a terminal multiplexer and window manager that runs many separate 'screens' on a single physical character-based terminal.
+Sqlite3 : Software library that implements a self-contained, serverless, zero-configuration, transactional SQL database engine.
+SquashFS : mksquashfs and unsquashfs tools allow you to create/unpack squashfs filesystems from Windows.
+Subversion (SVN) : Subversion is a powerful version control system.
+Tcl / Tk / Expect : Tcl is a simple-to-learn yet very powerful language. Tk is its graphical toolkit. Expect is an automation tool for terminal.
+X11Fonts : Complete set of fonts for X11 server.
+X3270Suite : IBM 3270 terminal emulator for Windows.
+XServers : Xephyr, Xnest, Xdmx, Xvfb and Xfake alternate X11 servers.
+Xmllint : A command line XML tool.
+Zip : Zip compression utility.
+Snaphat also bundled some other plugins (Python, Cmake, Graphviz, Lua, Readline and CGDB) that you can download from his website .
+Rthomson also bundled a "Tmux" plugin that you can download from his website .
+Sources for each plugins are available here.
+Each license can be found in the corresponding source package.
+About us | Home License | Pro License | Terms&Conditions | Export rules
+© 2008 - 2026 Mobatek. MobaXterm ® is a registered trademark of Mobatek

@@ -1,0 +1,58 @@
+MobaXterm Xserver with SSH, telnet, RDP, VNC and X11 - Features
+Customer login
+Home
+Demo
+Features
+Download
+Plugins
+Help
+Contact
+MobaXterm
+Home
+Demo
+Features
+Download
+Plugins
+Help
+Contact
+Customer area
+Buy
+MobaXterm features
+MobaXterm tabbed terminal
+From this console window, you will be allowed to run the Unix commands you need: ls, cd, grep, awk, tail, cut, sed, wget, rsync, telnet, ssh, rlogin, rsh ... All the essential Unix tools are present. If you need a program that is not available in the basic MobaXterm file, you can download the free plugins.
+Sessions management
+MobaXterm allows you to launch remote sessions. You can choose to create SSH, Telnet, Rlogin, RDP, VNC, XDMCP, FTP, SFTP or Serial sessions. Every session you start is automatically saved and displayed in the left sidebar.
+Graphical SFTP browser
+When you log to a remote server using SSH, a graphical SFTP browser pops up on in the left sidebar. It allows you to drag and drop files directly from/to the remote server using a secure SFTP connection.
+X11 server
+When you run a SSH, TELNET or RLOGIN/RSH session you will be able to display your remote applications directly on your local Windows PC. In a SSH session, there is no need to set the "DISPLAY" variable as MobaXterm uses X11-forwarding in order to ease and secure your work.
+Enhanced X extensions
+The embedded X server based on X.org provides the latest features available in recent X server implementations: extensions such as OpenGL, Composite or Randr are included. Xdmcp protocol is also supported.
+Multi-execution
+Write once, execute everywhere: this tool allows you to execute the same commands on many different servers at the same time.
+Embedded servers
+MobaXterm allows you to start network daemons for remote access. No extra tool or runtime is needed in order to use these daemons.
+Embedded tools
+MobaXterm brings some useful tools for sysadmins, developers, webmasters and all users who need to work efficiently with their computer.
+Remote Unix desktop (XDMCP)
+Thanks to MobaXterm you can work on your remote Solaris desktop as if you were working locally on your Windows computer using the XDMCP protocol.
+Remote Windows desktop (RDP)
+Take control of your remote Windows computers/servers using the RDP protocol. Many RDP configuration settings are available in the session manager.
+SSH gateway
+In ssh, telnet, RDP, VNC sessions, you can select a "SSH-gateway" (a.k.a. "jump host") in order to tell MobaXterm to connect first to a SSH server before connecting to the end-server you want to reach in the end. This allow you to reach some servers behind a firewall and to secure your connection.
+SSH tunnels (port forwarding)
+The graphical SSH tunnels manager allows you to create your SSH tunnels using an intuitive graphical tool.
+MobApt package manager
+MobaXterm package manager (MobApt / apt-get) allows you to download and use much more Unix tools directly into MobaXterm terminal.
+Text Editor
+When you connect to a remote server using SSH, you will be able to edit remote files directly using the embedded text editor "MobaTextEditor" by just double-clicking on them!
+Macros support
+You can record macros in MobaXterm terminal: everything you type in the terminal will be recorded in order to replay it later on other servers.
+Passwords management
+MobaXterm is able to save your session passwords and to keep them secure by using a "Master password".
+Syntax highlighting in terminal
+MobaXterm embedded terminal can highlight syntax or use coloration for keywords, even if you are connected to a remote server which does not support colors. This is useful especially when analyzing log files, editing code or trying to detect important keywords. You can even build your own syntax definitions easily.
+Professional Customizer
+MobaXterm Professional Edition gives you access to the "Customizer" software. This program allows you to generate customized copies of MobaXterm with your own logo and default settings.
+About us | Home License | Pro License | Terms&Conditions | Export rules
+© 2008 - 2026 Mobatek. MobaXterm ® is a registered trademark of Mobatek
