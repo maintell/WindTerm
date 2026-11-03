@@ -177,7 +177,7 @@ pub async fn connect_chain(hops: &[Hop], target: (String, u16)) -> Result<Stream
 | `listener` 在重连期间保持（§3.4） | ❌ 未做 | 承载连接断开后监听仍在但每个连接都失败；靠 `last_error` 让用户看得见 |
 | `-R`（§3.5）、`-D` SOCKS5（§3.6） | `-D` ✅（`wt_ssh::socks5` + `start_socks5`，CONNECT-only）；`-R` ❌ | `NET-002` 待做 |
 | 隧道配置落库 | ✅ 已做（`TunnelSpec` + schema v2；界面停止后保留灰灯，可「启动」/「删除」） | 承载会话记在 `viaSessionId`，启动时从保险库取密码 |
-| `autoStart` / 重连期保持监听（§3.4） | `autoStart` 只落库、未接进启动流程；重连未做 | 见 `README` 的 `G13` |
+| `autoStart` / 重连期保持监听（§3.4） | `autoStart` ✅（保险库解锁后 + 打开隧道面板时触发，与手动启动共用 `start_spec`）；重连未做 | 冷启动即拉起需要交出主密码，属安全取舍，见 `G13` |
 
 ### 3.1 结构
 

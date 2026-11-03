@@ -353,14 +353,30 @@ fn vault_create(state: State<'_, AppState>, password: String) -> Result<VaultSta
 }
 
 #[tauri::command]
-fn vault_unlock(state: State<'_, AppState>, password: String) -> Result<VaultStatusDto, String> {
+fn vault_unlock(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    password: String,
+) -> Result<VaultStatusDto, String> {
     let bytes = std::fs::read(vault_path()).map_err(|e| format!("读取保险库失败：{e}"))?;
     let vault = wt_crypto::Vault::unlock(&bytes, &password).map_err(|e| e.to_string())?;
 
     let mut st = state.vault.lock().unwrap();
     st.vault = Some(vault);
     st.password = Some(zeroize::Zeroizing::new(password));
-    Ok(status_of(&st))
+    let status = status_of(&st);
+    drop(st);
+
+    // 解锁之后才有凭据可用：把 `auto_start` 的隧道拉起来（`NET-005`）。
+    // 放到后台：锁屏/慢网络下不该让「解锁保险库」这个按钮卡住。
+    tauri::async_runtime::spawn(async move {
+        use tauri::Manager as _;
+        let state = app.state::<AppState>();
+        for e in run_autostart(&state).await {
+            trace(&format!("[autostart] 失败：{e}"));
+        }
+    });
+    Ok(status)
 }
 
 #[tauri::command]
@@ -1473,7 +1489,14 @@ async fn tunnel_start_saved(state: State<'_, AppState>, id: String) -> Result<Tu
             .cloned()
             .ok_or_else(|| format!("[TUN_UNKNOWN] 没有 id 为 {id} 的隧道"))
     }?;
+    start_spec(&state, &spec).await
+}
 
+/// 用一条已保存的配置拉起隧道。
+///
+/// 手动「启动」与自动启动（`NET-005`）共用这一条路径：两处各写一遍，
+/// 迟早出现「手动能启动、自动启动报的错不一样」这种差异。
+async fn start_spec(state: &AppState, spec: &wt_core::TunnelSpec) -> Result<TunnelDto, String> {
     let session_id = spec.via_session_id.as_ref().ok_or_else(|| {
         "[TUN_NO_SESSION] 这条隧道没有记录承载会话，无法直接用保存的配置启动；\
          请在表单里重新填写并启动一次（会覆盖保存）"
@@ -1578,6 +1601,42 @@ async fn tunnel_start_saved(state: State<'_, AppState>, id: String) -> Result<Tu
         .map_err(|_| "[INTERNAL] 隧道表状态异常".to_string())?
         .insert(spec.id.clone(), (meta, fwd));
     Ok(dto)
+}
+
+/// 把库里 `auto_start = true` 且未运行的隧道拉起来（`NET-005`）。
+///
+/// 返回失败项（`名称：原因`）。**一条失败不影响其它**：某条配置过期了，
+/// 不该让剩下的隧道都不启动。
+async fn run_autostart(state: &AppState) -> Vec<String> {
+    let specs: Vec<wt_core::TunnelSpec> = match state.tunnel_specs.lock() {
+        Ok(guard) => guard.iter().filter(|s| s.auto_start).cloned().collect(),
+        Err(_) => return vec!["[INTERNAL] 隧道配置状态异常".into()],
+    };
+    let mut errors = Vec::new();
+    for spec in specs {
+        // 锁只在判断里持有，绝不跨 await
+        let running = match state.tunnels.lock() {
+            Ok(guard) => guard.contains_key(&spec.id),
+            Err(_) => {
+                errors.push(format!("{}：[INTERNAL] 隧道表状态异常", spec.name));
+                continue;
+            }
+        };
+        if running {
+            continue;
+        }
+        match start_spec(state, &spec).await {
+            Ok(t) => trace(&format!("[autostart] 已拉起 {} → {}", t.name, t.listen)),
+            Err(e) => errors.push(format!("{}：{e}", spec.name)),
+        }
+    }
+    errors
+}
+
+/// 界面在打开隧道面板时调用一次（保险库解锁后也会自动跑一遍）。
+#[tauri::command]
+async fn tunnel_autostart(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    Ok(run_autostart(&state).await)
 }
 
 /// 删除一条隧道：**先停再删**。留着运行中的监听端口却把配置删了，
@@ -1728,6 +1787,7 @@ fn main() {
             sftp_upload,
             tunnel_start,
             tunnel_start_saved,
+            tunnel_autostart,
             tunnel_delete,
             tunnel_stats,
             tunnel_stop,

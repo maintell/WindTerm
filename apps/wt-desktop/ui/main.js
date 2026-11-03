@@ -1485,6 +1485,16 @@ document.getElementById("tunnels-toggle").addEventListener("click", async () => 
     return;
   }
   openSidePanel(tunnelsPanel);
+  // 打开面板时顺手拉起 auto_start 的隧道（NET-005）：保险库解锁后凭据才可用，
+  // 所以「应用一启动就跑」做不到，这里是最早能跑起来的时机。
+  try {
+    const errs = await invoke("tunnel_autostart");
+    if (errs.length) {
+      setTunnelMsg(`自动启动 ${errs.length} 条失败：${errs[0]}`);
+    }
+  } catch (e) {
+    setTunnelMsg(`自动启动失败：${e}`);
+  }
   await refreshTunnels();
 });
 
@@ -1667,7 +1677,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-12",
+  ui: "wt-ui-13",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";

@@ -609,7 +609,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-12",
+    uiVersion === "wt-ui-13",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -1905,6 +1905,56 @@ try {
     { timeout: 30000, label: "用保险库密码连接" },
   );
   check("用保险库里的密码能直接连上", reusedStatus.includes("tester@127.0.0.1"), reusedStatus);
+
+  // 18b. 隧道自动启动（NET-005）：承载会话的密码已在保险库里，能自己拉起来。
+  //      放在这里而不是隧道那一节：那一节保险库还没解锁，没有密码可用。
+  const mocksshId = await cdp.eval(`(async () => {
+    const dto = await window.__TAURI__.core.invoke("sessions_load");
+    return dto.sessions.find((s) => s.name === "mock-ssh")?.id ?? null;
+  })()`);
+  const autoSpec = await cdp.eval(`window.__TAURI__.core.invoke("tunnel_start", { arg: {
+    host: "127.0.0.1", port: ${sshPort}, user: "tester", password: "secret",
+    keyPem: null, keyPassphrase: null, useAgent: false, cols: 80, rows: 24,
+    kind: "dynamic", listenHost: "127.0.0.1", listenPort: 0,
+    targetHost: "", targetPort: 0, allowLan: false,
+    autoStart: true, viaSessionId: ${JSON.stringify(mocksshId)},
+  } })`);
+  check(
+    "能建一条「自动启动」的动态代理",
+    autoSpec?.kind === "D" && autoSpec.running === true,
+    `${autoSpec?.kind} ${autoSpec?.listen}`,
+  );
+
+  // 停掉它：配置留在库里，auto_start 标记还在
+  await cdp.eval(`window.__TAURI__.core.invoke("tunnel_stop", { id: ${JSON.stringify(autoSpec.id)} })`);
+  const parked = await waitFor(
+    async () => {
+      const list = await cdp.eval(`window.__TAURI__.core.invoke("tunnel_stats")`);
+      const t = list.find((x) => x.id === autoSpec.id);
+      return t && t.running === false ? t : null;
+    },
+    { timeout: 10000, label: "自动启动隧道已停止" },
+  );
+  check("停止后配置仍在（auto_start 保留）", parked !== null);
+
+  // 触发自动启动：应当只用保险库里的凭据就把它拉起来
+  const autoErrors = await cdp.eval(`window.__TAURI__.core.invoke("tunnel_autostart")`);
+  const autoRunning = await waitFor(
+    async () => {
+      const list = await cdp.eval(`window.__TAURI__.core.invoke("tunnel_stats")`);
+      const t = list.find((x) => x.id === autoSpec.id);
+      return t?.running ? t : null;
+    },
+    { timeout: 30000, label: "自动启动隧道" },
+  ).catch(() => null);
+  check(
+    "自动启动只用保险库凭据就把隧道拉起来了",
+    autoRunning !== null && autoErrors.length === 0,
+    autoRunning ? `listen=${autoRunning.listen}` : `errors=${JSON.stringify(autoErrors)}`,
+  );
+
+  // 收尾：删掉，别把状态留给后面的用例
+  await cdp.eval(`window.__TAURI__.core.invoke("tunnel_delete", { id: ${JSON.stringify(autoSpec.id)} })`);
 
   // 19. 保险库条目面板：能看到存了什么，也能删掉
   // 点之前先记一次状态：面板的开关是「可见则关」，如果它本来就被别处打开过，
