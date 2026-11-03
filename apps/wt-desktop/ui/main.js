@@ -1228,6 +1228,7 @@ const tunnelsPanel = document.getElementById("tunnels");
 const tunnelList = document.getElementById("tunnel-list");
 const tunnelMsgEl = document.getElementById("tunnel-msg");
 const tunnelListen = document.getElementById("tunnel-listen");
+const tunnelKind = document.getElementById("tunnel-kind");
 const tunnelTarget = document.getElementById("tunnel-target");
 const tunnelLan = document.getElementById("tunnel-lan");
 const tunnelAdd = document.getElementById("tunnel-add");
@@ -1281,7 +1282,9 @@ function renderTunnels(rows) {
       dot.title = `最近一次转发失败：${t.last_error}`;
     }
     const route = document.createElement("span");
-    route.textContent = `${t.kind} ${t.listen} → ${t.target}`;
+    // 动态代理没有固定目标：路由由客户端每次请求决定
+    route.textContent =
+      t.kind === "D" ? `${t.kind} ${t.listen}` : `${t.kind} ${t.listen} → ${t.target}`;
     const stop = document.createElement("button");
     stop.textContent = "停止";
     stop.title = `停止 ${t.listen}`;
@@ -1329,17 +1332,23 @@ async function startTunnel() {
     setTunnelMsg("隧道要用上面的主机与用户名建承载连接，先把这两项填上");
     return;
   }
-  const raw = tunnelTarget.value.trim();
-  const sep = raw.lastIndexOf(":");
-  if (sep <= 0 || sep === raw.length - 1) {
-    setTunnelMsg("目标要写成 主机:端口，比如 db:3306");
-    return;
-  }
-  const targetHost = raw.slice(0, sep);
-  const targetPort = Number.parseInt(raw.slice(sep + 1), 10);
-  if (!Number.isInteger(targetPort) || targetPort <= 0 || targetPort > 65535) {
-    setTunnelMsg("目标端口要在 1–65535 之间");
-    return;
+  const kind = tunnelKind.value;
+  const dynamic = kind === "dynamic";
+  let targetHost = "";
+  let targetPort = 0;
+  if (!dynamic) {
+    const raw = tunnelTarget.value.trim();
+    const sep = raw.lastIndexOf(":");
+    if (sep <= 0 || sep === raw.length - 1) {
+      setTunnelMsg("目标要写成 主机:端口，比如 db:3306");
+      return;
+    }
+    targetHost = raw.slice(0, sep);
+    targetPort = Number.parseInt(raw.slice(sep + 1), 10);
+    if (!Number.isInteger(targetPort) || targetPort <= 0 || targetPort > 65535) {
+      setTunnelMsg("目标端口要在 1–65535 之间");
+      return;
+    }
   }
   const listenPort = Number.parseInt(tunnelListen.value, 10);
   const allowLan = tunnelLan.checked;
@@ -1350,6 +1359,7 @@ async function startTunnel() {
       invoke("tunnel_start", {
         arg: {
           ...sftpReq(),
+          kind,
           // 勾了「允许局域网」才监听 0.0.0.0，并把这个意图显式传给后端确认
           listenHost: allowLan ? "0.0.0.0" : "127.0.0.1",
           listenPort: Number.isInteger(listenPort) ? listenPort : 0,
@@ -1362,12 +1372,23 @@ async function startTunnel() {
       30000,
       "启动隧道",
     );
-    setTunnelMsg(`已启动 ${t.kind} ${t.listen} → ${t.target}`);
+    setTunnelMsg(`已启动 ${t.kind} ${t.listen}${t.target ? ` → ${t.target}` : ""}`);
     await refreshTunnels();
   } catch (e) {
     setTunnelMsg(`启动失败：${e}`);
   }
 }
+
+// 动态代理不需要目标：每次请求由客户端决定连哪里。让它禁用而不是消失，
+// 用户才看得出「这里本来有东西、只是现在用不上」。
+function syncTunnelKind() {
+  const dynamic = tunnelKind.value === "dynamic";
+  tunnelTarget.disabled = dynamic;
+  tunnelTarget.placeholder = dynamic ? "动态代理不需要目标" : "目标主机:端口";
+  if (dynamic) tunnelTarget.value = "";
+}
+
+tunnelKind.addEventListener("change", syncTunnelKind);
 
 function syncTunnelTimer() {
   if (tunnelTimer !== null) {
@@ -1583,7 +1604,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-10",
+  ui: "wt-ui-11",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";

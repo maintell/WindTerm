@@ -17,6 +17,7 @@ pub mod jump;
 pub mod keys;
 pub mod ppk;
 pub mod sftp;
+pub mod socks5;
 pub mod term;
 #[cfg(feature = "test-util")]
 pub mod testing;
@@ -28,7 +29,7 @@ pub use client::{
     SshConnection, TunnelStream,
 };
 pub use keys::{inspect as inspect_key, KeyInfo, PrivateKeySource};
-pub use forward::{exposes_to_lan, start_local, ForwardStats, LocalForward};
+pub use forward::{exposes_to_lan, start_local, start_socks5, ForwardStats, LocalForward};
 pub use jump::connect_via;
 pub use sftp::{RemoteEntry, SftpClient};
 pub use term::{Keepalive, SshTermSession};

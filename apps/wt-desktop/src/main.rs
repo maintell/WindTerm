@@ -1161,10 +1161,15 @@ struct TunnelStartArg {
     /// 与 `ssh_open` / `open_sftp` 同一套连接参数（flatten 进本结构体）
     #[serde(flatten)]
     req: SshOpenReq,
+    /// `local`（默认，`NET-001`）或 `dynamic`（SOCKS5，`NET-003`）
+    #[serde(default)]
+    kind: Option<String>,
     #[serde(default)]
     listen_host: Option<String>,
     listen_port: u16,
+    #[serde(default)]
     target_host: String,
+    #[serde(default)]
     target_port: u16,
     /// 监听 `0.0.0.0` 等对外地址必须显式确认（`NET-001` 行为规格第 1 条）
     #[serde(default)]
@@ -1207,15 +1212,29 @@ async fn tunnel_start(
         .filter(|s| !s.is_empty())
         .unwrap_or("127.0.0.1")
         .to_string();
+    // 两种隧道：本地转发要目标地址；动态代理（SOCKS5）由客户端每次请求决定目标
+    let dynamic = match arg.kind.as_deref().unwrap_or("local") {
+        "local" => false,
+        "dynamic" => true,
+        other => {
+            return Err(format!(
+                "[TUN_BAD_ARGUMENT] 不认识的隧道类型 {other}（只支持 local / dynamic）"
+            ))
+        }
+    };
     let target_host = arg.target_host.trim().to_string();
-    if target_host.is_empty() {
+    if !dynamic && target_host.is_empty() {
         return Err("[TUN_BAD_ARGUMENT] 目标主机不能为空".into());
     }
     if wt_ssh::exposes_to_lan(&listen_host) && !arg.allow_lan {
+        let what = if dynamic {
+            "SOCKS5 代理".to_string()
+        } else {
+            format!("{target_host}:{}", arg.target_port)
+        };
         return Err(format!(
-            "[TUN_LAN_CONFIRM_REQUIRED] 监听 {listen_host} 会让局域网内任何人都能访问 \
-             {target_host}:{}；确认后勾选「允许局域网访问」再启动",
-            arg.target_port
+            "[TUN_LAN_CONFIRM_REQUIRED] 监听 {listen_host} 会让局域网内任何人都能通过它访问 \
+             {what}；确认后勾选「允许局域网访问」再启动"
         ));
     }
 
@@ -1237,25 +1256,32 @@ async fn tunnel_start(
     trace("[tunnel_start] 承载连接就绪");
 
     let via = format!("{}@{}", cfg.user, cfg.host);
-    let fwd = wt_ssh::start_local(
-        std::sync::Arc::new(conn),
-        &listen_host,
-        arg.listen_port,
-        &target_host,
-        arg.target_port,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    let conn = std::sync::Arc::new(conn);
+    let fwd = if dynamic {
+        wt_ssh::start_socks5(conn, &listen_host, arg.listen_port, None)
+            .await
+            .map_err(|e| e.to_string())?
+    } else {
+        wt_ssh::start_local(
+            conn,
+            &listen_host,
+            arg.listen_port,
+            &target_host,
+            arg.target_port,
+        )
+        .await
+        .map_err(|e| e.to_string())?
+    };
 
     let listen_port = fwd.listen_addr().port();
     trace(&format!("[tunnel_start] 已监听 {listen_host}:{listen_port}"));
     let meta = TunnelMeta {
         id: format!("f{}", TUNNEL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)),
-        kind: 'L',
+        kind: if dynamic { 'D' } else { 'L' },
         listen_host,
         listen_port,
-        target_host,
-        target_port: arg.target_port,
+        target_host: if dynamic { String::new() } else { target_host },
+        target_port: if dynamic { 0 } else { arg.target_port },
         via,
     };
     let dto = tunnel_dto(&meta, &fwd);

@@ -155,8 +155,7 @@ async fn unreachable_target_fails_loudly_instead_of_hanging() {
 }
 
 #[test]
-fn lan_exposure_detection() {
-    // NET-001 行为规格第 1 条：选这些地址要红色警告 + 确认
+fn lan_exposure_detection() {    // NET-001 行为规格第 1 条：选这些地址要红色警告 + 确认
     for host in ["0.0.0.0", "::", "[::]", "*"] {
         assert!(wt_ssh::exposes_to_lan(host), "{host} 应判定为对外暴露");
     }
@@ -165,4 +164,99 @@ fn lan_exposure_detection() {
     }
     // 具体网卡地址同样意味着局域网可达
     assert!(wt_ssh::exposes_to_lan("192.168.1.10"));
+}
+
+/// 极简 SOCKS5 客户端：只发 CONNECT，用于验证动态转发真的在讲 SOCKS5。
+async fn socks5_connect(
+    proxy: std::net::SocketAddr,
+    target_host: &str,
+    target_port: u16,
+) -> Result<tokio::net::TcpStream, String> {
+    let mut sock = tokio::net::TcpStream::connect(proxy)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // 协商：只要「无需认证」
+    sock.write_all(&[5, 1, 0]).await.map_err(|e| e.to_string())?;
+    let mut picked = [0u8; 2];
+    sock.read_exact(&mut picked)
+        .await
+        .map_err(|e| e.to_string())?;
+    if picked != [5, 0] {
+        return Err(format!("协商失败：{picked:?}"));
+    }
+
+    // CONNECT + 域名地址（AC-2：域名交给远端解析）
+    let mut req = vec![5, 1, 0, 3, target_host.len() as u8];
+    req.extend_from_slice(target_host.as_bytes());
+    req.extend_from_slice(&target_port.to_be_bytes());
+    sock.write_all(&req).await.map_err(|e| e.to_string())?;
+
+    // VER REP RSV ATYP BND.ADDR(4) BND.PORT(2)
+    let mut head = [0u8; 10];
+    sock.read_exact(&mut head).await.map_err(|e| e.to_string())?;
+    if head[1] != 0 {
+        return Err(format!("CONNECT 被拒绝：REP={}", head[1]));
+    }
+    Ok(sock)
+}
+
+#[tokio::test]
+async fn socks5_dynamic_forward_passes_bytes_through() {
+    let server = MockSshServer::start().await;
+    let echo = spawn_echo().await;
+    let conn = connect(server.port).await;
+
+    let fwd = wt_ssh::start_socks5(conn, "127.0.0.1", 0, None)
+        .await
+        .expect("启动 SOCKS5 代理");
+    assert_ne!(fwd.listen_addr().port(), 0, "必须回填系统分配的端口");
+
+    // 地址用域名形式发过去：这一条同时印证「域名由服务端解析」
+    let mut sock = socks5_connect(fwd.listen_addr(), "127.0.0.1", echo.port())
+        .await
+        .expect("SOCKS5 CONNECT 应成功");
+
+    let payload = b"through-socks";
+    sock.write_all(payload).await.expect("写入");
+    let mut buf = vec![0u8; payload.len()];
+    sock.read_exact(&mut buf).await.expect("读回");
+    assert_eq!(&buf, payload, "SOCKS5 转发必须逐字节一致");
+
+    // 字节数是在连接收尾时累加的，所以先关掉再等统计
+    drop(sock);
+    let n = payload.len() as u64;
+    let stats = wait_stats(&fwd, |s| s.up_bytes >= n && s.down_bytes >= n).await;
+    assert_eq!(stats.total, 1, "累计连接数");
+    assert_eq!(stats.up_bytes, n, "上行字节数应等于写入量");
+    assert_eq!(stats.down_bytes, n, "下行字节数应等于回显量");
+    assert_eq!(stats.active, 0, "连接结束后活跃数必须归零");
+    assert_eq!(stats.last_error, None, "成功转发过之后不该留下错误");
+
+    fwd.stop().await;
+}
+
+#[tokio::test]
+async fn socks5_rejects_when_auth_configured_but_client_offers_none() {
+    let server = MockSshServer::start().await;
+    let conn = connect(server.port).await;
+    let fwd = wt_ssh::start_socks5(
+        conn,
+        "127.0.0.1",
+        0,
+        Some(("u".to_string(), "p".to_string())),
+    )
+    .await
+    .expect("启动带认证的 SOCKS5 代理");
+
+    let mut sock = tokio::net::TcpStream::connect(fwd.listen_addr())
+        .await
+        .expect("连上代理");
+    // 只声明「无需认证」，但代理要求用户名密码 → 应回 05 FF（AC-3 的拒绝路径）
+    sock.write_all(&[5, 1, 0]).await.expect("写协商");
+    let mut picked = [0u8; 2];
+    sock.read_exact(&mut picked).await.expect("读协商应答");
+    assert_eq!(picked, [5, 0xFF], "没有可接受的方法时必须拒绝");
+
+    fwd.stop().await;
 }

@@ -396,6 +396,72 @@ function portOpen(port) {
 }
 
 /**
+ * 极简 SOCKS5 客户端：握手 + CONNECT（域名地址）+ 一次收发。
+ *
+ * 手写而不是引入依赖：要验的正是「我们的代理讲不讲 SOCKS5」，
+ * 用别人的实现会把两侧的 bug 混在一起。
+ */
+function socksExchange(proxyPort, targetHost, targetPort, payload) {
+  return new Promise((resolve, reject) => {
+    const sock = netConnect({ host: "127.0.0.1", port: proxyPort });
+    let stage = "greet";
+    let got = "";
+    sock.setTimeout(8000, () => {
+      sock.destroy();
+      reject(new Error("SOCKS5 超时"));
+    });
+    sock.on("connect", () => sock.write(Buffer.from([5, 1, 0])));
+    sock.on("data", (d) => {
+      if (stage === "greet") {
+        if (d[0] !== 5 || d[1] !== 0) {
+          reject(new Error(`协商被拒 ${d.toString("hex")}`));
+          return;
+        }
+        stage = "reply";
+        sock.write(
+          Buffer.concat([
+            Buffer.from([5, 1, 0, 3, Buffer.byteLength(targetHost)]),
+            Buffer.from(targetHost),
+            Buffer.from([targetPort >> 8, targetPort & 0xff]),
+          ]),
+        );
+        return;
+      }
+      if (stage === "reply") {
+        if (d[1] !== 0) {
+          reject(new Error(`CONNECT 被拒绝 REP=${d[1]}`));
+          return;
+        }
+        stage = "data";
+        sock.write(payload);
+        return;
+      }
+      got += d.toString();
+      if (got.length >= payload.length) {
+        sock.end();
+        resolve(got);
+      }
+    });
+    sock.on("error", reject);
+  });
+}
+
+/** 点某类隧道行（`L`/`D`）里的「停止」按钮。 */
+async function clickTunnelStop(kind) {
+  const box = await cdp.eval(`(() => {
+    const row = [...document.querySelectorAll("#tunnel-list .tunnel")].find((r) =>
+      (r.querySelector(".line1")?.textContent ?? "").startsWith("●" + ${JSON.stringify(kind)}),
+    );
+    const btn = row?.querySelector("button");
+    if (!btn) return null;
+    const r = btn.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  })()`);
+  if (!box) throw new Error(`找不到 ${kind} 类型隧道的停止按钮`);
+  await clickAt(box);
+}
+
+/**
  * 双击文件面板里的一行（按名字找）。
  *
  * 必须发两次按下/抬起并把第二次的 `clickCount` 设为 2：Chromium 是靠这个字段
@@ -537,7 +603,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-10",
+    uiVersion === "wt-ui-11",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -1576,6 +1642,47 @@ try {
     /TUN_LAN_CONFIRM_REQUIRED/.test(lanGuard),
     lanGuard,
   );
+
+  // 16f. 动态代理（SOCKS5，NET-003）：浏览器/curl/git 靠它把流量送过 SSH
+  await cdp.eval(`(() => {
+    const kind = document.getElementById("tunnel-kind");
+    kind.value = "dynamic";
+    kind.dispatchEvent(new Event("change", { bubbles: true }));
+    document.getElementById("tunnel-listen").value = "0";
+    return true;
+  })()`);
+  check(
+    "切到动态代理后目标输入被禁用",
+    (await cdp.eval(`document.getElementById("tunnel-target").disabled`)) === true,
+  );
+  await clickElement("#tunnel-add");
+  const dyn = await waitFor(
+    async () => {
+      const list = await cdp.eval(`window.__wt.tunnels`);
+      return list.find((t) => t.kind === "D") ?? null;
+    },
+    { timeout: 30000, label: "动态代理启动" },
+  );
+  const proxyPort = Number(String(dyn.listen).split(":").pop());
+  check(
+    "动态代理启动并回填端口",
+    proxyPort > 0 && dyn.listen.endsWith(`:${proxyPort}`),
+    dyn.listen,
+  );
+
+  // 经 SOCKS5 访问 echo（用域名形式发地址：印证「目标由服务端解析」）
+  const viaSocks = await socksExchange(proxyPort, "127.0.0.1", echo.port, "socks-ok").catch(
+    (e) => `失败：${e.message}`,
+  );
+  check("SOCKS5 代理把字节送到目标", viaSocks === "socks-ok", JSON.stringify(viaSocks));
+
+  await clickTunnelStop("D");
+  const dynStopped = await waitFor(
+    async () => ((await cdp.eval(`window.__wt.tunnels`)).length === 0 ? true : null),
+    { timeout: 15000, label: "动态代理停止" },
+  ).catch(() => null);
+  check("动态代理停止后从列表消失", dynStopped === true);
+  check("动态代理停止后端口不再监听", (await portOpen(proxyPort)) === false, `端口 ${proxyPort}`);
 
   await clickElement("#tunnels-toggle");
   echo.server.close();
