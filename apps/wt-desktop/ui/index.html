@@ -54,6 +54,17 @@
       #remember-toggle input,
       #key-toggle input,
       #agent-toggle input { width: auto; }
+      #jump-row {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        width: 100%;
+        font-size: 12px;
+      }
+      #jump-row[hidden] { display: none; }
+      #jump-row #jump-pass { width: 120px; }
+      #jump-row #jump-host,
+      #jump-row #jump-user { width: 130px; }
       #vault-row {
         display: flex;
         gap: 6px;
@@ -376,6 +387,7 @@
       <label id="remember-toggle"><input type="checkbox" id="remember" />记住密码</label>
       <label id="key-toggle"><input type="checkbox" id="use-key" />用密钥</label>
       <label id="agent-toggle"><input type="checkbox" id="use-agent" />用 agent</label>
+      <label id="jump-toggle"><input type="checkbox" id="use-jump" />经跳板机</label>
       <button id="ssh">连接 SSH</button>
       <button id="save-session">保存</button>
       <button id="open">新建本地终端</button>
@@ -385,6 +397,11 @@
         <button id="pick-key">选择密钥…</button>
         <span id="key-name">未选择</span>
         <input id="key-pass" type="password" placeholder="密钥口令（可空）" />
+      </div>
+      <div id="jump-row" hidden>
+        <input id="jump-host" placeholder="跳板机 host:port" spellcheck="false" />
+        <input id="jump-user" placeholder="跳板机用户" spellcheck="false" />
+        <input id="jump-pass" type="password" placeholder="跳板机密码" />
       </div>
       <div id="vault-row" hidden>
         <input id="master-pass" type="password" placeholder="主密码" />

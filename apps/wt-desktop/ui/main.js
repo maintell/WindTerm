@@ -44,6 +44,11 @@ const deleteSessionBtn = document.getElementById("delete-session");
 const useKeyBox = document.getElementById("use-key");
 const useAgentBox = document.getElementById("use-agent");
 const keyRow = document.getElementById("key-row");
+const useJumpBox = document.getElementById("use-jump");
+const jumpRow = document.getElementById("jump-row");
+const jumpHostInput = document.getElementById("jump-host");
+const jumpUserInput = document.getElementById("jump-user");
+const jumpPassInput = document.getElementById("jump-pass");
 const pickKeyBtn = document.getElementById("pick-key");
 const keyFileInput = document.getElementById("key-file");
 const keyName = document.getElementById("key-name");
@@ -358,6 +363,7 @@ async function openSsh() {
         cols: view.term.cols,
         rows: view.term.rows,
       },
+      jump: jumpReq(),
     });
     view.handle = r.handle;
     const text = `已连接 ${user}@${host}${r.host_key_added ? "（已记录主机密钥）" : ""}`;
@@ -990,7 +996,7 @@ async function loadDir(path) {
     // 后端如果挂住，前端只会一直显示「读取中…」——既看不出是慢还是死，
     // 也没法让用户重试。deadline 把它变成一条明确的错误，界面才有出路。
     const r = await withDeadline(
-      invoke("sftp_list", { arg: { req: sftpReq(), path } }),
+      invoke("sftp_list", { arg: { req: sftpReq(), path, jump: jumpReq() } }),
       20000,
       "列目录",
     );
@@ -1064,7 +1070,7 @@ async function downloadFile(path) {
   setFilesMsg("下载中…");
   try {
     const r = await withDeadline(
-      invoke("sftp_download", { req: sftpReq(), path }),
+      invoke("sftp_download", { req: sftpReq(), path, jump: jumpReq() }),
       30000,
       "下载",
     );
@@ -1103,6 +1109,7 @@ async function uploadFiles(picked) {
           req: sftpReq(),
           path: joinPath(sftpPath, file.name),
           content: toBase64(bytes),
+          jump: jumpReq(),
         }),
         60000,
         "上传",
@@ -1275,6 +1282,7 @@ async function startTunnel() {
           targetHost,
           targetPort,
           allowLan,
+          jump: jumpReq(),
         },
       }),
       30000,
@@ -1353,6 +1361,7 @@ function syncAuthUi() {
   const useKey = useKeyBox.checked;
   const useAgent = useAgentBox.checked;
   keyRow.hidden = !useKey;
+  jumpRow.hidden = !useJumpBox.checked;
   passInput.hidden = useKey || useAgent;
   // 密钥/agent 模式没有密码可存：与其让「记住密码」静默失效，不如禁用并收起
   rememberBox.disabled = useKey || useAgent;
@@ -1363,6 +1372,28 @@ function syncAuthUi() {
   if (useKey) pickKeyBtn.focus();
   else if (!useAgent) passInput.focus();
 }
+
+/**
+ * 跳板机参数（`SES-024`）。没勾就返回 `null`。
+ *
+ * 不要「没勾也传个空对象」：后端会认为「有跳板机但主机为空」，
+ * 报出来的错与用户看到的界面状态不符，排查时会被带偏。
+ */
+function jumpReq() {
+  if (!useJumpBox.checked) return null;
+  const raw = jumpHostInput.value.trim();
+  const sep = raw.lastIndexOf(":");
+  const host = sep > 0 ? raw.slice(0, sep) : raw;
+  const port = sep > 0 ? Number.parseInt(raw.slice(sep + 1), 10) || 22 : 22;
+  return {
+    host,
+    port,
+    user: jumpUserInput.value.trim(),
+    password: jumpPassInput.value,
+  };
+}
+
+useJumpBox.addEventListener("change", syncAuthUi);
 
 useKeyBox.addEventListener("change", () => {
   if (useKeyBox.checked) useAgentBox.checked = false;
@@ -1471,7 +1502,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-7",
+  ui: "wt-ui-8",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";

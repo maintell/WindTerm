@@ -73,6 +73,8 @@ const child = spawn(EXE, [], {
     WT_CDP_PORT: String(PORT),
     // 应用内起一台 mock SSH 服务端（仅 e2e-mock feature 编译进来的代码会响应）
     WT_MOCK_SSH: "1",
+    // 再起一台当跳板机：SES-024 要验「经跳板连目标」，单台 mock 验不了
+    WT_MOCK_SSH_JUMP: "1",
     WT_DATA_DIR: DATA_DIR,
     WT_DOWNLOAD_DIR: DOWNLOAD_DIR,
     // 打开后端埋点：失败时能直接看到命令停在哪一步，不用再改一遍代码重跑
@@ -94,6 +96,18 @@ async function mockSshPort() {
       return hit ? Number(hit[1]) : null;
     },
     { timeout: 15000, label: "mock SSH 端口" },
+  );
+  return m;
+}
+
+/** 第二台 mock（跳板机）的端口 */
+async function mockJumpPort() {
+  const m = await waitFor(
+    () => {
+      const hit = stdout.match(/WT_MOCK_SSH_JUMP_PORT=(\d+)/);
+      return hit ? Number(hit[1]) : null;
+    },
+    { timeout: 15000, label: "mock 跳板机端口" },
   );
   return m;
 }
@@ -523,7 +537,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-7",
+    uiVersion === "wt-ui-8",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -1220,6 +1234,56 @@ try {
     khText.includes("127.0.0.1") && khText.includes("ssh-ed25519"),
     `${khPath}（${khText.split("\n").filter(Boolean).length} 条）`,
   );
+
+  // 15c. 经跳板机连接（SES-024）：两台 mock 串起来，第二跳的 SSH 握手
+  //      跑在跳板机的 direct-tcpip 通道上——只有协议真的对才可能成功。
+  const jumpPort = await mockJumpPort();
+  await cdp.eval(`(() => {
+    const box = document.getElementById("use-jump");
+    box.checked = true;
+    box.dispatchEvent(new Event("change", { bubbles: true }));
+    document.getElementById("jump-host").value = ${JSON.stringify(`127.0.0.1:${jumpPort}`)};
+    document.getElementById("jump-user").value = "tester";
+    document.getElementById("jump-pass").value = "secret";
+    return true;
+  })()`);
+  check(
+    "勾「经跳板机」展开跳板机输入",
+    (await cdp.eval(`document.getElementById("jump-row").hidden`)) === false,
+  );
+
+  await clickElement("#ssh");
+  const jumpStatus = await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      return s.startsWith("已连接") || s.includes("失败") ? s : null;
+    },
+    { timeout: 30000, label: "经跳板机连接" },
+  );
+  check("经跳板机能连上目标", jumpStatus.startsWith("已连接"), jumpStatus);
+
+  // 第二跳必须是真正的 SSH 会话：横幅只能来自目标机自己的 shell
+  const jumpScreen = await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.screen()`);
+      return t.includes("WELCOME") ? t : null;
+    },
+    { timeout: 15000, label: "经跳板会话的横幅" },
+  ).catch(() => null);
+  check("跳板后面的目标返回了自己的 shell 横幅", jumpScreen !== null);
+
+  // 两条主机密钥都该记下来：跳板机（直连 accept-new）+ 目标
+  //（经跳板**无法 probe**，只能连上后用 trust_observed_key 补）
+  const khAfterJump = readFileSync(khPath, "utf8").split("\n").filter(Boolean).length;
+  check("跳板机与目标的主机密钥都被记录", khAfterJump >= 2, `${khAfterJump} 条`);
+
+  // 收起跳板机：后面的用例仍走直连
+  await cdp.eval(`(() => {
+    const box = document.getElementById("use-jump");
+    box.checked = false;
+    box.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  })()`);
 
   // 16b. 文件面板：列远端目录
   const seed = Buffer.from("hello from server").toString("base64");

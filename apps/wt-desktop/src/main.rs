@@ -599,6 +599,67 @@ struct SshOpenDto {
 async fn connect_accept_new(
     cfg: &wt_ssh::SshConfig,
     auth: &AuthInput,
+    jump: Option<&JumpReq>,
+) -> Result<(wt_ssh::SshConnection, bool), String> {
+    let Some(jump) = jump else {
+        return connect_direct_accept_new(cfg, auth).await;
+    };
+
+    // 先登录跳板机（它自己的主机密钥也走 accept-new），再在它上面连目标
+    let jump_cfg = wt_ssh::SshConfig {
+        host: jump.host.trim().to_string(),
+        port: jump.port,
+        user: jump.user.trim().to_string(),
+        ..Default::default()
+    };
+    if jump_cfg.host.is_empty() || jump_cfg.user.is_empty() {
+        return Err("[SSH_BAD_ARGUMENT] 跳板机的主机与用户名都不能为空".into());
+    }
+    let jump_link = format!("{}:{}", jump_cfg.host, jump_cfg.port);
+    // 跳板机自身的凭据（`SES-024` 行为规格第 4 条：不继承目标会话的）
+    let jump_auth = AuthInput::Password(jump.password.clone());
+    let (jump_conn, jump_added) = connect_direct_accept_new(&jump_cfg, &jump_auth).await?;
+    trace(&format!("[connect] 第 1 跳 {jump_link} 就绪"));
+
+    let target_auth = ssh_auth(auth);
+    let mut known = load_known_hosts();
+    match wt_ssh::connect_via(
+        &jump_conn,
+        &jump_link,
+        cfg,
+        &target_auth,
+        known_policy(&known),
+    )
+    .await
+    {
+        Ok(c) => Ok((c, jump_added)),
+        Err(e) if e.code == wt_common::codes::SSH_HOSTKEY_UNKNOWN => {
+            // 跳板机后面的目标**没法 probe**（`probe_host_key` 是直连的，目标只有
+            // 跳板机能到）。所以用 AcceptAll 连上，再用 `trust_observed_key` 把这次
+            // 看到的主机密钥补进 known_hosts——这就是它存在的理由。
+            let conn = wt_ssh::connect_via(
+                &jump_conn,
+                &jump_link,
+                cfg,
+                &target_auth,
+                wt_ssh::HostKeyPolicy::AcceptAll,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            conn.trust_observed_key(&mut known, false)
+                .map_err(|e| e.to_string())?;
+            save_known_hosts(&known)?;
+            trace("[connect] 目标主机密钥未知 → 已记录（经跳板，无法 probe）");
+            Ok((conn, true))
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// 直连的 accept-new（跳板机自己就走这条）。
+async fn connect_direct_accept_new(
+    cfg: &wt_ssh::SshConfig,
+    auth: &AuthInput,
 ) -> Result<(wt_ssh::SshConnection, bool), String> {
     let mut known = load_known_hosts();
     match try_connect(cfg, auth, known_policy(&known)).await {
@@ -618,6 +679,29 @@ async fn connect_accept_new(
     }
 }
 
+/// 界面层的认证输入 → `wt-ssh` 的 `Auth`。
+fn ssh_auth(input: &AuthInput) -> wt_ssh::Auth<'_> {
+    match input {
+        AuthInput::Password(p) => wt_ssh::Auth::Password(p),
+        AuthInput::Key(k) => wt_ssh::Auth::Key(k),
+        AuthInput::Agent => wt_ssh::Auth::Agent,
+    }
+}
+
+/// 跳板机参数（`SES-024`）。
+///
+/// 目前是连接表单里的临时选项，**还不是会话属性**：`jump.sessionId` 没进数据模型，
+/// 见 README 的 `G14`。凭据独立于目标会话（规格第 4 条）。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JumpReq {
+    host: String,
+    port: u16,
+    user: String,
+    #[serde(default)]
+    password: String,
+}
+
 /// 认证方式：密码、一把私钥（可带口令），或 ssh-agent 里的身份。
 enum AuthInput {
     Password(String),
@@ -634,11 +718,8 @@ async fn try_connect(
     auth: &AuthInput,
     policy: wt_ssh::HostKeyPolicy,
 ) -> Result<wt_ssh::SshConnection, wt_common::WtError> {
-    match auth {
-        AuthInput::Password(p) => wt_ssh::SshConnection::connect_password(cfg, p, policy).await,
-        AuthInput::Key(k) => wt_ssh::SshConnection::connect_publickey(cfg, k, policy).await,
-        AuthInput::Agent => wt_ssh::SshConnection::connect_agent(cfg, policy).await,
-    }
+    // 三条认证路径在 `wt-ssh` 里已经收敛成一份实现，这里只做类型转换
+    wt_ssh::SshConnection::connect(cfg, &ssh_auth(auth), policy).await
 }
 
 /// 从请求里挑出认证方式：agent > 密钥 > 密码。
@@ -687,7 +768,11 @@ struct SshOpenReq {
 ///
 /// 认证支持密码与私钥两条路：很多服务器关掉了密码认证，只给密钥。
 #[tauri::command]
-async fn ssh_open(state: State<'_, AppState>, req: SshOpenReq) -> Result<SshOpenDto, String> {
+async fn ssh_open(
+    state: State<'_, AppState>,
+    req: SshOpenReq,
+    jump: Option<JumpReq>,
+) -> Result<SshOpenDto, String> {
     // 先定认证方式（要读 req 的多个字段），再解构出连接参数
     let auth = auth_of(&req);
     let SshOpenReq {
@@ -706,7 +791,7 @@ async fn ssh_open(state: State<'_, AppState>, req: SshOpenReq) -> Result<SshOpen
         return Err("[SSH_BAD_ARGUMENT] 用户名不能为空".into());
     }
 
-    let (conn, host_key_added) = connect_accept_new(&cfg, &auth).await?;
+    let (conn, host_key_added) = connect_accept_new(&cfg, &auth, jump.as_ref()).await?;
 
     let fingerprint = conn.server_fingerprint().unwrap_or_default();
     // 空闲连接会被 NAT/防火墙静默断开，按会话配置发心跳（默认 30 秒）；
@@ -821,7 +906,10 @@ struct SftpListDto {
 ///
 /// 每次文件操作独立建连：面板操作是低频的（列目录、传一个文件），
 /// 多一次握手百来毫秒，换掉「跨命令持有通道流」那一整类问题（通道与连接必须同寿命）。
-async fn open_sftp(req: SshOpenReq) -> Result<wt_ssh::SftpClient, String> {
+async fn open_sftp(
+    req: SshOpenReq,
+    jump: Option<JumpReq>,
+) -> Result<wt_ssh::SftpClient, String> {
     let _scope = TraceScope::enter("open_sftp");
     let cfg = wt_ssh::SshConfig {
         host: req.host.trim().to_string(),
@@ -849,7 +937,7 @@ async fn open_sftp(req: SshOpenReq) -> Result<wt_ssh::SftpClient, String> {
     trace("[open_sftp] 认证方式已定");
 
     // 主机密钥与 `ssh_open` 走完全相同的 accept-new 路径（见 `connect_accept_new`）
-    let (conn, _added) = connect_accept_new(&cfg, &auth).await?;
+    let (conn, _added) = connect_accept_new(&cfg, &auth, jump.as_ref()).await?;
     trace("[open_sftp] ← 连接就绪");
 
     let client = wt_ssh::SftpClient::open(conn)
@@ -869,18 +957,24 @@ async fn open_sftp(req: SshOpenReq) -> Result<wt_ssh::SftpClient, String> {
 struct SftpListArg {
     req: SshOpenReq,
     path: String,
+    /// `SES-024`：经跳板机连（与 `ssh_open` 同一套参数）
+    #[serde(default)]
+    jump: Option<JumpReq>,
 }
 
 /// 列远端目录。
 #[tauri::command]
 async fn sftp_list(arg: SftpListArg) -> Result<SftpListDto, String> {
     let _scope = TraceScope::enter("sftp_list");
-    let SftpListArg { req, path } = arg;
+    let SftpListArg { req, path, jump } = arg;
     trace(&format!(
-        "[sftp_list] 参数 host={} user={} path={}",
-        req.host, req.user, path
+        "[sftp_list] 参数 host={} user={} path={} jump={}",
+        req.host,
+        req.user,
+        path,
+        jump.is_some()
     ));
-    let sftp = open_sftp(req).await?;
+    let sftp = open_sftp(req, jump).await?;
     trace("[sftp_list] open_sftp 完成");
     let entries = sftp.list_dir(&path).await.map_err(|e| e.to_string())?;
     trace(&format!("[sftp_list] list_dir 完成，{} 条", entries.len()));
@@ -949,9 +1043,13 @@ fn unique_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
 }
 
 #[tauri::command]
-async fn sftp_download(req: SshOpenReq, path: String) -> Result<DownloadDto, String> {
+async fn sftp_download(
+    req: SshOpenReq,
+    path: String,
+    jump: Option<JumpReq>,
+) -> Result<DownloadDto, String> {
     let _scope = TraceScope::enter("sftp_download");
-    let sftp = open_sftp(req).await?;
+    let sftp = open_sftp(req, jump).await?;
     let data = sftp.read_file(&path).await.map_err(|e| e.to_string())?;
     trace(&format!("[sftp_download] 读到 {} 字节", data.len()));
 
@@ -979,11 +1077,16 @@ async fn sftp_download(req: SshOpenReq, path: String) -> Result<DownloadDto, Str
 }
 
 #[tauri::command]
-async fn sftp_upload(req: SshOpenReq, path: String, content: String) -> Result<usize, String> {
+async fn sftp_upload(
+    req: SshOpenReq,
+    path: String,
+    content: String,
+    jump: Option<JumpReq>,
+) -> Result<usize, String> {
     let data = B64
         .decode(content)
         .map_err(|e| format!("上传内容解码失败：{e}"))?;
-    let sftp = open_sftp(req).await?;
+    let sftp = open_sftp(req, jump).await?;
     let len = data.len();
     sftp.write_file(&path, &data)
         .await
@@ -1030,6 +1133,9 @@ struct TunnelStartArg {
     /// 监听 `0.0.0.0` 等对外地址必须显式确认（`NET-001` 行为规格第 1 条）
     #[serde(default)]
     allow_lan: bool,
+    /// `SES-024`：经跳板机建承载连接
+    #[serde(default)]
+    jump: Option<JumpReq>,
 }
 
 /// 隧道 id 序号。只在本进程内有意义（隧道不落库，见 G10 之后的持久化计划），
@@ -1091,7 +1197,7 @@ async fn tunnel_start(
     }
 
     let auth = auth_of(&arg.req);
-    let (conn, _added) = connect_accept_new(&cfg, &auth).await?;
+    let (conn, _added) = connect_accept_new(&cfg, &auth, arg.jump.as_ref()).await?;
     trace("[tunnel_start] 承载连接就绪");
 
     let via = format!("{}@{}", cfg.user, cfg.host);
@@ -1321,6 +1427,13 @@ fn start_mock_ssh_if_requested() {
         let _ = MOCK_FS.set(server.fs.clone());
         let _ = MOCK_PORT.set(server.port);
         println!("WT_MOCK_SSH_PORT={}", server.port);
+
+        // 第二台：`SES-024` 的跳板机。它的 `direct-tcpip` 会连**真实 TCP** 到目标，
+        // 所以「经跳板连上第一台」是一条真的两跳链路，不是模拟的。
+        if std::env::var("WT_MOCK_SSH_JUMP").is_ok() {
+            let jump = wt_ssh::testing::MockSshServer::start().await;
+            println!("WT_MOCK_SSH_JUMP_PORT={}", jump.port);
+        }
     });
 }
 
