@@ -5932,6 +5932,7 @@ dependencies = [
  "russh",
  "sha1 0.10.7",
  "sha2 0.10.9",
+ "ssh-key",
  "tokio",
  "wt-common",
  "wt-term",

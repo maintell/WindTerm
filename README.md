@@ -53,7 +53,7 @@ cargo run -p wt-cli -- session list
 |---|---|---|---|
 | G1 | `Algos` / `CompatFlags` 未映射到 `russh::Preferred` | 连老服务器时无法开启弱算法（`SES-001` AC-2） | 需手写 `kex::Name` 等枚举映射表 |
 | ~~G2~~ | ~~SSH 正向路径无自动化测试~~ | ✅ 已补齐：进程内 mock 服务端，覆盖握手/认证/exec/PTY/TOFU | — |
-| G3 | agent 转发与 PuTTY `.ppk` 未实现 | 无法用 ssh-agent；PPK 需先转换成 OpenSSH 格式 | 下一迭代 |
+| G3 | ssh-agent 转发未实现；`.ppk` 只支持未加密的 ed25519 | 无法用 ssh-agent 免密；RSA 或带口令的 `.ppk` 仍需 puttygen 转一次 | agent 下一迭代；`.ppk` 的其余类型视需求补 |
 | ~~G4~~ | ~~本地 PTY 关闭挂起~~ | ✅ 已修复：根因是未应答 ConPTY 的 `ESC[6n` 光标查询，补上应答后子进程输出与关闭均正常 | — |
 | G5 | 非 SSH 会话点不动；保险库只能按会话存密码，没有「主密码提示/恢复」机制 | RDP/VNC 会话只能看不能连；主密码忘了保险库就打不开 | 对应协议栈 + 保险库恢复流程（`SEC-*`） |
 | G6 | 界面没有标签页、分屏、搜索、字体与主题设置 | 单会话可用，多会话要开多个窗口 | 随 `TER-01x` / `SET-00x` 推进 |

@@ -19,3 +19,5 @@ base64 = { workspace = true }
 rand = { workspace = true }
 tokio = { workspace = true }
 russh = { workspace = true }
+# 与 russh 依赖的版本**必须一致**，否则 `PrivateKey` 会变成两个不同的类型
+ssh-key = { version = "=0.7.0-rc.11", features = ["ed25519"] }

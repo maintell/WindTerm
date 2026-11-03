@@ -13,6 +13,7 @@
 pub mod algos;
 pub mod client;
 pub mod keys;
+pub mod ppk;
 pub mod term;
 #[cfg(feature = "test-util")]
 pub mod testing;

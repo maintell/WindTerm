@@ -6,7 +6,8 @@
 //! [`PrivateKeySource`]，换实现不影响上层。
 //!
 //! 支持的格式由 `ssh-key` 决定：OpenSSH 新格式（含 bcrypt 加密）、PEM PKCS#1/#8、
-//! RFC 4716 公钥。PuTTY `.ppk` **不在其中**——需要单独实现，见 README 的已知缺口。
+//! RFC 4716 公钥。PuTTY `.ppk` 由 [`crate::ppk`] 先转成 OpenSSH 文本——
+//! **只覆盖未加密的 ed25519**，RSA 与带口令的 `.ppk` 仍要 puttygen 转一次。
 
 use wt_common::{HintAction, WtError};
 
@@ -62,13 +63,22 @@ pub fn inspect(source: &PrivateKeySource) -> Result<KeyInfo, WtError> {
 }
 
 /// 解析私钥。加密且未提供口令时给出明确错误，而不是让底层报一句看不懂的话。
+///
+/// `.ppk` 会先转成 OpenSSH 文本（见 [`crate::ppk`]）——迁移用户手里多半是这个格式。
 pub(crate) fn parse(source: &PrivateKeySource) -> Result<russh::keys::PrivateKey, WtError> {
-    let key = russh::keys::PrivateKey::from_openssh(&source.pem).map_err(|e| {
+    let pem = if crate::ppk::is_ppk(&source.pem) {
+        crate::ppk::convert(&source.pem)?
+    } else {
+        source.pem.clone()
+    };
+
+    let key = russh::keys::PrivateKey::from_openssh(&pem).map_err(|e| {
         WtError::new("SSH_KEY_INVALID")
             .message("私钥格式无法识别")
             .detail(e.to_string())
             .hint(
-                "支持 OpenSSH 新格式、PEM（PKCS#1/#8）；PuTTY .ppk 需先转换",
+                "支持 OpenSSH 新格式、PEM（PKCS#1/#8）与未加密的 ed25519 .ppk；\
+                 其他 .ppk 用 puttygen 转成 OpenSSH 格式",
                 HintAction::None,
             )
     })?;
