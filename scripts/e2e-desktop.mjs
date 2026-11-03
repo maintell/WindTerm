@@ -336,6 +336,20 @@ async function pressChord(mods, key, code, vk) {
   await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
 }
 
+/** 单击文件面板里的某一行（按名字），用于选中。 */
+async function clickFileRow(name) {
+  const box = await cdp.eval(`(() => {
+    const row = [...document.querySelectorAll("#files-list .row")].find(
+      (r) => r.querySelector("span")?.textContent === ${JSON.stringify(name)},
+    );
+    if (!row) return null;
+    const r = row.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  })()`);
+  if (!box) throw new Error(`文件面板里找不到 ${name}`);
+  await clickAt(box);
+}
+
 /** 在视口坐标处双击（两次按下/抬起，第二次 clickCount=2 才会合成 dblclick）。 */
 async function doubleClickAt(box) {
   const base = { x: box.x, y: box.y, button: "left" };
@@ -609,7 +623,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-14",
+    uiVersion === "wt-ui-16",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -1567,6 +1581,76 @@ try {
     { timeout: 20000, label: "上传后刷新列表" },
   );
   check("上传本地文件后远端列表出现它", true, uploaded.join("、"));
+
+  // 16d-2. 文件管理：新建目录 → 改名 → 删除（FIL-001）
+  await clickElement("#files-mkdir");
+  await typeText("logs"); // 输入名字并回车（typeText 末尾带 Enter）
+  const madeDir = await waitFor(
+    async () => {
+      const f = await cdp.eval(`window.__wt.files`);
+      return f.rows.includes("logs/") ? f : null;
+    },
+    { timeout: 20000, label: "新建目录" },
+  ).catch(async () => {
+    const dbg = await cdp.eval(`(() => {
+      const btn = document.getElementById("files-mkdir");
+      const r = btn.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+      return {
+        rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) },
+        hit: hit ? hit.id || hit.tagName : "视口外",
+        dialogOpen: document.getElementById("name-dialog").open,
+        inputValue: document.getElementById("name-input").value,
+        msg: document.getElementById("files-msg").textContent,
+        rows: [...document.querySelectorAll("#files-list .row span:first-child")].map((e) => e.textContent),
+      };
+    })()`);
+    throw new Error(`新建目录失败：${JSON.stringify(dbg)}`);
+  });
+  check("能在远端新建目录", madeDir !== null, madeDir.rows.join("、"));
+
+  // 单击选中 → 改名
+  await clickFileRow("logs/");
+  check(
+    "单击选中一行",
+    (await cdp.eval(`window.__wt.files.selected`)) === "logs",
+    JSON.stringify(await cdp.eval(`window.__wt.files.selected`)),
+  );
+  await clickElement("#files-rename");
+  await typeText("logs-old"); // 原名已预选，输入即替换
+  const renamed = await waitFor(
+    async () => {
+      const f = await cdp.eval(`window.__wt.files`);
+      return f.rows.includes("logs-old/") ? f : null;
+    },
+    { timeout: 20000, label: "改名" },
+  ).catch(async () => {
+    const f = await cdp.eval(`window.__wt.files`);
+    throw new Error(`改名后列表=${f.rows.join("、")} msg=${f.msg}`);
+  });
+  check(
+    "能把目录改名（旧名字消失）",
+    renamed !== null && !renamed.rows.includes("logs/"),
+    renamed.rows.join("、"),
+  );
+
+  // 删除要二次确认：第一次点只改按钮文案
+  await clickFileRow("logs-old/");
+  await clickElement("#files-remove");
+  const removeArmedText = await cdp.eval(`document.getElementById("files-remove").textContent`);
+  check("删除需要二次确认", removeArmedText === "确认删除", removeArmedText);
+  await clickElement("#files-remove");
+  const removed = await waitFor(
+    async () => {
+      const f = await cdp.eval(`window.__wt.files`);
+      return f.rows.some((r) => r.startsWith("logs")) ? null : f;
+    },
+    { timeout: 20000, label: "删除目录" },
+  ).catch(async () => {
+    const f = await cdp.eval(`window.__wt.files`);
+    throw new Error(`删除后列表=${f.rows.join("、")} msg=${f.msg}`);
+  });
+  check("删除后目录从列表消失", removed !== null, removed.rows.join("、"));
 
   await clickElement("#files-toggle");
 

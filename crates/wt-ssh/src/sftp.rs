@@ -108,6 +108,29 @@ impl SftpClient {
             .map_err(|e| sftp_error(&format!("无法删除 {path}"), e.to_string()))
     }
 
+    /// 删目录（服务端只允许删空目录，这与 `rm -d` 一致）。
+    ///
+    /// 刻意不做递归删除：一次误点删掉整棵树是最难恢复的事故，
+    /// 而「先删空再删目录」这个约束能拦住绝大多数手滑。
+    pub async fn remove_dir(&self, path: &str) -> Result<(), WtError> {
+        self.inner.remove_dir(path).await.map_err(|e| {
+            sftp_error(
+                &format!("无法删除目录 {path}"),
+                format!("{e}（只有空目录能删除；先清空里面的内容）"),
+            )
+        })
+    }
+
+    /// 改名 / 移动。
+    ///
+    /// `rename` 在 SFTP 里同时承担改名与移动：跨目录就是用新路径调用它。
+    pub async fn rename(&self, from: &str, to: &str) -> Result<(), WtError> {
+        self.inner
+            .rename(from, to)
+            .await
+            .map_err(|e| sftp_error(&format!("无法把 {from} 改名为 {to}"), e.to_string()))
+    }
+
     /// 把相对路径解析成绝对路径（远端 shell 的 `~` 之类由服务端处理）。
     pub async fn canonicalize(&self, path: &str) -> Result<String, WtError> {
         self.inner

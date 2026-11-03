@@ -1033,6 +1033,17 @@ const filesUp = document.getElementById("files-up");
 const filesRefresh = document.getElementById("files-refresh");
 const filesUploadBtn = document.getElementById("files-upload-btn");
 const filesUpload = document.getElementById("files-upload");
+const filesMkdir = document.getElementById("files-mkdir");
+const filesRename = document.getElementById("files-rename");
+const filesRemove = document.getElementById("files-remove");
+const nameDialog = document.getElementById("name-dialog");
+const nameTitle = document.getElementById("name-title");
+const renameInput = document.getElementById("name-input");
+
+/** 文件面板里当前选中的项（单击选中，双击才进入/下载——与文件管理器一致） */
+let selectedEntry = null;
+/** 删除的二次确认（3 秒窗口，与会话删除同一个模式） */
+let removeArmed = false;
 
 let sftpPath = "/";
 
@@ -1067,6 +1078,8 @@ function sftpReq() {
 
 async function loadDir(path) {
   setFilesMsg("读取中…");
+  // 换目录后旧选中项已经不属于当前列表
+  clearSelection();
   try {
     // 后端如果挂住，前端只会一直显示「读取中…」——既看不出是慢还是死，
     // 也没法让用户重试。deadline 把它变成一条明确的错误，界面才有出路。
@@ -1096,12 +1109,12 @@ async function loadDir(path) {
       size.textContent = e.is_dir ? "" : `${e.size}`;
       size.style.color = "#8a8a92";
       row.append(label, size);
-      if (e.is_dir) {
-        row.addEventListener("click", () => loadDir(joinPath(sftpPath, e.name)));
-      } else {
-        // 双击下载：单击留给「选中」，与文件管理器一致，也避免误点就传文件
-        row.addEventListener("dblclick", () => void downloadFile(joinPath(sftpPath, e.name)));
-      }
+      // 单击只选中，双击才动作：与文件管理器一致，也让「改名/删除」有明确的操作对象
+      row.addEventListener("click", () => selectEntry(e, row));
+      row.addEventListener("dblclick", () => {
+        if (e.is_dir) void loadDir(joinPath(sftpPath, e.name));
+        else void downloadFile(joinPath(sftpPath, e.name));
+      });
       filesList.appendChild(row);
     }
     setFilesMsg("");
@@ -1139,6 +1152,135 @@ function withDeadline(promise, ms, what) {
 
 filesUp.addEventListener("click", () => loadDir(parentPath(sftpPath)));
 filesRefresh.addEventListener("click", () => loadDir(sftpPath));
+
+/** 选中某一行（只改状态，不发请求）。 */
+function selectEntry(entry, row) {
+  selectedEntry = entry;
+  for (const r of filesList.children) r.classList.remove?.("selected");
+  row.classList.add("selected");
+  filesRename.disabled = false;
+  filesRemove.disabled = false;
+}
+
+/** 清掉选中态（换目录后旧选中项已经不属于当前列表）。 */
+function clearSelection() {
+  selectedEntry = null;
+  filesRename.disabled = true;
+  filesRemove.disabled = true;
+  removeArmed = false;
+  filesRemove.textContent = "删除";
+}
+
+/**
+ * 用一个最小的对话框要一个名字；取消返回 `null`。
+ */
+function askName(title, initial) {
+  nameTitle.textContent = title;
+  renameInput.value = initial;
+  nameDialog.returnValue = "";
+  nameDialog.showModal();
+  renameInput.focus();
+  renameInput.select();
+  return new Promise((resolve) => {
+    nameDialog.addEventListener(
+      "close",
+      () => resolve(nameDialog.returnValue === "yes" ? renameInput.value.trim() : null),
+      { once: true },
+    );
+  });
+}
+
+// 回车 = 确定。不依赖 `<form method=dialog>` 的隐式提交：
+// 它在合成按键（没有 text 字段）下不一定触发，靠不住。
+renameInput.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Enter") return;
+  ev.preventDefault();
+  nameDialog.returnValue = "yes";
+  nameDialog.close();
+});
+
+async function makeDir() {
+  const name = await askName("新建文件夹（在当前位置）", "");
+  if (!name) return;
+  setFilesMsg("新建中…");
+  try {
+    await withDeadline(
+      invoke("sftp_mkdir", { req: sftpReq(), path: joinPath(sftpPath, name), jump: jumpReq() }),
+      20000,
+      "新建目录",
+    );
+    setFilesMsg(`已创建 ${name}`);
+    await loadDir(sftpPath);
+  } catch (e) {
+    setFilesMsg(`新建目录失败：${e}`);
+  }
+}
+
+async function renameEntry() {
+  if (!selectedEntry) return;
+  const oldName = selectedEntry.name;
+  const name = await askName(`把 ${oldName} 改名为`, oldName);
+  if (!name || name === oldName) return;
+  setFilesMsg("改名中…");
+  try {
+    await withDeadline(
+      invoke("sftp_rename", {
+        req: sftpReq(),
+        from: joinPath(sftpPath, oldName),
+        to: joinPath(sftpPath, name),
+        jump: jumpReq(),
+      }),
+      20000,
+      "改名",
+    );
+    setFilesMsg(`已改名为 ${name}`);
+    clearSelection();
+    await loadDir(sftpPath);
+  } catch (e) {
+    setFilesMsg(`改名失败：${e}`);
+  }
+}
+
+/** 删除要二次确认：第一次点变「确认删除」，3 秒内再点才真的删。 */
+async function onRemoveClick() {
+  if (!selectedEntry) return;
+  if (!removeArmed) {
+    removeArmed = true;
+    filesRemove.textContent = "确认删除";
+    setTimeout(() => {
+      if (removeArmed) {
+        removeArmed = false;
+        filesRemove.textContent = "删除";
+      }
+    }, 3000);
+    return;
+  }
+  removeArmed = false;
+  filesRemove.textContent = "删除";
+  const target = selectedEntry;
+  setFilesMsg("删除中…");
+  try {
+    await withDeadline(
+      invoke("sftp_remove", {
+        req: sftpReq(),
+        path: joinPath(sftpPath, target.name),
+        isDir: target.is_dir,
+        jump: jumpReq(),
+      }),
+      20000,
+      "删除",
+    );
+    setFilesMsg(`已删除 ${target.name}`);
+    clearSelection();
+    await loadDir(sftpPath);
+  } catch (e) {
+    setFilesMsg(`删除失败：${e}`);
+  }
+}
+
+filesMkdir.addEventListener("click", () => void makeDir());
+filesRename.addEventListener("click", () => void renameEntry());
+filesRemove.addEventListener("click", () => void onRemoveClick());
 
 /** 下载远端文件到本地下载目录（路径由后端决定并回报）。 */
 async function downloadFile(path) {
@@ -1686,7 +1828,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-14",
+  ui: "wt-ui-16",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";
@@ -1756,6 +1898,8 @@ window.__wt = {
       path: sftpPath,
       msg: filesMsg.textContent,
       rows: [...filesList.querySelectorAll(".row span:first-child")].map((e) => e.textContent),
+      /** 当前选中项的名字（验收与脚本用） */
+      selected: selectedEntry?.name ?? null,
     };
   },
   /** 当前激活会话的句柄 */

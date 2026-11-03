@@ -85,8 +85,14 @@ impl russh_sftp::server::Handler for MemSftp {
         let files = keys
             .iter()
             .filter_map(|path| path.strip_prefix(&prefix))
-            .filter(|rest| !rest.is_empty() && !rest.contains('/'))
+            // 空目录用「路径以 / 结尾」表示，所以允许一层尾斜杠；
+            // 更深的层级仍要排除，否则会把孙辈当成本目录的条目
+            .filter(|rest| {
+                !rest.is_empty()
+                    && (!rest.contains('/') || (rest.ends_with('/') && rest.matches('/').count() == 1))
+            })
             .map(|name| {
+                let name = name.trim_end_matches('/');
                 let full = format!("{prefix}{name}");
                 // 没有独立目录表，一个路径「是目录」当且仅当存在它的子项
                 let is_dir = keys.iter().any(|p| p.starts_with(&format!("{full}/")));
@@ -108,6 +114,76 @@ impl russh_sftp::server::Handler for MemSftp {
             })
             .collect::<Vec<_>>();
         Ok(Name { id, files })
+    }
+
+    /// 建目录：用「路径以 / 结尾 + 空内容」表示空目录，不引入第二套表。
+    async fn mkdir(
+        &mut self,
+        id: u32,
+        path: String,
+        _attrs: FileAttributes,
+    ) -> Result<Status, StatusCode> {
+        let mut fs = self.fs.lock().await;
+        let key = format!("{}/", path.trim_end_matches('/'));
+        if fs.contains_key(&key) || fs.contains_key(path.trim_end_matches('/')) {
+            return Err(StatusCode::Failure);
+        }
+        fs.insert(key, Vec::new());
+        Ok(ok_status(id))
+    }
+
+    async fn rmdir(&mut self, id: u32, path: String) -> Result<Status, StatusCode> {
+        let mut fs = self.fs.lock().await;
+        let key = format!("{}/", path.trim_end_matches('/'));
+        if !fs.contains_key(&key) {
+            return Err(StatusCode::NoSuchFile);
+        }
+        // 与真实服务端一致：非空目录不许删（`remove_dir` 的提示里也是这么说的）
+        if fs
+            .keys()
+            .any(|p| p != &key && p.starts_with(&format!("{}/", path.trim_end_matches('/'))))
+        {
+            return Err(StatusCode::Failure);
+        }
+        fs.remove(&key);
+        Ok(ok_status(id))
+    }
+
+    async fn remove(&mut self, id: u32, filename: String) -> Result<Status, StatusCode> {
+        let mut fs = self.fs.lock().await;
+        match fs.remove(&filename) {
+            Some(_) => Ok(ok_status(id)),
+            None => Err(StatusCode::NoSuchFile),
+        }
+    }
+
+    async fn rename(
+        &mut self,
+        id: u32,
+        oldpath: String,
+        newpath: String,
+    ) -> Result<Status, StatusCode> {
+        let mut fs = self.fs.lock().await;
+        if let Some(data) = fs.remove(&oldpath) {
+            fs.insert(newpath, data);
+            return Ok(ok_status(id));
+        }
+        // 目录：把整棵子树按前缀搬过去
+        let from = format!("{}/", oldpath.trim_end_matches('/'));
+        let moved: Vec<(String, Vec<u8>)> = fs
+            .keys()
+            .filter(|k| k.starts_with(&from))
+            .map(|k| (k.clone(), fs.get(k).cloned().unwrap_or_default()))
+            .collect();
+        if moved.is_empty() {
+            return Err(StatusCode::NoSuchFile);
+        }
+        let to = format!("{}/", newpath.trim_end_matches('/'));
+        for (k, v) in moved {
+            fs.remove(&k);
+            fs.insert(format!("{to}{}", &k[from.len()..]), v);
+        }
+        Ok(ok_status(id))
     }
 
     async fn realpath(&mut self, id: u32, _path: String) -> Result<Name, StatusCode> {

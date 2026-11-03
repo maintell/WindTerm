@@ -1761,6 +1761,44 @@ async fn tunnel_stop(state: State<'_, AppState>, id: String) -> Result<bool, Str
     }
 }
 
+/// 新建目录（`FIL-001` 的右键菜单能力，接成显式按钮）。
+#[tauri::command]
+async fn sftp_mkdir(req: SshOpenReq, path: String, jump: Option<JumpReq>) -> Result<(), String> {
+    let sftp = open_sftp(req, jump).await?;
+    sftp.create_dir(&path).await.map_err(|e| e.to_string())
+}
+
+/// 改名 / 移动。
+#[tauri::command]
+async fn sftp_rename(
+    req: SshOpenReq,
+    from: String,
+    to: String,
+    jump: Option<JumpReq>,
+) -> Result<(), String> {
+    let sftp = open_sftp(req, jump).await?;
+    sftp.rename(&from, &to).await.map_err(|e| e.to_string())
+}
+
+/// 删除：按 `is_dir` 分派到 `rmdir` / `unlink`。
+///
+/// 不做递归删除——一次误点删掉整棵树是最难恢复的事故，
+/// 非空目录让服务端拒绝并说清原因。
+#[tauri::command]
+async fn sftp_remove(
+    req: SshOpenReq,
+    path: String,
+    is_dir: bool,
+    jump: Option<JumpReq>,
+) -> Result<(), String> {
+    let sftp = open_sftp(req, jump).await?;
+    if is_dir {
+        sftp.remove_dir(&path).await.map_err(|e| e.to_string())
+    } else {
+        sftp.remove_file(&path).await.map_err(|e| e.to_string())
+    }
+}
+
 #[derive(serde::Serialize)]
 struct StatsDto {
     buffered: usize,
@@ -1861,6 +1899,9 @@ fn main() {
             sftp_list,
             sftp_download,
             sftp_upload,
+            sftp_mkdir,
+            sftp_rename,
+            sftp_remove,
             tunnel_start,
             tunnel_start_saved,
             tunnel_autostart,

@@ -145,6 +145,10 @@
         padding: 3px 6px;
         color: var(--muted);
       }
+      /* 按钮一多就会溢出侧栏（与 #tree-head 同一个坑）：放不下就换行，
+         否则最左侧的按钮会被挤到 x<0，点上去等于点在视口外 */
+      #files-head { flex-wrap: wrap; }
+      #files-head #files-path { flex: 1 0 100%; }
       #files-head { border-bottom: 1px solid #2a2a30; }
       #files-foot { border-top: 1px solid #2a2a30; }
       #files-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -162,6 +166,7 @@
       #files-list .row { display: flex; gap: 8px; padding: 1px 8px; white-space: nowrap; }
       #files-list .row.name { cursor: pointer; }
       #files-list .row:hover { background: #24242a; }
+      #files-list .row.selected { background: #2f4f7f; }
       #files-list .row span:first-child { flex: 1; overflow: hidden; text-overflow: ellipsis; }
       #vault-panel {
         border-bottom: 1px solid #2a2a30;
@@ -279,7 +284,12 @@
         font-family: "JetBrains Mono", Consolas, monospace;
         font-size: 12px;
       }
-      #paste-actions { display: flex; justify-content: flex-end; gap: 8px; }
+      #paste-actions {
+        display: flex;
+        flex-direction: row-reverse;
+        justify-content: flex-start;
+        gap: 8px;
+      }
       #paste-actions button {
         background: #2a2a30;
         color: var(--fg);
@@ -352,6 +362,42 @@
         font-size: 12px;
         color: var(--muted);
       }
+      #name-dialog {
+        background: #202024;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 6px;
+        padding: 14px 16px;
+        font-size: 13px;
+      }
+      #name-dialog::backdrop { background: #0009; }
+      #name-dialog form { display: flex; flex-direction: column; gap: 10px; margin: 0; }
+      #name-dialog p { margin: 0; color: var(--muted); }
+      #name-dialog input {
+        background: #17171a;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 4px;
+        padding: 4px 8px;
+        font: inherit;
+        width: 260px;
+      }
+      #name-actions {
+        display: flex;
+        flex-direction: row-reverse;
+        justify-content: flex-start;
+        gap: 8px;
+      }
+      #name-actions button {
+        background: #2a2a30;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 4px;
+        padding: 4px 14px;
+        font: inherit;
+        cursor: pointer;
+      }
+      #name-ok { border-color: var(--accent); color: var(--accent); }
       #find-bar input {
         background: #2a2a30;
         color: var(--fg);
@@ -433,6 +479,9 @@
         <div id="files" hidden>
           <div id="files-head">
             <span id="files-path">/</span>
+            <button id="files-mkdir" title="在当前目录新建文件夹">+ 目录</button>
+            <button id="files-rename" title="重命名选中项" disabled>改名</button>
+            <button id="files-remove" title="删除选中项" disabled>删除</button>
             <button id="files-up" title="上一级">↑</button>
             <button id="files-upload-btn" title="上传本地文件到当前目录">上传</button>
             <button id="files-refresh" title="刷新">⟳</button>
@@ -479,9 +528,21 @@
       <form method="dialog">
         <p id="paste-info"></p>
         <pre id="paste-preview"></pre>
+        <!-- 同上：粘贴放前面，回车才是「粘贴」 -->
         <div id="paste-actions">
-          <button value="no" id="paste-cancel">取消</button>
           <button value="yes" id="paste-ok">粘贴</button>
+          <button value="no" id="paste-cancel">取消</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="name-dialog">
+      <form method="dialog">
+        <p id="name-title"></p>
+        <input id="name-input" spellcheck="false" />
+        <!-- 确定放前面：Enter 会激活**第一个** submit 按钮，放反了回车就是「取消」 -->
+        <div id="name-actions">
+          <button value="yes" id="name-ok">确定</button>
+          <button value="no" id="name-cancel">取消</button>
         </div>
       </form>
     </dialog>

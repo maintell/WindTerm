@@ -123,7 +123,7 @@ def test_ssh_connect(server, wt):
 | 调试参数必须由代码传，不能用 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` | `wry` 每次都会 `set_additional_browser_arguments`，会覆盖该环境变量 |
 | 连上 CDP 后立刻 `Emulation.setFocusEmulationEnabled` | 窗口没拿到前台焦点时，WebView2 会偶发吞掉可信鼠标/键盘事件——观察到过一次「点了按钮没反应」的假失败 |
 
-当前覆盖 99 项断言：
+当前覆盖 104 项断言：
 
 - 本地终端：页面加载与 Tauri 桥接、启动自检、点击建会话、句柄可取、首屏输出渲染、
   焦点在终端、键盘输入、命令输出、统计字段非零值、前后端行列一致、ack 回流归零、
@@ -180,6 +180,9 @@ def test_ssh_connect(server, wt):
 - 隧道自动启动（`NET-005`）：建一条 `autoStart` 的动态代理 → 停掉（配置留下）→
   调 `tunnel_autostart` **只用保险库里的凭据**把它重新拉起来（`start_spec` 与手动启动
   共用同一条路径，所以两者的错误语义一致）；
+- SFTP 文件管理：新建目录后列表里出现它（`is_dir` 来自服务端属性）、
+  单击选中一行、改名后旧名字消失、删除要二次确认（按钮先变「确认删除」）、
+  确认后从列表消失；
 - 三条防「沉默失效」的自检（都来自 G8 的教训）：  前端版本标记（`window.__wt.ui`）与本次构建一致、二进制内嵌的 `main.js` 与磁盘源文件
   逐字节一致、有终端会话在跑时页面的 `setTimeout` 与 `requestAnimationFrame` 仍在触发；
 - 全程断言页面无未捕获异常。

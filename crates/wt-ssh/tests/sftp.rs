@@ -56,6 +56,62 @@ async fn lists_reads_and_writes_over_real_channel() {
 }
 
 #[tokio::test]
+async fn creates_renames_and_removes_over_real_channel() {
+    let server = MockSshServer::start().await;
+    let conn = SshConnection::connect_password(&cfg(server.port), "secret", HostKeyPolicy::AcceptAll)
+        .await
+        .expect("连接应成功");
+    let sftp = SftpClient::open(conn).await.expect("应能打开 sftp 子系统");
+
+    // 建目录 → 列表里应当是**目录**（`is_dir` 来自服务端属性，不是靠猜）
+    sftp.create_dir("/logs").await.expect("建目录应成功");
+    let entries = sftp.list_dir("/").await.expect("列目录");
+    let logs = entries
+        .iter()
+        .find(|e| e.name == "logs")
+        .expect("新建的目录应当出现在列表里");
+    assert!(logs.is_dir, "新建的应当是目录");
+
+    // 改名
+    sftp.rename("/logs", "/logs-old").await.expect("改名应成功");
+    let entries = sftp.list_dir("/").await.expect("列目录");
+    assert!(entries.iter().any(|e| e.name == "logs-old"), "改名后应当出现");
+    assert!(!entries.iter().any(|e| e.name == "logs"), "旧名字应当消失");
+
+    // 删除空目录
+    sftp.remove_dir("/logs-old").await.expect("删空目录应成功");
+    let entries = sftp.list_dir("/").await.expect("列目录");
+    assert!(!entries.iter().any(|e| e.name == "logs-old"));
+
+    // 非空目录不许删：这是刻意不做递归删除的保护，错误信息要说明原因
+    sftp.create_dir("/keep").await.expect("建目录");
+    sftp.write_file("/keep/inner.txt", b"x")
+        .await
+        .expect("往目录里写文件");
+    let err = sftp
+        .remove_dir("/keep")
+        .await
+        .expect_err("非空目录必须删不掉");
+    assert!(
+        err.detail.as_deref().unwrap_or_default().contains("空目录"),
+        "提示要说清「只有空目录能删」，实际：{:?}",
+        err.detail
+    );
+
+    // 删文件
+    sftp.write_file("/gone.txt", b"bye").await.expect("写文件");
+    sftp.remove_file("/gone.txt").await.expect("删文件应成功");
+    assert!(
+        !sftp
+            .list_dir("/")
+            .await
+            .expect("列目录")
+            .iter()
+            .any(|e| e.name == "gone.txt")
+    );
+}
+
+#[tokio::test]
 async fn sftp_and_shell_share_one_connection() {
     let server = MockSshServer::start().await;
     server.fs.lock().await.insert("/a.txt".into(), b"a".to_vec());
