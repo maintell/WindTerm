@@ -402,6 +402,90 @@ pub fn collect_cascade_delete(
     (folder_ids, session_ids)
 }
 
+/// 隧道类型（`NET-001` / `NET-002` / `NET-003`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TunnelKind {
+    /// 本地转发 `-L`
+    Local,
+    /// 远程转发 `-R`（尚未实现，见 `README` 的 `G13`）
+    Remote,
+    /// 动态代理 SOCKS5 `-D`
+    Dynamic,
+}
+
+/// 一条隧道的配置（`design/10` §3.1 的 `TunnelSpec`）。
+///
+/// `listen_port = 0` 表示「由系统分配」——**不要**在保存时把它改写成实际端口：
+/// 那会把「每次随机」悄悄变成「固定某个端口」，下次启动可能撞上占用。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TunnelSpec {
+    pub id: String,
+    pub name: String,
+    pub kind: TunnelKind,
+    pub listen_host: String,
+    pub listen_port: u16,
+    pub target_host: Option<String>,
+    pub target_port: Option<u16>,
+    /// 承载它的会话（`viaSessionId`）；为空表示用连接时的临时参数
+    pub via_session_id: Option<SessionId>,
+    /// `manual` / `onAppStart`：应用启动后自动拉起
+    pub auto_start: bool,
+}
+
+impl TunnelSpec {
+    /// 校验配置是否自洽。
+    ///
+    /// 关键是**拒绝矛盾配置**：动态代理带了目标、本地转发没有目标、
+    /// 或者配了还没实现的 `-R`。让这类行存进库里，用户会以为它生效了。
+    pub fn validate(&self) -> Result<(), WtError> {
+        if self.id.trim().is_empty() {
+            return Err(WtError::new("TUN_BAD_ARGUMENT").message("隧道 id 不能为空"));
+        }
+        if self.name.trim().is_empty() {
+            return Err(WtError::new("TUN_BAD_ARGUMENT")
+                .message("隧道名称不能为空")
+                .hint("给隧道起个能认出来的名字，比如「测试库」", HintAction::None));
+        }
+        match self.kind {
+            TunnelKind::Remote => Err(WtError::new("TUN_UNSUPPORTED_KIND")
+                .message("远程转发（-R）还没实现")
+                .detail("当前只支持本地转发 -L 与动态代理 -D")
+                .hint("用本地转发 -L 或者动态代理 -D 替代", HintAction::None)),
+            TunnelKind::Local => {
+                let host = self.target_host.as_deref().unwrap_or_default().trim();
+                if host.is_empty() {
+                    return Err(WtError::new("TUN_BAD_ARGUMENT")
+                        .message("本地转发必须有目标主机")
+                        .detail("目标主机名在服务器侧解析，比如 db 或 redis.internal"));
+                }
+                if self.target_port.unwrap_or(0) == 0 {
+                    return Err(WtError::new("TUN_BAD_ARGUMENT")
+                        .message("本地转发必须有目标端口")
+                        .detail("端口范围 1–65535"));
+                }
+                Ok(())
+            }
+            TunnelKind::Dynamic => {
+                // 动态代理的目标由客户端每次请求决定；留着一个目标字段会让人
+                // 以为它是「限定只能连这个」，排查时会被自己骗
+                if self.target_host.as_deref().unwrap_or_default().trim().is_empty() {
+                    Ok(())
+                } else {
+                    Err(WtError::new("TUN_BAD_ARGUMENT")
+                        .message("动态代理不需要目标主机")
+                        .detail("SOCKS5 的目标由客户端每次请求决定；请清空目标字段"))
+                }
+            }
+        }
+    }
+
+    /// `listen_port = 0` 时，这一行描述的是「系统随机端口」而不是某个固定端口。
+    pub fn wants_ephemeral_port(&self) -> bool {
+        self.listen_port == 0
+    }
+}
+
 /// 校验跳板链：不存在环，且不超过 5 跳。
 ///
 /// `chain_of` 返回某会话直接依赖的跳板（通常来自 `options.jumpSessionId`）。
@@ -602,6 +686,56 @@ mod tests {
         };
         let err = validate_jump_chain(&SessionId::from("a"), chain).unwrap_err();
         assert_eq!(err.code, "SES_JUMP_CYCLE");
+    }
+
+    #[test]
+    fn tunnel_spec_validation_rejects_contradictions() {
+        let base = TunnelSpec {
+            id: "t1".into(),
+            name: "测试库".into(),
+            kind: TunnelKind::Local,
+            listen_host: "127.0.0.1".into(),
+            listen_port: 0,
+            target_host: Some("db".into()),
+            target_port: Some(3306),
+            via_session_id: None,
+            auto_start: false,
+        };
+        assert!(base.validate().is_ok(), "正常的本地转发应当通过");
+        assert!(base.wants_ephemeral_port(), "端口 0 表示系统分配");
+
+        // 本地转发缺目标 → 拒绝：留着会变成「点了启动却立刻失败」的坏配置
+        let mut no_target = base.clone();
+        no_target.target_host = None;
+        assert_eq!(no_target.validate().unwrap_err().code, "TUN_BAD_ARGUMENT");
+
+        let mut no_port = base.clone();
+        no_port.target_port = Some(0);
+        assert_eq!(no_port.validate().unwrap_err().code, "TUN_BAD_ARGUMENT");
+
+        // 动态代理不能带目标：带了会让人以为「只能连这个」
+        let mut dyn_with_target = base.clone();
+        dyn_with_target.kind = TunnelKind::Dynamic;
+        assert_eq!(
+            dyn_with_target.validate().unwrap_err().code,
+            "TUN_BAD_ARGUMENT"
+        );
+
+        let mut dyn_ok = base.clone();
+        dyn_ok.kind = TunnelKind::Dynamic;
+        dyn_ok.target_host = None;
+        dyn_ok.target_port = None;
+        assert!(dyn_ok.validate().is_ok());
+        assert_eq!(dyn_ok.listen_port, 0, "动态代理同样支持随机端口");
+
+        // -R 还没实现：明确拒绝，而不是存进库里假装能用
+        let mut remote = base.clone();
+        remote.kind = TunnelKind::Remote;
+        assert_eq!(remote.validate().unwrap_err().code, "TUN_UNSUPPORTED_KIND");
+
+        let mut no_name = base.clone();
+        no_name.name = "  ".into();
+        assert_eq!(no_name.validate().unwrap_err().code, "TUN_BAD_ARGUMENT");
     }
 
     #[test]

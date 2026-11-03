@@ -13,18 +13,23 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use wt_common::time::now_iso8601;
 use wt_common::WtError;
-use wt_core::{Environment, Folder, FolderId, Session, SessionId, SessionKind};
+use wt_core::{Environment, Folder, FolderId, Session, SessionId, SessionKind, TunnelKind, TunnelSpec};
 
 /// 当前支持的最高 schema 版本。
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
-const MIGRATIONS: &[(i64, &str, &str)] = &[(1, "init", include_str!("../migrations/0001_init.sql"))];
+const MIGRATIONS: &[(i64, &str, &str)] = &[
+    (1, "init", include_str!("../migrations/0001_init.sql")),
+    (2, "tunnels", include_str!("../migrations/0002_tunnels.sql")),
+];
 
 /// 一次加载的结果。
 #[derive(Debug, Default, Clone)]
 pub struct Snapshot {
     pub folders: Vec<Folder>,
     pub sessions: Vec<Session>,
+    /// 隧道配置（只在库里，运行状态由调用方维护）
+    pub tunnels: Vec<TunnelSpec>,
     /// 无法解析的行（未知会话类型、坏 JSON 等）。绝不静默丢弃。
     pub warnings: Vec<String>,
 }
@@ -226,6 +231,57 @@ impl Store {
         let tx = self.conn.transaction().map_err(map_sqlite)?;
         upsert_session_tx(&tx, s)?;
         tx.commit().map_err(map_sqlite)
+    }
+
+    /// 保存一条隧道配置。**先校验**：不自洽的配置不该进库（`TunnelSpec::validate`）。
+    pub fn upsert_tunnel(&mut self, t: &TunnelSpec) -> Result<(), WtError> {
+        t.validate()?;
+        let kind = match t.kind {
+            TunnelKind::Local => "local",
+            TunnelKind::Remote => "remote",
+            TunnelKind::Dynamic => "dynamic",
+        };
+        let tx = self.conn.transaction().map_err(map_sqlite)?;
+        tx.execute(
+            "INSERT INTO tunnels (id, name, kind, listen_host, listen_port, target_host,
+                                  target_port, via_session_id, auto_start, rev)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1)
+             ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                kind = excluded.kind,
+                listen_host = excluded.listen_host,
+                listen_port = excluded.listen_port,
+                target_host = excluded.target_host,
+                target_port = excluded.target_port,
+                via_session_id = excluded.via_session_id,
+                auto_start = excluded.auto_start,
+                rev = tunnels.rev + 1",
+            params![
+                t.id,
+                t.name,
+                kind,
+                t.listen_host,
+                i64::from(t.listen_port),
+                t.target_host,
+                t.target_port.map(i64::from),
+                t.via_session_id.as_ref().map(|s| s.as_str()),
+                i64::from(t.auto_start),
+            ],
+        )
+        .map_err(map_sqlite)?;
+        tx.commit().map_err(map_sqlite)
+    }
+
+    /// 删除一条隧道配置（**不等于停止**：停止由调用方负责）。
+    pub fn delete_tunnel(&mut self, id: &str) -> Result<(), WtError> {
+        let n = self
+            .conn
+            .execute("DELETE FROM tunnels WHERE id = ?1", params![id])
+            .map_err(map_sqlite)?;
+        if n == 0 {
+            return Err(WtError::new("STORE_NOT_FOUND").message(format!("隧道 {id} 不存在")));
+        }
+        Ok(())
     }
 
     pub fn delete_folder(&mut self, id: &FolderId) -> Result<(), WtError> {
@@ -438,11 +494,70 @@ impl Store {
             });
         }
 
+        let tunnels = self.load_tunnels(&mut warnings)?;
+
         Ok(Snapshot {
             folders,
             sessions,
+            tunnels,
             warnings,
         })
+    }
+
+    /// 读出隧道配置。未知类型只警告、不丢——用户需要知道库里有什么。
+    fn load_tunnels(&self, warnings: &mut Vec<String>) -> Result<Vec<TunnelSpec>, WtError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, name, kind, listen_host, listen_port, target_host, target_port,
+                        via_session_id, auto_start
+                 FROM tunnels ORDER BY name, id",
+            )
+            .map_err(map_sqlite)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, i64>(8)?,
+                ))
+            })
+            .map_err(map_sqlite)?;
+
+        let mut out = Vec::new();
+        for r in rows {
+            let (id, name, kind_s, listen_host, listen_port, th, tp, via, auto_start) =
+                r.map_err(map_sqlite)?;
+            let kind = match kind_s.as_str() {
+                "local" => TunnelKind::Local,
+                "remote" => TunnelKind::Remote,
+                "dynamic" => TunnelKind::Dynamic,
+                other => {
+                    warnings.push(format!(
+                        "隧道「{name}」（{id}）的类型 `{other}` 不认识，已跳过"
+                    ));
+                    continue;
+                }
+            };
+            out.push(TunnelSpec {
+                id,
+                name,
+                kind,
+                listen_host,
+                listen_port: u16::try_from(listen_port).unwrap_or(0),
+                target_host: th,
+                target_port: tp.and_then(|p| u16::try_from(p).ok()),
+                via_session_id: via.map(SessionId::from),
+                auto_start: auto_start != 0,
+            });
+        }
+        Ok(out)
     }
 
     /// 目录计数（诊断与测试用）。
@@ -712,6 +827,67 @@ mod tests {
     }
 
     #[test]
+    fn tunnels_persist_and_reject_contradictions() {
+        let mut s = Store::open_in_memory().unwrap();
+        let mut spec = TunnelSpec {
+            id: "t1".into(),
+            name: "测试库".into(),
+            kind: TunnelKind::Local,
+            listen_host: "127.0.0.1".into(),
+            listen_port: 0,
+            target_host: Some("db".into()),
+            target_port: Some(3306),
+            via_session_id: None,
+            auto_start: true,
+        };
+
+        s.upsert_tunnel(&spec).unwrap();
+        let snap = s.load_snapshot().unwrap();
+        assert_eq!(snap.tunnels, vec![spec.clone()], "存进去的要原样读回来");
+        assert!(snap.warnings.is_empty());
+
+        // 同 id 再存是更新，不是新增
+        spec.name = "改名了".into();
+        s.upsert_tunnel(&spec).unwrap();
+        let snap2 = s.load_snapshot().unwrap();
+        assert_eq!(snap2.tunnels.len(), 1);
+        assert_eq!(snap2.tunnels[0].name, "改名了");
+
+        // 矛盾配置进不了库：动态代理不能带目标
+        let mut bad = spec.clone();
+        bad.kind = TunnelKind::Dynamic;
+        assert_eq!(s.upsert_tunnel(&bad).unwrap_err().code, "TUN_BAD_ARGUMENT");
+
+        s.delete_tunnel("t1").unwrap();
+        assert!(s.load_snapshot().unwrap().tunnels.is_empty());
+        assert_eq!(
+            s.delete_tunnel("t1").unwrap_err().code,
+            "STORE_NOT_FOUND",
+            "删不存在的要报错，不能静默成功"
+        );
+    }
+
+    #[test]
+    fn unknown_tunnel_kind_is_reported_not_dropped_silently() {
+        let s = Store::open_in_memory().unwrap();
+        // 模拟「旧版本写入、新版本不认识的类型」
+        s.conn
+            .execute(
+                "INSERT INTO tunnels (id, name, kind, listen_host, listen_port)
+                 VALUES ('x', '旧隧道', 'socks4', '127.0.0.1', 0)",
+                [],
+            )
+            .unwrap();
+        let snap = s.load_snapshot().unwrap();
+        assert!(snap.tunnels.is_empty());
+        assert!(
+            snap.warnings.iter().any(|w| w.contains("socks4")),
+            "未知类型必须出现在 warnings 里，实际：{:?}",
+            snap.warnings
+        );
+    }
+
+    #[test]
     fn refuses_to_open_newer_schema() {
         let mut s = Store::open_in_memory().unwrap();
         s.conn
@@ -765,6 +941,7 @@ mod tests {
         let existing = Snapshot {
             folders: vec![folder("f-prod", None, "Prod")],
             sessions: vec![session("s1", Some("f-prod"), "web-01")],
+            tunnels: Vec::new(),
             warnings: Vec::new(),
         };
 
@@ -792,6 +969,7 @@ mod tests {
         let existing = Snapshot {
             folders: vec![folder("f-a", None, "A")],
             sessions: Vec::new(),
+            tunnels: Vec::new(),
             warnings: Vec::new(),
         };
         // 导入内容：A（已存在）→ B（新）→ 会话挂在 B 下

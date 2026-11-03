@@ -85,7 +85,7 @@ cargo run -p wt-cli -- session list
 | G10 | 文件面板还缺：拖拽传输（`FIL-004`）、多会话并存（`FIL-001`）、新建目录/改名/删除、传输进度与断点续传（`FIL-019`） | 能用，但不如 MobaXterm 顺手：批量要一个个选，大文件没有进度也不能续传 | 按 `FIL-004` → `FIL-001` → `FIL-019` 顺序补 |
 | G11 | 右键 / 中键粘贴暂时不可用：WebView2 里 `navigator.clipboard.readText()` 要剪贴板读权限，当前构建拿不到（既不 resolve 也不 reject） | 键盘路径（`Ctrl+V` / `Ctrl+Shift+V` / `Shift+Insert`）完全可用；右键会明确提示「读剪贴板被拒绝，请用 Ctrl+Shift+V」，不会静默无反应 | 需要 Rust 侧读剪贴板：接 `tauri-plugin-clipboard-manager`，或自己用 `arboard`。**两者在 Linux 上都会引入 X11 客户端依赖**，与 ADR-0012 的「零 X11 依赖」取向相关，须先定调再动手 |
 | G12 | `TER-020` 快捷键体系还没做：键位写死在 `main.js`，不能重绑、不能导出 | 现有键位够用，但用户改不了，也不符合规格的「全部可重绑 + 冲突检测」 | 等设置体系（`SET-001`）落地后一起做键位表 |
-| G13 | 隧道缺 `-R`（`NET-002`）；配置不落库（关应用即消失），没有 `autoStart` / 重连期保持监听（`NET-005`、`design/10` §3.4），也没有每隧道连接上限；SOCKS5 只支持 `CONNECT`（`BIND`/`UDP ASSOCIATE` 按规格回 `0x07`），界面还没有配代理认证的入口 | 只能手工建、手工停；关掉应用后要重填 | 先做落库（`TunnelSpec` 进 SQLite）再做 `-R` 与重连 |
+| G13 | 隧道配置**已能落库**（`wt-core::TunnelSpec` + `wt-store` schema v2），但界面还没接线——关掉应用隧道仍会消失；`autoStart` 与 `viaSessionId` 未启用；`-R`（`NET-002`）未做；SOCKS5 只支持 `CONNECT`（`BIND`/`UDP ASSOCIATE` 按规格回 `0x07`），界面还没有配代理认证的入口；没有每隧道连接上限 | 只能手工建、手工停；关掉应用后要重填 | 下一步：隧道表单加「承载会话」下拉 → 存 `viaSessionId`（凭据走保险库）→ 启动已保存的隧道；之后再做 `-R` |
 | G14 | 跳板机的 **CLI 入口（`--jump`）还没做**；只支持单跳（`SES-025` 多跳未做）；跳板机密码仍需手填或依赖保险库里**它自己**那条会话的凭据 | 命令行用户配不了跳板；多跳链路要拆成两段手工操作 | `SshTarget` 加字段会牵动多处构造与用例，单独一轮做；多跳要先把 `design/10` §1 的 `StreamProvider` 抽象补上 |
 | G6 | 没有分屏、主题自定义 | 多会话已用标签页解决；查找与字号已可用（Ctrl+F / Ctrl+±） | 随 `TER-01x` / `SET-00x` 推进 |
 | G9 | `wt ssh shell` 的**交互路径**没有在真实 sshd 上验证过（本机无 sshd） | 参数解析、连接失败与「连接前不碰终端」已验证；raw 模式下的按键转发、窗口尺寸、远端退出后恢复终端只能靠人工试 | 拿到真实 sshd 后走一遍：`ls` 有颜色、方向键可用、`Ctrl+C` 中断、`Ctrl+D` 退出后本机终端正常 |
