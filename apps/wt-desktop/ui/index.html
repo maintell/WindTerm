@@ -148,7 +148,17 @@
       /* 按钮一多就会溢出侧栏（与 #tree-head 同一个坑）：放不下就换行，
          否则最左侧的按钮会被挤到 x<0，点上去等于点在视口外 */
       #files-head { flex-wrap: wrap; }
+      #files-head #files-session { flex: 1 0 100%; }
       #files-head #files-path { flex: 1 0 100%; }
+      #files-head select {
+        background: #2a2a30;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 4px;
+        padding: 1px 4px;
+        font: inherit;
+        font-size: 12px;
+      }
       #files-head { border-bottom: 1px solid #2a2a30; }
       #files-foot { border-top: 1px solid #2a2a30; }
       #files-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -480,6 +490,9 @@
         <div id="tree-body"><p id="tree-empty">正在读取会话库…</p></div>
         <div id="files" hidden>
           <div id="files-head">
+            <select id="files-session" title="文件面板对着哪台机器">
+              <option value="">跟随连接表单</option>
+            </select>
             <span id="files-path">/</span>
             <button id="files-mkdir" title="在当前目录新建文件夹">+ 目录</button>
             <button id="files-rename" title="重命名选中项" disabled>改名</button>

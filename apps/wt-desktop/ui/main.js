@@ -528,6 +528,7 @@ function renderTree(dto) {  lastTree = dto;
   treeBody.textContent = "";
   refreshJumpSelect(dto);
   refreshTunnelSessionSelect();
+  refreshFilesSessionSelect();
   if (!dto.exists) {
     treeEmpty(`没有会话库：\n${dto.db_path}\n先导入，再点刷新`);
     return;
@@ -1047,6 +1048,50 @@ let removeArmed = false;
 
 let sftpPath = "/";
 
+/**
+ * 文件面板对着哪个会话（`FIL-001` 多会话并存）。
+ *
+ * 空字符串表示「跟随连接表单」——保留原来的用法；选了会话之后，
+ * 主机/端口/用户名来自那条会话，密码仍取表单里的（保险库解锁时会自动填）。
+ */
+let filesSessionId = "";
+/** 每个会话各自记住自己浏览到哪（切换会话不该把路径带回根目录） */
+const filesPaths = new Map();
+
+const filesSessionSelect = document.getElementById("files-session");
+
+/** 文件面板用的连接参数：选了会话就用会话的，否则跟随表单。 */
+function filesReq() {
+  const s = filesSessionId
+    ? (lastTree?.sessions ?? []).find((x) => x.id === filesSessionId)
+    : null;
+  if (!s) return sftpReq();
+  return {
+    ...sftpReq(),
+    host: s.host ?? "",
+    port: s.port ?? 22,
+    user: s.username ?? "",
+  };
+}
+
+/** 刷新面板顶部的会话下拉（只列 SSH）。 */
+function refreshFilesSessionSelect() {
+  const keep = filesSessionSelect.value;
+  filesSessionSelect.textContent = "";
+  const follow = document.createElement("option");
+  follow.value = "";
+  follow.textContent = "跟随连接表单";
+  filesSessionSelect.appendChild(follow);
+  for (const s of lastTree?.sessions ?? []) {
+    if (s.kind !== "ssh") continue;
+    const o = document.createElement("option");
+    o.value = s.id;
+    o.textContent = s.name;
+    filesSessionSelect.appendChild(o);
+  }
+  filesSessionSelect.value = keep;
+}
+
 function setFilesMsg(text) {
   filesMsg.textContent = text;
 }
@@ -1084,11 +1129,13 @@ async function loadDir(path) {
     // 后端如果挂住，前端只会一直显示「读取中…」——既看不出是慢还是死，
     // 也没法让用户重试。deadline 把它变成一条明确的错误，界面才有出路。
     const r = await withDeadline(
-      invoke("sftp_list", { arg: { req: sftpReq(), path, jump: jumpReq() } }),
+      invoke("sftp_list", { arg: { req: filesReq(), path, jump: jumpReq() } }),
       20000,
       "列目录",
     );
     sftpPath = r.path || path;
+    // 每个会话各自记住浏览位置：切换会话回来还在原处
+    filesPaths.set(filesSessionId, sftpPath);
     filesPath.textContent = sftpPath;
     filesPath.title = sftpPath;
     filesList.textContent = "";
@@ -1150,6 +1197,14 @@ function withDeadline(promise, ms, what) {
   });
 }
 
+// 切换「文件面板对着哪个会话」：存下当前位置，恢复目标会话上次的位置
+filesSessionSelect.addEventListener("change", async () => {
+  filesPaths.set(filesSessionId, sftpPath);
+  filesSessionId = filesSessionSelect.value;
+  const restored = filesPaths.get(filesSessionId) ?? "/";
+  await loadDir(restored);
+});
+
 filesUp.addEventListener("click", () => loadDir(parentPath(sftpPath)));
 filesRefresh.addEventListener("click", () => loadDir(sftpPath));
 
@@ -1205,7 +1260,7 @@ async function makeDir() {
   setFilesMsg("新建中…");
   try {
     await withDeadline(
-      invoke("sftp_mkdir", { req: sftpReq(), path: joinPath(sftpPath, name), jump: jumpReq() }),
+      invoke("sftp_mkdir", { req: filesReq(), path: joinPath(sftpPath, name), jump: jumpReq() }),
       20000,
       "新建目录",
     );
@@ -1225,7 +1280,7 @@ async function renameEntry() {
   try {
     await withDeadline(
       invoke("sftp_rename", {
-        req: sftpReq(),
+        req: filesReq(),
         from: joinPath(sftpPath, oldName),
         to: joinPath(sftpPath, name),
         jump: jumpReq(),
@@ -1262,7 +1317,7 @@ async function onRemoveClick() {
   try {
     await withDeadline(
       invoke("sftp_remove", {
-        req: sftpReq(),
+        req: filesReq(),
         path: joinPath(sftpPath, target.name),
         isDir: target.is_dir,
         jump: jumpReq(),
@@ -1326,7 +1381,7 @@ async function downloadFile(path) {
   setFilesMsg("下载中…");
   try {
     const r = await withDeadline(
-      invoke("sftp_download", { req: sftpReq(), path, jump: jumpReq() }),
+      invoke("sftp_download", { req: filesReq(), path, jump: jumpReq() }),
       30000,
       "下载",
     );
@@ -1374,7 +1429,7 @@ async function uploadFiles(picked) {
     try {
       const path = joinPath(sftpPath, file.name);
       id = await withDeadline(
-        invoke("sftp_upload_begin", { req: sftpReq(), path, jump: jumpReq() }),
+        invoke("sftp_upload_begin", { req: filesReq(), path, jump: jumpReq() }),
         20000,
         "开始上传",
       );
@@ -1893,7 +1948,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-19",
+  ui: "wt-ui-20",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";

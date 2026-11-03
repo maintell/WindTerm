@@ -336,18 +336,35 @@ async function pressChord(mods, key, code, vk) {
   await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
 }
 
-/** 单击文件面板里的某一行（按名字），用于选中。 */
+/**
+ * 单击文件面板里的某一行（按名字），用于选中。
+ *
+ * 带重试：目录刚切换时列表还在「读取中…」，立刻点会扑空——
+ * 这种时序失败看起来像功能坏了，其实是断言太急。
+ */
 async function clickFileRow(name) {
-  const box = await cdp.eval(`(() => {
-    const row = [...document.querySelectorAll("#files-list .row")].find(
-      (r) => r.querySelector("span")?.textContent === ${JSON.stringify(name)},
-    );
-    if (!row) return null;
-    const r = row.getBoundingClientRect();
-    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-  })()`);
-  if (!box) throw new Error(`文件面板里找不到 ${name}`);
+  const deadline = Date.now() + 15000;
+  let box = null;
+  while (Date.now() < deadline) {
+    box = await cdp.eval(`(() => {
+      const row = [...document.querySelectorAll("#files-list .row")].find(
+        (r) => r.querySelector("span")?.textContent === ${JSON.stringify(name)},
+      );
+      if (!row) return null;
+      const r = row.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    })()`);
+    if (box) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  if (!box) throw new Error(`文件面板里找不到 ${name}（当前：${await rowTexts()}）`);
   await clickAt(box);
+}
+
+/** 当前面板里有哪些行（失败时用来定位）。 */
+async function rowTexts() {
+  const f = await cdp.eval(`window.__wt?.files ?? null`);
+  return `${(f?.rows ?? []).join("、")} msg=${f?.msg ?? ""} path=${f?.path ?? ""}`;
 }
 
 /** 在视口坐标处双击（两次按下/抬起，第二次 clickCount=2 才会合成 dblclick）。 */
@@ -623,7 +640,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-19",
+    uiVersion === "wt-ui-20",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -1707,6 +1724,89 @@ try {
     JSON.stringify(up),
   );
   check("分块上传后远端出现该文件", bigUploaded !== null, "200 KB");
+
+  // 16d-5. 多会话并存（FIL-001）：文件面板可以对着某个会话，而不是只能跟随连接表单
+  const filesSessionId = await cdp.eval(`(async () => {
+    const dto = await window.__TAURI__.core.invoke("sessions_load");
+    return dto.sessions.find((s) => s.name === "mock-ssh")?.id ?? null;
+  })()`);
+  // 故意把表单端口改坏：如果面板仍能列出文件，说明它用的是会话里的参数
+  await cdp.eval(`(() => {
+    document.getElementById("port").value = "1";
+    const sel = document.getElementById("files-session");
+    sel.value = ${JSON.stringify(filesSessionId)};
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  })()`);
+  const viaSession = await waitFor(
+    async () => {
+      const f = await cdp.eval(`window.__wt.files`);
+      return f.rows.includes("notes.txt") ? f : null;
+    },
+    { timeout: 20000, label: "按会话列出目录" },
+  ).catch(async () => {
+    const f = await cdp.eval(`window.__wt.files`);
+    throw new Error(`按会话列目录失败：rows=${f.rows.join("、")} msg=${f.msg}`);
+  });
+  check(
+    "文件面板可以对着某个会话（不依赖表单里的端口）",
+    viaSession !== null,
+    viaSession.rows.join("、"),
+  );
+
+  // 路径记忆：进子目录 → 切回「跟随表单」→ 再切回来，应当还在子目录
+  await clickElement("#files-mkdir");
+  await typeText("sub");
+  await waitFor(
+    async () => {
+      const f = await cdp.eval(`window.__wt.files`);
+      return f.rows.includes("sub/") ? f : null;
+    },
+    { timeout: 20000, label: "建子目录" },
+  );
+  await doubleClickFileRow("sub/");
+  const inSub = await waitFor(
+    async () => {
+      const p = await cdp.eval(`document.getElementById("files-path").textContent`);
+      return p.endsWith("/sub") ? p : null;
+    },
+    { timeout: 10000, label: "进入子目录" },
+  ).catch(() => null);
+  check("双击目录能进入", inSub !== null, `${inSub}`);
+
+  await cdp.eval(`(() => {
+    const sel = document.getElementById("files-session");
+    sel.value = "";
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  })()`);
+  await cdp.eval(`(() => {
+    const sel = document.getElementById("files-session");
+    sel.value = ${JSON.stringify(filesSessionId)};
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  })()`);
+  const restoredPath = await waitFor(
+    async () => {
+      const p = await cdp.eval(`document.getElementById("files-path").textContent`);
+      return p.endsWith("/sub") ? p : null;
+    },
+    { timeout: 10000, label: "路径记忆" },
+  ).catch(() => null);
+  check("切回会话后回到各自上次的目录", restoredPath !== null, `${restoredPath}`);
+
+  // 收尾：先复原端口，再让面板跟随表单，最后上到根目录删掉子目录
+  await cdp.eval(`(() => {
+    document.getElementById("port").value = ${JSON.stringify(String(sshPort))};
+    const sel = document.getElementById("files-session");
+    sel.value = "";
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  })()`);
+  await clickElement("#files-up");
+  await clickFileRow("sub/");
+  await clickElement("#files-remove");
+  await clickElement("#files-remove");
 
   await clickElement("#files-toggle");
 
