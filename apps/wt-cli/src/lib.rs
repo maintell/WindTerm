@@ -613,7 +613,7 @@ pub async fn run_sftp(
     out: &mut dyn Write,
 ) -> Result<(), String> {
     let conn = connect_target(target).await?;
-    let sftp = wt_ssh::SftpClient::open(&conn)
+    let sftp = wt_ssh::SftpClient::open(conn)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -653,7 +653,8 @@ pub async fn run_sftp(
         }
     }
 
-    conn.disconnect().await;
+    // 连接归 SftpClient 所有，随它一起释放；显式 disconnect 需要额外句柄，
+    // 而进程马上退出，交给 drop 即可。
     Ok(())
 }
 

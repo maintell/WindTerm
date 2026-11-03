@@ -13,13 +13,152 @@
 //! - 收到数据：回 `echo:<原文>`
 //! - `exec_request`：回 `ran:<命令>\r\n`，退出码 0
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use russh::keys::ssh_key::rand_core::{TryCryptoRng, TryRng};
 use russh::server::{Auth, Msg, Server as _, Session};
 use russh::{Channel, ChannelId};
+use russh_sftp::protocol::{Attrs, Data, File, FileAttributes, Handle, Name, Status, StatusCode};
 use tokio::net::TcpListener;
+use tokio::sync::Mutex as AsyncMutex;
+
+/// mock 的远端文件系统：路径 → 内容。目录靠路径前缀体现，够 SFTP 测试用。
+pub type MockFs = Arc<AsyncMutex<HashMap<String, Vec<u8>>>>;
+
+/// 内存文件系统上的 SFTP 服务端（只实现列目录/读/写/stat）。
+///
+/// 刻意不完整——它的价值是让「客户端真的会讲 SFTP」可验证，
+/// 不是替代真实 sshd。
+pub struct MemSftp {
+    fs: MockFs,
+    dir_sent: bool,
+}
+
+impl MemSftp {
+    pub fn new(fs: MockFs) -> Self {
+        Self {
+            fs,
+            dir_sent: false,
+        }
+    }
+}
+
+fn ok_status(id: u32) -> Status {
+    Status {
+        id,
+        status_code: StatusCode::Ok,
+        error_message: "Ok".to_string(),
+        language_tag: "en-US".to_string(),
+    }
+}
+
+impl russh_sftp::server::Handler for MemSftp {
+    type Error = StatusCode;
+
+    fn unimplemented(&self) -> StatusCode {
+        StatusCode::OpUnsupported
+    }
+
+    async fn close(&mut self, id: u32, _handle: String) -> Result<Status, StatusCode> {
+        Ok(ok_status(id))
+    }
+
+    async fn opendir(&mut self, id: u32, path: String) -> Result<Handle, StatusCode> {
+        self.dir_sent = false;
+        Ok(Handle { id, handle: path })
+    }
+
+    async fn readdir(&mut self, id: u32, handle: String) -> Result<Name, StatusCode> {
+        if self.dir_sent {
+            return Err(StatusCode::Eof);
+        }
+        self.dir_sent = true;
+        let prefix = if handle.ends_with('/') {
+            handle.clone()
+        } else {
+            format!("{handle}/")
+        };
+        let fs = self.fs.lock().await;
+        let files = fs
+            .keys()
+            .filter_map(|path| path.strip_prefix(&prefix))
+            .filter(|rest| !rest.is_empty() && !rest.contains('/'))
+            .map(|name| File::new(name, FileAttributes::dummy()))
+            .collect::<Vec<_>>();
+        Ok(Name { id, files })
+    }
+
+    async fn realpath(&mut self, id: u32, _path: String) -> Result<Name, StatusCode> {
+        Ok(Name {
+            id,
+            files: vec![File::dummy("/")],
+        })
+    }
+
+    async fn open(
+        &mut self,
+        id: u32,
+        filename: String,
+        _pflags: russh_sftp::protocol::OpenFlags,
+        _attrs: FileAttributes,
+    ) -> Result<Handle, StatusCode> {
+        Ok(Handle {
+            id,
+            handle: filename,
+        })
+    }
+
+    async fn read(
+        &mut self,
+        id: u32,
+        handle: String,
+        offset: u64,
+        len: u32,
+    ) -> Result<Data, StatusCode> {
+        let fs = self.fs.lock().await;
+        let Some(content) = fs.get(&handle) else {
+            return Err(StatusCode::NoSuchFile);
+        };
+        let start = offset as usize;
+        if start >= content.len() {
+            return Err(StatusCode::Eof);
+        }
+        let end = (start + len as usize).min(content.len());
+        Ok(Data {
+            id,
+            data: content[start..end].to_vec(),
+        })
+    }
+
+    async fn write(
+        &mut self,
+        id: u32,
+        handle: String,
+        offset: u64,
+        data: Vec<u8>,
+    ) -> Result<Status, StatusCode> {
+        let mut fs = self.fs.lock().await;
+        let entry = fs.entry(handle).or_default();
+        let start = offset as usize;
+        if entry.len() < start + data.len() {
+            entry.resize(start + data.len(), 0);
+        }
+        entry[start..start + data.len()].copy_from_slice(&data);
+        Ok(ok_status(id))
+    }
+
+    async fn stat(&mut self, id: u32, path: String) -> Result<Attrs, StatusCode> {
+        let fs = self.fs.lock().await;
+        let Some(content) = fs.get(&path) else {
+            return Err(StatusCode::NoSuchFile);
+        };
+        let mut attrs = FileAttributes::dummy();
+        attrs.size = Some(content.len() as u64);
+        Ok(Attrs { id, attrs })
+    }
+}
 
 /// 桥接 RNG：`ssh-key 0.7` 用 `rand_core 0.10` 的 `CryptoRng`，
 /// 而项目主依赖是 rand 0.8（`rand_core 0.6`）。两者 trait 不同代，无法直接传。
@@ -55,16 +194,29 @@ impl TryRng for BridgeRng {
 
 impl TryCryptoRng for BridgeRng {}
 
-struct MockServer;
+struct MockServer {
+    fs: MockFs,
+}
 
 impl russh::server::Server for MockServer {
     type Handler = MockHandler;
     fn new_client(&mut self, _peer: Option<std::net::SocketAddr>) -> MockHandler {
-        MockHandler
+        MockHandler {
+            channels: Arc::new(AsyncMutex::new(HashMap::new())),
+            subsystems: Arc::new(AsyncMutex::new(std::collections::HashSet::new())),
+            fs: self.fs.clone(),
+        }
     }
 }
 
-struct MockHandler;
+struct MockHandler {
+    /// 子系统请求要把通道从 `channel_open_session` 里取回来
+    channels: Arc<AsyncMutex<HashMap<ChannelId, Channel<Msg>>>>,
+    /// 已经交给子系统（如 echo）的通道：这些通道上的数据不该再被 shell 回显
+    subsystems: Arc<AsyncMutex<std::collections::HashSet<ChannelId>>>,
+    /// SFTP 子系统用的内存文件系统
+    fs: MockFs,
+}
 
 impl russh::server::Handler for MockHandler {
     type Error = russh::Error;
@@ -87,11 +239,61 @@ impl russh::server::Handler for MockHandler {
 
     async fn channel_open_session(
         &mut self,
-        _channel: Channel<Msg>,
+        channel: Channel<Msg>,
         reply: russh::server::ChannelOpenHandle,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
+        self.channels.lock().await.insert(channel.id(), channel);
         reply.accept().await;
+        Ok(())
+    }
+
+    /// `subsystem_request("echo")`：把收到的字节原样回写。
+    ///
+    /// 用来验证「子系统通道 + 字节流」这条链路本身；SFTP 之类的上层协议可以
+    /// 直接挂在同一条通道上（见 `sftp` 分支）。
+    async fn subsystem_request(
+        &mut self,
+        channel_id: ChannelId,
+        name: &str,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        let Some(channel) = self.channels.lock().await.remove(&channel_id) else {
+            session.channel_failure(channel_id)?;
+            return Ok(());
+        };
+        self.subsystems.lock().await.insert(channel_id);
+
+        match name {
+            "echo" => {
+                session.channel_success(channel_id)?;
+                let mut stream = channel.into_stream();
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = [0u8; 4096];
+                    loop {
+                        match stream.read(&mut buf).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                if stream.write_all(&buf[..n]).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+            "sftp" => {
+                session.channel_success(channel_id)?;
+                let handler = MemSftp::new(self.fs.clone());
+                // 必须 spawn：在 handler 里 await 服务端会挡住连接循环，
+                // 客户端发来的报文永远读不到（表现为服务端「立刻退出」）
+                tokio::spawn(async move {
+                    russh_sftp::server::run(channel.into_stream(), handler).await;
+                });
+            }
+            _ => session.channel_failure(channel_id)?,
+        }
         Ok(())
     }
 
@@ -137,6 +339,11 @@ impl russh::server::Handler for MockHandler {
         data: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        // 子系统通道上的数据由子系统自己处理（如 echo 原样回写），
+        // 再回显一遍会污染协议流
+        if self.subsystems.lock().await.contains(&channel) {
+            return Ok(());
+        }
         let echo = format!("echo:{}", String::from_utf8_lossy(data)).into_bytes();
         session.data(channel, echo)?;
         Ok(())
@@ -146,6 +353,8 @@ impl russh::server::Handler for MockHandler {
 /// 已启动的 mock 服务端。`port` 指向 `127.0.0.1`。
 pub struct MockSshServer {
     pub port: u16,
+    /// SFTP 子系统的内存文件系统：用例在连接前预置、连接后检查
+    pub fs: MockFs,
 }
 
 impl MockSshServer {
@@ -170,13 +379,16 @@ impl MockSshServer {
             Box::leak(Box::new(TcpListener::bind("127.0.0.1:0").await.expect("绑定端口")));
         let port = listener.local_addr().expect("取地址").port();
 
-        let server: &'static mut MockServer = Box::leak(Box::new(MockServer));
+        let server: &'static mut MockServer = Box::leak(Box::new(MockServer {
+            fs: Arc::new(AsyncMutex::new(HashMap::new())),
+        }));
+        let fs = server.fs.clone();
         tokio::spawn(server.run_on_socket(config, listener));
 
         // 给监听循环一点时间就绪，减少首连抖动
         tokio::time::sleep(Duration::from_millis(30)).await;
 
-        Self { port }
+        Self { port, fs }
     }
 
     /// 生成一份可被服务端接受的 OpenSSH 私钥（明文）。

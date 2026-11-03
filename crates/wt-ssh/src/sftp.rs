@@ -27,18 +27,31 @@ pub struct RemoteEntry {
 }
 
 /// 一条 SFTP 会话。
+///
+/// **持有 SSH 连接**（`owner`）：通道与连接必须同寿命。不持有的话，调用方
+/// 的 `SshConnection` 一旦 drop，SFTP 通道就会在半空中失效——表现为
+/// 「连上了但列目录永远不返回」，没有任何错误。
 pub struct SftpClient {
     inner: russh_sftp::client::SftpSession,
+    /// `None` 只出现在单测里（那条路径用内存管道，没有 SSH 连接可持有）。
+    ///
+    /// 这个字段**不被读取**，它的作用是「活到 SftpClient 被 drop」——
+    /// 也就是所有权守卫。删掉它，连接会在 open 返回后立刻失效。
+    #[allow(dead_code)]
+    owner: Option<SshConnection>,
 }
 
 impl SftpClient {
-    /// 在已有 SSH 连接上打开 sftp 子系统。
-    pub async fn open(conn: &SshConnection) -> Result<Self, WtError> {
+    /// 在已有 SSH 连接上打开 sftp 子系统（接管连接所有权）。
+    pub async fn open(conn: SshConnection) -> Result<Self, WtError> {
         let stream = conn.open_subsystem("sftp").await?;
         let inner = russh_sftp::client::SftpSession::new(stream)
             .await
             .map_err(|e| sftp_error("打开 SFTP 会话失败", e.to_string()))?;
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            owner: Some(conn),
+        })
     }
 
     /// 列出目录内容，按「目录在前、然后按名字」排序。
@@ -270,7 +283,13 @@ mod tests {
         let inner = russh_sftp::client::SftpSession::new(client_io)
             .await
             .expect("SFTP 握手应成功");
-        (SftpClient { inner }, fs)
+        (
+            SftpClient {
+                inner,
+                owner: None,
+            },
+            fs,
+        )
     }
 
     #[tokio::test]
@@ -311,6 +330,36 @@ mod tests {
             err.hints.iter().any(|h| h.label.contains("sftp")),
             "提示里要说清 sftp 子系统的事"
         );
+    }
+
+    /// 子系统通道能不能真的传字节——SFTP 全靠这条链路。
+    ///
+    /// 用 mock 服务端的 `echo` 子系统（原样回写）验证，不需要 sftp 服务端。
+    #[cfg(feature = "test-util")]
+    #[tokio::test]
+    async fn subsystem_channel_carries_bytes() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        use crate::testing::MockSshServer;
+        use crate::{HostKeyPolicy, SshConfig, SshConnection};
+
+        let server = MockSshServer::start().await;
+        let cfg = SshConfig {
+            host: "127.0.0.1".into(),
+            port: server.port,
+            user: "tester".into(),
+            connect_timeout_secs: 5,
+            ..Default::default()
+        };
+        let conn = SshConnection::connect_password(&cfg, "secret", HostKeyPolicy::AcceptAll)
+            .await
+            .expect("连接应成功");
+
+        let mut stream = conn.open_subsystem("echo").await.expect("应能打开子系统");
+        stream.write_all(b"ping").await.expect("写入应成功");
+        let mut buf = [0u8; 4];
+        stream.read_exact(&mut buf).await.expect("应能读回");
+        assert_eq!(&buf, b"ping");
     }
 
     #[test]
