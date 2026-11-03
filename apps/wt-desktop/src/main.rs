@@ -200,9 +200,6 @@ struct SshOpenDto {
 /// 主机密钥策略是 OpenSSH 的 `accept-new`：第一次见到某台主机就记住指纹，
 /// 之后指纹变化一律拒绝。用户不需要理解 TOFU，但中间人换证书会被挡住。
 ///
-/// `SshConnection` 在命令返回后会被释放——这是安全的：`russh` 的
-/// `Handle::drop` 只打日志，连接任务由 tokio 持有，直到通道关闭。
-/// 若将来 russh 改成 drop 即 abort，这条注释就是排查线索。
 #[tauri::command]
 async fn ssh_open(
     state: State<'_, AppState>,
@@ -256,8 +253,12 @@ async fn ssh_open(
     };
 
     let fingerprint = conn.server_fingerprint().unwrap_or_default();
-    let session = wt_ssh::SshTermSession::open(
-        &conn,
+    // 空闲连接会被 NAT/防火墙静默断开，按会话配置发心跳（默认 30 秒）
+    let keepalive = (cfg.keepalive_secs > 0)
+        .then(|| std::time::Duration::from_secs(u64::from(cfg.keepalive_secs)));
+    let session = wt_ssh::SshTermSession::open_owned(
+        conn,
+        keepalive,
         &cfg.term_type,
         cols.max(20),
         rows.max(4),

@@ -38,6 +38,9 @@ pub struct SshTermSession {
 
 impl SshTermSession {
     /// 打开一个带 PTY 的 shell 会话。
+    ///
+    /// 连接仍由调用方持有，因此**没有 keepalive**——空闲连接可能被中间设备断开。
+    /// 需要保活就用 [`SshTermSession::open_owned`]。
     pub async fn open(
         conn: &SshConnection,
         term: &str,
@@ -45,12 +48,50 @@ impl SshTermSession {
         rows: u16,
         ring: RingBuffer,
     ) -> Result<Self, WtError> {
-        let mut channel = conn.open_shell(term, cols as u32, rows as u32).await?;
+        let channel = conn.open_shell(term, cols as u32, rows as u32).await?;
+        Ok(Self::start(channel, ring, None, None, cols, rows))
+    }
+
+    /// 打开会话并**接管连接**，按 `keepalive` 周期发心跳。
+    ///
+    /// 接管的两个理由：① 连接句柄与通道同寿命，不再依赖「`Handle` 被 drop 不会断开」
+    /// 这个实现细节；② 只有拿着句柄才能发 keepalive。
+    pub async fn open_owned(
+        conn: SshConnection,
+        keepalive: Option<Duration>,
+        term: &str,
+        cols: u16,
+        rows: u16,
+        ring: RingBuffer,
+    ) -> Result<Self, WtError> {
+        let channel = conn.open_shell(term, cols as u32, rows as u32).await?;
+        Ok(Self::start(channel, ring, Some(conn), keepalive, cols, rows))
+    }
+
+    fn start(
+        mut channel: crate::client::SshChannel,
+        ring: RingBuffer,
+        owner: Option<SshConnection>,
+        keepalive: Option<Duration>,
+        cols: u16,
+        rows: u16,
+    ) -> Self {
         let ring = Arc::new(Mutex::new(ring));
         let ring_task = ring.clone();
         let (tx, mut rx) = mpsc::channel::<TermCmd>(64);
 
         let task = tokio::spawn(async move {
+            let mut ticker = keepalive.map(|period| {
+                let mut it = tokio::time::interval(period);
+                // 落后时不要补发一串心跳，按原节奏继续
+                it.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                it
+            });
+            // interval 的第一次 tick 立即完成；先消费掉，避免刚连上就发心跳
+            if let Some(t) = ticker.as_mut() {
+                t.tick().await;
+            }
+
             loop {
                 tokio::select! {
                     cmd = rx.recv() => {
@@ -84,18 +125,30 @@ impl SshTermSession {
                             None => break,
                         }
                     }
+                    _ = async {
+                        match ticker.as_mut() {
+                            Some(t) => { t.tick().await; }
+                            None => std::future::pending::<()>().await,
+                        }
+                    } => {
+                        if let Some(conn) = owner.as_ref() {
+                            // 发不出去说明连接已经断了；不用在这里退出，
+                            // channel.next() 会给出 None 让循环正常收尾
+                            let _ = conn.send_keepalive(false).await;
+                        }
+                    }
                 }
             }
         });
 
-        Ok(Self {
+        Self {
             ring,
             tx,
             task,
             cols,
             rows,
             closed: false,
-        })
+        }
     }
 
     /// 用默认参数（`xterm-256color`、120×30、默认缓冲）。

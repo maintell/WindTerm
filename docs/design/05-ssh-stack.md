@@ -426,6 +426,14 @@ pub struct Timeouts {
 
 **为什么不用 TCP keepalive**：默认 2 小时，太慢；且中间设备可能只对应用层活动有反应。
 
+**当前实现（M1）**：`SshTermSession::open_owned` 接管连接句柄，在同一个 `select!` 循环里
+按 `SshConfig.keepalive_secs`（默认 30 s，0 = 关闭）发 `keepalive@openssh.com`
+（`russh` 的 `Handle::send_keepalive`，报文与上面一致）。
+
+**未实现**：`keepalive_max_missed` 的「连续 N 次无响应判定断开」——
+现在只发心跳（`want_reply = false`），断线仍然靠 TCP 自身的 FIN/RST 或读写错误发现。
+半开连接的主动探测要改成 `want_reply = true` 并统计回包，属于 `SES-001` AC-7 的剩余部分。
+
 ## 9. 连接池
 
 ```rust

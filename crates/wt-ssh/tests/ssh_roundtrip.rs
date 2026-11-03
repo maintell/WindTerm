@@ -249,6 +249,37 @@ async fn interactive_shell_echoes_input() {
 }
 
 #[tokio::test]
+async fn keepalive_keeps_session_responsive() {
+    let port = start_mock_server().await;
+    let conn = SshConnection::connect_password(&cfg(port), "secret", HostKeyPolicy::AcceptAll)
+        .await
+        .expect("连接应成功");
+
+    // 20ms 一次心跳：几百毫秒里会触发十几次，足够暴露「心跳把读循环饿死」这类问题
+    let mut session = wt_ssh::SshTermSession::open_owned(
+        conn,
+        Some(Duration::from_millis(20)),
+        "xterm-256color",
+        120,
+        40,
+        wt_term::RingBuffer::with_defaults(),
+    )
+    .await
+    .expect("开会话应成功");
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    session.write(b"ping").expect("写入应成功");
+    let out = session
+        .wait_for_output("echo:ping", Duration::from_secs(5))
+        .await;
+    assert!(
+        out.contains("echo:ping"),
+        "心跳期间会话应仍然可用，实际 {out:?}"
+    );
+    session.close();
+}
+
+#[tokio::test]
 async fn wrong_password_is_auth_failure_not_connect_failure() {
     let port = start_mock_server().await;
     let err = match SshConnection::connect_password(&cfg(port), "wrong", HostKeyPolicy::AcceptAll)

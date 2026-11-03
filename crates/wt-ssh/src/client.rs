@@ -403,6 +403,18 @@ impl SshConnection {
             .disconnect(russh::Disconnect::ByApplication, "", "en")
             .await;
     }
+
+    /// 发一条 keepalive。
+    ///
+    /// `want_reply = false` 是常见的「保活」用法：只要还能把包发出去，
+    /// NAT/防火墙的空闲计时器就被续上了；要检测半开连接则传 `true`。
+    pub async fn send_keepalive(&self, want_reply: bool) -> Result<(), WtError> {
+        self.handle.send_keepalive(want_reply).await.map_err(|e| {
+            WtError::new("SSH_KEEPALIVE_FAILED")
+                .message("发送心跳失败，连接可能已断开")
+                .detail(e.to_string())
+        })
+    }
 }
 
 /// 一条交互式通道。
