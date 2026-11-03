@@ -112,6 +112,41 @@ async fn creates_renames_and_removes_over_real_channel() {
 }
 
 #[tokio::test]
+async fn chunked_upload_reports_real_progress() {
+    let server = MockSshServer::start().await;
+    let conn = SshConnection::connect_password(&cfg(server.port), "secret", HostKeyPolicy::AcceptAll)
+        .await
+        .expect("连接应成功");
+    let sftp = SftpClient::open(conn).await.expect("应能打开 sftp 子系统");
+
+    // 200 KB > 3 个 64 KB 块：进度必须是多次、单调递增的，最后落在总长度上
+    let data: Vec<u8> = (0..200 * 1024).map(|i| (i % 251) as u8).collect();
+    let mut seen = Vec::new();
+    sftp.write_file_chunked("/big.bin", &data, |written| seen.push(written))
+        .await
+        .expect("分块上传应成功");
+
+    assert!(seen.len() >= 3, "200KB 应当至少回调 3 次，实际：{seen:?}");
+    assert!(
+        seen.windows(2).all(|w| w[0] < w[1]),
+        "进度必须单调递增：{seen:?}"
+    );
+    assert_eq!(*seen.last().unwrap(), data.len() as u64, "最后一块等于总长");
+
+    // 内容逐字节一致：分块写不能写坏数据
+    assert_eq!(
+        sftp.read_file("/big.bin").await.expect("读回"),
+        data,
+        "分块上传后内容必须与源一致"
+    );
+    // 服务端侧也确认一遍（读回走的是我们自己的客户端，双保险）
+    assert_eq!(
+        server.fs.lock().await.get("/big.bin").map(|v| v.len()),
+        Some(data.len())
+    );
+}
+
+#[tokio::test]
 async fn sftp_and_shell_share_one_connection() {
     let server = MockSshServer::start().await;
     server.fs.lock().await.insert("/a.txt".into(), b"a".to_vec());

@@ -92,6 +92,44 @@ impl SftpClient {
             .map_err(|e| sftp_error(&format!("无法写入 {path}"), e.to_string()))
     }
 
+    /// 按块写入，每块写完回调一次**累计字节数**（`FIL-019` 的进度来源）。
+    ///
+    /// 为什么不用一次性 `write`：传输进度必须来自真实写入节奏，
+    /// 「先传完再报 100%」是假进度；而且分块是将来做断点续传的前提。
+    ///
+    /// 回调是同步的：它只负责把数字丢给 UI，不该在这里 await。
+    pub async fn write_file_chunked<F>(
+        &self,
+        path: &str,
+        data: &[u8],
+        mut on_progress: F,
+    ) -> Result<(), WtError>
+    where
+        F: FnMut(u64),
+    {
+        use tokio::io::AsyncWriteExt;
+
+        const CHUNK: usize = 64 * 1024;
+        let mut file = self
+            .inner
+            .create(path)
+            .await
+            .map_err(|e| sftp_error(&format!("无法创建 {path}"), e.to_string()))?;
+
+        let mut written = 0u64;
+        for chunk in data.chunks(CHUNK) {
+            file.write_all(chunk)
+                .await
+                .map_err(|e| sftp_error(&format!("写入 {path} 时失败"), e.to_string()))?;
+            written += chunk.len() as u64;
+            on_progress(written);
+        }
+        file.close()
+            .await
+            .map_err(|e| sftp_error(&format!("关闭 {path} 时失败"), e.to_string()))?;
+        Ok(())
+    }
+
     /// 建目录。
     pub async fn create_dir(&self, path: &str) -> Result<(), WtError> {
         self.inner

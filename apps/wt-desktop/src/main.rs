@@ -1155,21 +1155,30 @@ async fn sftp_download(
     })
 }
 
+/// 上传：按 64 KB 分块写，并把**累计字节数**通过 `Channel` 推给前端。
+///
+/// 进度必须来自真实写入节奏——「传完再报 100%」是假进度，用户看不出卡住还是快好了。
+/// 分块同时是将来做断点续传的前提（`FIL-019` 的下一半）。
 #[tauri::command]
 async fn sftp_upload(
     req: SshOpenReq,
     path: String,
     content: String,
     jump: Option<JumpReq>,
+    // `Channel` 不是 serde 类型，只能是必填参数（`Option<Channel>` 编译不过）
+    progress: tauri::ipc::Channel<u64>,
 ) -> Result<usize, String> {
     let data = B64
         .decode(content)
         .map_err(|e| format!("上传内容解码失败：{e}"))?;
-    let sftp = open_sftp(req, jump).await?;
     let len = data.len();
-    sftp.write_file(&path, &data)
-        .await
-        .map_err(|e| e.to_string())?;
+    let sftp = open_sftp(req, jump).await?;
+    sftp.write_file_chunked(&path, &data, |written| {
+        // 前端关掉面板时通道会断，这里不能因此让上传失败
+        let _ = progress.send(written);
+    })
+    .await
+    .map_err(|e| e.to_string())?;
     Ok(len)
 }
 

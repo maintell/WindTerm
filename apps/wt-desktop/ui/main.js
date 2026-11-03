@@ -1352,6 +1352,9 @@ function toBase64(bytes) {
   return btoa(bin);
 }
 
+/** 最近一次上传的进度快照（验收与脚本读它，避免去解析提示文本） */
+let lastUpload = null;
+
 /** 上传本地文件到当前远端目录，成功后刷新列表。 */
 async function uploadFiles(picked) {
   if (!picked.length) return;
@@ -1360,14 +1363,25 @@ async function uploadFiles(picked) {
     setFilesMsg(`上传中… ${file.name}`);
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
+      const total = bytes.length;
+      // 进度来自后端的**真实写入节奏**（每 64 KB 一次），不是前端自己算的假进度
+      const ch = new window.__TAURI__.core.Channel();
+      lastUpload = { name: file.name, total, last: 0, events: 0 };
+      ch.onmessage = (written) => {
+        lastUpload.last = written;
+        lastUpload.events += 1;
+        const pct = total ? Math.round((written / total) * 100) : 100;
+        setFilesMsg(`上传中… ${file.name} ${pct}%`);
+      };
       await withDeadline(
         invoke("sftp_upload", {
           req: sftpReq(),
           path: joinPath(sftpPath, file.name),
           content: toBase64(bytes),
           jump: jumpReq(),
+          progress: ch,
         }),
-        60000,
+        120000,
         "上传",
       );
       done += 1;
@@ -1867,7 +1881,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-17",
+  ui: "wt-ui-18",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";
@@ -1939,6 +1953,8 @@ window.__wt = {
       rows: [...filesList.querySelectorAll(".row span:first-child")].map((e) => e.textContent),
       /** 当前选中项的名字（验收与脚本用） */
       selected: selectedEntry?.name ?? null,
+      /** 最近一次上传的进度快照：`{name,total,last,events}` */
+      upload: lastUpload,
     };
   },
   /** 当前激活会话的句柄 */

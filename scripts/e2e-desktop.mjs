@@ -623,7 +623,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-17",
+    uiVersion === "wt-ui-18",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -1684,6 +1684,29 @@ try {
     throw new Error(`拖拽后列表=${f.rows.join("、")} msg=${f.msg}`);
   });
   check("拖拽文件进面板会触发上传", dropped !== null, dropped.rows.join("、"));
+
+  // 16d-4. 分块上传与进度（FIL-019 的进度部分）：200 KB 会分成 4 块
+  const bigPath = join(DATA_DIR, "big.bin");
+  writeFileSync(bigPath, Buffer.alloc(200 * 1024, 7));
+  await setFileInput("#files-upload", [bigPath]);
+  const bigUploaded = await waitFor(
+    async () => {
+      const f = await cdp.eval(`window.__wt.files`);
+      return f.rows.includes("big.bin") ? f : null;
+    },
+    { timeout: 60000, label: "分块上传" },
+  ).catch(async () => {
+    const f = await cdp.eval(`window.__wt.files`);
+    throw new Error(`分块上传后列表=${f.rows.join("、")} msg=${f.msg}`);
+  });
+  // 进度必须是「多次、最后落在总长上」：一次 100% 是假进度
+  const up = await cdp.eval(`window.__wt.files.upload`);
+  check(
+    "大文件上传按块回报真实进度",
+    up && up.events >= 3 && up.last === up.total && up.total === 200 * 1024,
+    JSON.stringify(up),
+  );
+  check("分块上传后远端出现该文件", bigUploaded !== null, "200 KB");
 
   await clickElement("#files-toggle");
 
