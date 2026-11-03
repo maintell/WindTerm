@@ -15,7 +15,7 @@
 | `wt` CLI | ✅ 可用 | `version` / `doctor` / `local exec` / `ssh exec`（密码与密钥认证、known_hosts 校验）；ANSI 默认剥离、退出码透传 |
 | IPC 数据面（`wt-ipc`） | ✅ 完成 | 会话注册表 + 拉取式二进制读取 + 未确认字节背压 + 事件节流；7 个测试 |
 | MobaXterm 迁移（`SES-020`） | ✅ 可用 | `wt session import/list`：树结构还原、Rlogin 跳过并说明、重复导入按 name+host+port 与会话/文件夹去重 |
-| SFTP（列目录 / 下载 / 上传） | ✅ CLI 可用 | `wt sftp ls/get/put`（认证参数与 `ssh exec` 一致）+ `wt-ssh::SftpClient`；5 个用例覆盖真实 SFTP 报文与真实 SSH 通道。**界面入口还没做**（试过，命令层挂起，已回退） |
+| SFTP（列目录 / 下载 / 上传） | ✅ CLI 可用 | `wt sftp ls/get/put`（认证参数与 `ssh exec` 一致）+ `wt-ssh::SftpClient`；9 个用例：报文级（内存管道）+ 真实 SSH 通道 + CLI 真实执行路径。**界面入口还没做**（试过，Tauri 命令层挂起，已回退） |
 | 其余协议（RDP / VNC / 隧道） | ⬜ 未开始 | — |
 | UI 壳（Tauri 2 + xterm.js） | ✅ 可交互 | 端到端验收 51 项通过（`scripts/e2e-desktop.mjs`）：本地终端全链路 + 多标签 + 查找/字号 + 会话树（新建/删除/过滤/导入含 GBK）+ SSH 密码/密钥双认证 + TOFU + 保险库（存/填/列/删）+ 错误路径 |
 
