@@ -184,6 +184,27 @@ impl Session {
             .map(SessionId::from)
     }
 
+    /// 设置/清除直接跳板（`options.jumpSessionId`）。传 `None` 或空 id 等价于清除。
+    ///
+    /// 只暴露这一个 setter，而不是让调用方直接改 `options`：键名与
+    /// 「空字符串等于未配置」这条约定必须只有一处定义，否则迟早出现
+    /// 「界面写 `jumpId`、核心读 `jumpSessionId`」这种对不上的情况。
+    pub fn set_jump(&mut self, jump: Option<SessionId>) {
+        if !self.options.is_object() {
+            self.options = serde_json::json!({});
+        }
+        match jump {
+            Some(j) if !j.as_str().is_empty() => {
+                self.options["jumpSessionId"] = serde_json::Value::String(j.as_str().to_string());
+            }
+            _ => {
+                if let Some(map) = self.options.as_object_mut() {
+                    map.remove("jumpSessionId");
+                }
+            }
+        }
+    }
+
     /// 目标地址的展示形式（用于 UI 与诊断）。
     pub fn endpoint_label(&self) -> String {
         match (&self.host, self.port) {
@@ -581,6 +602,43 @@ mod tests {
         };
         let err = validate_jump_chain(&SessionId::from("a"), chain).unwrap_err();
         assert_eq!(err.code, "SES_JUMP_CYCLE");
+    }
+
+    #[test]
+    fn set_jump_roundtrips_and_clears() {
+        let mut s = Session {
+            id: SessionId::from("t"),
+            folder_id: None,
+            name: "target".into(),
+            kind: SessionKind::Ssh,
+            sort_order: 0,
+            host: Some("10.0.0.5".into()),
+            port: Some(22),
+            username: None,
+            environment: None,
+            credential_ref: None,
+            // 别的选项必须被保留：清跳板不该顺手抹掉用户其它配置
+            options: serde_json::json!({ "keepMe": "yes" }),
+            settings: Default::default(),
+            last_used_at: None,
+            last_cwd: None,
+            rev: 1,
+        };
+        assert_eq!(s.jump(), None);
+
+        s.set_jump(Some(SessionId::from("bastion")));
+        assert_eq!(s.jump().map(|j| j.as_str().to_string()), Some("bastion".into()));
+        assert_eq!(s.options["keepMe"], "yes", "其它选项不能被抹掉");
+
+        // 空 id 与 None 都表示「不经跳板」
+        s.set_jump(Some(SessionId::from("")));
+        assert_eq!(s.jump(), None);
+        assert_eq!(s.options["keepMe"], "yes");
+
+        s.set_jump(Some(SessionId::from("bastion2")));
+        s.set_jump(None);
+        assert_eq!(s.jump(), None);
+        assert_eq!(s.options["keepMe"], "yes");
     }
 
     #[test]

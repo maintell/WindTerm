@@ -98,7 +98,8 @@ UI 渲染为：
 | 连接池复用（§2.1，`SES-024` AC-3） | ❌ 每条目标连接都重新登录跳板机 | 跳板机上会看到多条 SSH 连接；AC-3 未满足 |
 | 每跳错误定位（§2.3） | ✅ 错误统一加「第 N 跳（host:port）：」前缀，**保留原错误码** | 换码会让「认证失败」被归成网络问题，界面就分不清该改密码还是改网络 |
 | `AllowTcpForwarding no` 专项报错 | ✅ `SSH_FORWARD_DENIED`，消息直接点名原因 | — |
-| 界面 / CLI 接线、`jump.sessionId` | 界面 ✅（SSH / SFTP / 隧道共用 `connect_accept_new`）；CLI 与落库 ❌ | 见 `README` 的 `G14` |
+| `jump.sessionId` 落库 | ✅ 已做（存在 `options.jumpSessionId`，保存时环检测 + 最多 5 跳） | 键名只在 `wt_core::Session::set_jump/jump` 一处定义，界面不直接碰 `options` |
+| CLI 入口（`--jump`） | ❌ 未做 | 见 `README` 的 `G14` |
 
 认证：`SshConnection::connect` / `connect_over` 共用同一段 `authenticate`，
 三条路径（密码 / 密钥 / agent）只有一份实现，直连与经跳板的错误文案因此完全一致。

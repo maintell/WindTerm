@@ -389,6 +389,7 @@
       <label id="agent-toggle"><input type="checkbox" id="use-agent" />用 agent</label>
       <label id="jump-toggle"><input type="checkbox" id="use-jump" />经跳板机</label>
       <button id="ssh">连接 SSH</button>
+      <button id="new-session">新建</button>
       <button id="save-session">保存</button>
       <button id="open">新建本地终端</button>
       <button id="close" disabled>关闭</button>
@@ -399,6 +400,8 @@
         <input id="key-pass" type="password" placeholder="密钥口令（可空）" />
       </div>
       <div id="jump-row" hidden>
+        <select id="jump-session" title="从已有会话选跳板机（保存时记为会话属性）"></select>
+        <span id="jump-or">或手填</span>
         <input id="jump-host" placeholder="跳板机 host:port" spellcheck="false" />
         <input id="jump-user" placeholder="跳板机用户" spellcheck="false" />
         <input id="jump-pass" type="password" placeholder="跳板机密码" />

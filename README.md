@@ -18,9 +18,9 @@
 | SFTP（列目录 / 下载 / 上传） | ✅ CLI + 界面 | `wt sftp ls/get/put`（认证参数与 `ssh exec` 一致）+ `wt-ssh::SftpClient`；用例覆盖报文级（内存管道）、真实 SSH 通道、CLI 真实执行路径。界面文件面板：列目录、进出目录、双击下载到本地（同名自动改名）、上传本地文件 |
 | 终端剪贴板（`TER-011` / `TER-013` / `TER-023`） | ✅ 可用 | 双击选整词（含 `user@host:/var/log` 这种串）、选中即复制、`Ctrl+Shift+C` / `Ctrl+Insert` 复制、`Ctrl+Shift+V` / `Shift+Insert` 粘贴、多行粘贴确认（取消后零字节）、bracketed paste 遵守 `?2004`；右键粘贴见 `G11` |
 | 端口转发（`NET-001` / `NET-004`） | ✅ 可用（仅 `-L`） | 本地监听 → SSH `direct-tcpip` → 远端目标；`listenPort=0` 回填系统端口、双向字节计数、半关闭不丢数据、监听 `0.0.0.0` 需显式确认、失败原因可见（红点 + 上次错误）。界面按 1 s 刷新统计。**`-R` / `-D` 未做**（见 `G13`） |
-| SSH 跳板机（`SES-024` 单跳） | ✅ 界面可用 | `wt_ssh::connect_via`：登录跳板机 → `direct-tcpip` 到目标 → 在通道上做**第二次 SSH 握手**（目标机看到的是跳板机在连，`ss` 上可见）。界面勾「经跳板机」填跳板机地址/用户/密码即可，SSH / SFTP / 隧道三条路径都走同一条链路；错误带「第 N 跳（host:port）」定位，`AllowTcpForwarding no` 有专项报错。**CLI 与 `jump.sessionId` 落库见 `G14`** |
+| SSH 跳板机（`SES-024` 单跳） | ✅ 界面可用 | `wt_ssh::connect_via`：登录跳板机 → `direct-tcpip` 到目标 → 在通道上做**第二次 SSH 握手**。跳板机可以存成**会话属性**（`options.jumpSessionId`，保存时做环检测，最多 5 跳）——点会话就自动带出跳板配置，不用每次重填；也可以就地手填。SSH / SFTP / 隧道三条路径共用同一条链路。错误带「第 N 跳（host:port）」定位，`AllowTcpForwarding no` 有专项报错。**CLI 的 `--jump` 见 `G14`** |
 | 其余协议（RDP / VNC） | ⬜ 未开始 | — |
-| UI 壳（Tauri 2 + xterm.js） | ✅ 可交互 | 端到端验收 **79 项**通过（`scripts/e2e-desktop.mjs`）：本地终端全链路 + 多标签 + 查找/字号 + 剪贴板（选词/复制/粘贴/多行确认/bracketed paste）+ 隧道（启动/穿透收发/统计/停止/局域网确认）+ 跳板机（两跳连接/横幅/双主机密钥）+ 会话树（新建/删除/过滤/导入含 GBK）+ SSH 密码/密钥/**agent** 三种认证 + TOFU + 保险库（存/填/列/删）+ SFTP 文件面板（列目录/下载/上传）+ 错误路径 + 三条防「沉默失效」的自检（前端版本、内嵌资源一致性、页面任务队列活性） |
+| UI 壳（Tauri 2 + xterm.js） | ✅ 可交互 | 端到端验收 **84 项**通过（`scripts/e2e-desktop.mjs`）：本地终端全链路 + 多标签 + 查找/字号 + 剪贴板（选词/复制/粘贴/多行确认/bracketed paste）+ 隧道（启动/穿透收发/统计/停止/局域网确认）+ 跳板机（两跳连接/横幅/双主机密钥/存成会话属性/环引用被拒/取消跳板）+ 会话树（新建/删除/过滤/导入含 GBK）+ SSH 密码/密钥/**agent** 三种认证 + TOFU + 保险库（存/填/列/删）+ SFTP 文件面板（列目录/下载/上传）+ 错误路径 + 三条防「沉默失效」的自检（前端版本、内嵌资源一致性、页面任务队列活性） |
 
 实现按 [`docs/spec/14-roadmap-acceptance.md`](docs/spec/14-roadmap-acceptance.md) 的里程碑推进。
 
@@ -86,7 +86,7 @@ cargo run -p wt-cli -- session list
 | G11 | 右键 / 中键粘贴暂时不可用：WebView2 里 `navigator.clipboard.readText()` 要剪贴板读权限，当前构建拿不到（既不 resolve 也不 reject） | 键盘路径（`Ctrl+V` / `Ctrl+Shift+V` / `Shift+Insert`）完全可用；右键会明确提示「读剪贴板被拒绝，请用 Ctrl+Shift+V」，不会静默无反应 | 需要 Rust 侧读剪贴板：接 `tauri-plugin-clipboard-manager`，或自己用 `arboard`。**两者在 Linux 上都会引入 X11 客户端依赖**，与 ADR-0012 的「零 X11 依赖」取向相关，须先定调再动手 |
 | G12 | `TER-020` 快捷键体系还没做：键位写死在 `main.js`，不能重绑、不能导出 | 现有键位够用，但用户改不了，也不符合规格的「全部可重绑 + 冲突检测」 | 等设置体系（`SET-001`）落地后一起做键位表 |
 | G13 | 隧道只做了本地转发 `-L`：`-R`（`NET-002`）、`-D` SOCKS5（`NET-003`）未做；隧道配置不落库（关应用即消失），没有 `autoStart` / 重连期保持监听（`NET-005`、`design/10` §3.4），也没有每隧道连接上限 | 只能手工建、手工停；关掉应用后要重填 | 按 `NET-002` → `NET-003` → `NET-005` + 落库推进；先做落库（`TunnelSpec` 进 SQLite）再做重连 |
-| G14 | 跳板机：界面已接线（SSH / SFTP / 隧道都走同一条链路），但 **`--jump` 还没进 CLI**，`jump.sessionId` 也没进数据模型——跳板机是连接表单里的临时选项，不是会话属性；只支持单跳 | 每次连接都要重填跳板机参数；会话树里点开一个「要经跳板」的会话不会自动带跳板 | 下一步：`sessions.jump_session_id` + 会话编辑器选「经哪个会话」+ `wt ssh exec --jump`。`SshTarget` 加字段会牵动多处构造与用例，单独一轮做 |
+| G14 | 跳板机的 **CLI 入口（`--jump`）还没做**；只支持单跳（`SES-025` 多跳未做）；跳板机密码仍需手填或依赖保险库里**它自己**那条会话的凭据 | 命令行用户配不了跳板；多跳链路要拆成两段手工操作 | `SshTarget` 加字段会牵动多处构造与用例，单独一轮做；多跳要先把 `design/10` §1 的 `StreamProvider` 抽象补上 |
 | G6 | 没有分屏、主题自定义 | 多会话已用标签页解决；查找与字号已可用（Ctrl+F / Ctrl+±） | 随 `TER-01x` / `SET-00x` 推进 |
 | G9 | `wt ssh shell` 的**交互路径**没有在真实 sshd 上验证过（本机无 sshd） | 参数解析、连接失败与「连接前不碰终端」已验证；raw 模式下的按键转发、窗口尺寸、远端退出后恢复终端只能靠人工试 | 拿到真实 sshd 后走一遍：`ls` 有颜色、方向键可用、`Ctrl+C` 中断、`Ctrl+D` 退出后本机终端正常 |
 | ~~G7~~ | ~~非 UTF-8 的 ini 会让中文名乱码~~ | ✅ 已修复：`wt_import::decode_ini` 先按 UTF-8 严格解、失败再按 GBK；导入结果里显示用了哪种编码 | — |

@@ -537,7 +537,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-8",
+    uiVersion === "wt-ui-10",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -1174,16 +1174,20 @@ try {
 
   // 15. 在 SSH 通道里输入：mock 先送 WELCOME 横幅，之后把收到的每个数据帧回显成 `echo:<data>`
   //     （逐键发送 → 逐键回显，所以断言用「有序序列」而不是整串）
-  await typeText("hello");
-  const sshOut = await waitFor(
-    async () => {
-      const t = await cdp.eval(`window.__wt.screen()`);
-      const echoed =
-        /echo:h[\s\S]*?echo:e[\s\S]*?echo:l[\s\S]*?echo:l[\s\S]*?echo:o/.test(t);
-      return t.includes("WELCOME") && echoed ? t : null;
-    },
-    { timeout: 15000, label: "SSH 回显" },
-  );
+  //
+  //     最多补打 3 次：WebView2 在会话刚建立时偶发吞掉前几个可信按键，
+  //     判据用「有没有拿到回显」而不是「有没有发出去」。
+  const echoedOk = async () => {
+    const t = await cdp.eval(`window.__wt.screen()`);
+    const echoed = /echo:h[\s\S]*?echo:e[\s\S]*?echo:l[\s\S]*?echo:l[\s\S]*?echo:o/.test(t);
+    return t.includes("WELCOME") && echoed ? t : null;
+  };
+  let sshOut = null;
+  for (let i = 0; i < 3 && !sshOut; i += 1) {
+    await typeText("hello");
+    sshOut = await waitFor(echoedOk, { timeout: 6000, label: "SSH 回显" }).catch(() => null);
+  }
+  if (!sshOut) throw new Error("等待「SSH 回显」超时：连打 3 次都没等到逐键回显");
   check(
     "SSH 通道双向通（服务端横幅 + 逐键回显）",
     true,
@@ -1285,6 +1289,112 @@ try {
     return true;
   })()`);
 
+  // 15d. 跳板机作为**会话属性**：建一条 bastion 会话，把 mock-ssh 的跳板指向它。
+  //      这就是「点一下会话就自动带跳板」与「每次重填」的区别。
+  await clickElement("#new-session");
+  await cdp.eval(`(() => {
+    document.getElementById("session-name").value = "bastion";
+    document.getElementById("host").value = "127.0.0.1";
+    document.getElementById("port").value = ${JSON.stringify(String(jumpPort))};
+    document.getElementById("user").value = "tester";
+    return true;
+  })()`);
+  await clickElement("#save-session");
+  await waitFor(
+    async () => ((await cdp.eval(`window.__wt.sessions()`)).includes("bastion") ? true : null),
+    { timeout: 10000, label: "保存 bastion 会话" },
+  );
+  check("能保存一条跳板机会话", true, `127.0.0.1:${jumpPort}`);
+
+  await clickSessionNode("mock-ssh");
+  await cdp.eval(`(() => {
+    const sel = document.getElementById("jump-session");
+    const opt = [...sel.options].find((o) => o.textContent === "bastion");
+    if (!opt) return false;
+    sel.value = opt.value;
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  })()`);
+  await clickElement("#save-session");
+  const savedJump = await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      return s.startsWith("已保存") || s.startsWith("保存失败") ? s : null;
+    },
+    { timeout: 10000, label: "保存跳板机属性" },
+  );
+  check("跳板机可以存成会话属性", savedJump.startsWith("已保存"), savedJump);
+
+  // 重新点会话：跳板机应当自动带出来
+  await clickSessionNode("mock-ssh");
+  const applied = await cdp.eval(`({
+    checked: document.getElementById("use-jump").checked,
+    host: document.getElementById("jump-host").value,
+    user: document.getElementById("jump-user").value,
+    hidden: document.getElementById("jump-row").hidden,
+  })`);
+  check(
+    "选中会话自动带出跳板机配置",
+    applied.checked === true &&
+      applied.hidden === false &&
+      applied.host === `127.0.0.1:${jumpPort}` &&
+      applied.user === "tester",
+    JSON.stringify(applied),
+  );
+
+  // 环引用必须在**保存时**就被拒（SES-024 AC-4）
+  await cdp.eval(`(() => {
+    const sel = document.getElementById("jump-session");
+    const self = [...sel.options].find((o) => o.textContent === "mock-ssh");
+    sel.value = self ? self.value : "";
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  })()`);
+  await clickElement("#save-session");
+  const cycleMsg = await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      return s.startsWith("保存失败") ? s : null;
+    },
+    { timeout: 10000, label: "环引用被拒" },
+  ).catch(async () => `未报错，状态=${await cdp.eval(`document.getElementById("status").textContent`)}`);
+  check("把会话自己设为跳板机时保存被拒", /循环|自己/.test(cycleMsg), cycleMsg);
+
+  // 清掉跳板机并保存——顺带验证「取消跳板」这条路。
+  // 必须真的存回去：夹具留在「mock-ssh 有跳板机」的状态会污染后面的保险库用例
+  // （那时 bastion 没有保存过密码，走跳板必然认证失败）。
+  await clickSessionNode("mock-ssh");
+  await cdp.eval(`(() => {
+    document.getElementById("jump-session").value = "";
+    document.getElementById("use-jump").checked = false;
+    document.getElementById("use-jump").dispatchEvent(new Event("change", { bubbles: true }));
+    // 「新建」会清空密码（这是对的：否则新会话会继承上一条的密码），
+    // 而这一段流程里保险库还没解锁、没人把它填回来——测试自己补上
+    document.getElementById("password").value = "secret";
+    return true;
+  })()`);
+  await clickElement("#save-session");
+  const cleared = await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      return s.startsWith("已保存") ? s : null;
+    },
+    { timeout: 10000, label: "清除跳板机" },
+  );
+  await clickSessionNode("mock-ssh");
+  const afterClear = await cdp.eval(`({
+    checked: document.getElementById("use-jump").checked,
+    selected: document.getElementById("jump-session").value,
+    pass: document.getElementById("password").value,
+  })`);
+  check(
+    "取消跳板后不再带出跳板配置",
+    cleared.startsWith("已保存") && afterClear.checked === false && afterClear.selected === "",
+    JSON.stringify(afterClear),
+  );
+  // 保险库还没解锁，「新建」清掉的密码没人补——测试自己填回去
+  await cdp.eval(`document.getElementById("password").value = "secret"`);
+
   // 16b. 文件面板：列远端目录
   const seed = Buffer.from("hello from server").toString("base64");
   await cdp.eval(
@@ -1315,7 +1425,10 @@ try {
     async () => {
       const f = await cdp.eval(`window.__wt?.files ?? null`);
       if (!f) throw new Error("文件面板状态不可读（__wt.files 缺失）");
-      return f.rows.length ? f : null;
+      if (f.rows.length) return f;
+      // 面板报错必须立刻抛出来：只等 rows 会让「列目录失败」伪装成「超时」
+      if (f.msg && f.msg !== "读取中…") throw new Error(`文件面板：${f.msg}`);
+      return null;
     },
     { timeout: 20000, label: "文件面板列目录" },
   );

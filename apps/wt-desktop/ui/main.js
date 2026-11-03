@@ -49,6 +49,7 @@ const jumpRow = document.getElementById("jump-row");
 const jumpHostInput = document.getElementById("jump-host");
 const jumpUserInput = document.getElementById("jump-user");
 const jumpPassInput = document.getElementById("jump-pass");
+const jumpSessionSelect = document.getElementById("jump-session");
 const pickKeyBtn = document.getElementById("pick-key");
 const keyFileInput = document.getElementById("key-file");
 const keyName = document.getElementById("key-name");
@@ -436,6 +437,9 @@ async function selectSession(s) {
   setStatus(`已选中 ${s.name}，填密码后连接`);
   passInput.focus();
 
+  // 跳板机是会话属性：选中会话就把它带出来（含密码，若保险库已解锁）
+  await applyJumpFromSession(s);
+
   // 保险库解锁时顺手把存过的密码填上，省掉每次手输
   if (vaultUnlocked) {
     try {
@@ -466,9 +470,63 @@ function folderHasMatch(id, query, byParent, byFolder) {
   return false;
 }
 
-function renderTree(dto) {
-  lastTree = dto;
+/**
+ * 刷新「跳板机会话」下拉（`SES-024`）。
+ *
+ * 只列 SSH 会话——只有 SSH 能当跳板。当前编辑的会话不在这里过滤掉：
+ * 让后端在保存时给出「不能把自己设为跳板机」的明确错误，比下拉里凭空少一项更好懂。
+ */
+function refreshJumpSelect(dto) {
+  const keep = jumpSessionSelect.value;
+  jumpSessionSelect.textContent = "";
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = "从会话里选跳板机";
+  jumpSessionSelect.appendChild(none);
+  for (const s of dto.sessions ?? []) {
+    if (s.kind !== "ssh") continue;
+    const o = document.createElement("option");
+    o.value = s.id;
+    o.textContent = s.name;
+    jumpSessionSelect.appendChild(o);
+  }
+  jumpSessionSelect.value = keep;
+}
+
+/** 把某个会话的跳板配置填进表单（地址/用户，密码从保险库取）。 */
+async function fillJumpFields(jump) {
+  if (!jump) {
+    jumpHostInput.value = "";
+    jumpUserInput.value = "";
+    jumpPassInput.value = "";
+    return;
+  }
+  jumpHostInput.value = `${jump.host ?? ""}:${jump.port ?? 22}`;
+  jumpUserInput.value = jump.username ?? "";
+  jumpPassInput.value = "";
+  if (!vaultUnlocked) return;
+  try {
+    // 跳板机的凭据按**它自己**的会话存（规格第 4 条：不继承目标会话）
+    const pw = await invoke("credential_get", { sessionId: jump.id });
+    if (pw) jumpPassInput.value = pw;
+  } catch {
+    /* 没存过就算了，用户手填 */
+  }
+}
+
+/** 会话若配了跳板机，选中时把跳板参数一起带出来——跳板是会话属性，不该每次重填。 */
+async function applyJumpFromSession(s) {
+  const jumpId = s.options?.jumpSessionId ?? "";
+  const jump = jumpId ? (lastTree?.sessions ?? []).find((x) => x.id === jumpId) : null;
+  jumpSessionSelect.value = jump ? jumpId : "";
+  useJumpBox.checked = Boolean(jump);
+  syncAuthUi();
+  await fillJumpFields(jump);
+}
+
+function renderTree(dto) {  lastTree = dto;
   treeBody.textContent = "";
+  refreshJumpSelect(dto);
   if (!dto.exists) {
     treeEmpty(`没有会话库：\n${dto.db_path}\n先导入，再点刷新`);
     return;
@@ -543,6 +601,21 @@ async function loadTree() {
 refreshBtn.addEventListener("click", loadTree);
 
 // ── 会话的新建 / 保存 / 删除 ────────────────────────────────
+// 「新建」不是装饰：表单里的「保存」在选中某个会话之后是**更新**它
+// （`selectedSession.id`），没有这个按钮就无法在不重启的前提下再建一条。
+document.getElementById("new-session").addEventListener("click", () => {
+  selectedSession = null;
+  deleteSessionBtn.disabled = true;
+  deleteSessionBtn.textContent = "删除";
+  nameInput.value = "";
+  passInput.value = "";
+  jumpSessionSelect.value = "";
+  useJumpBox.checked = false;
+  syncAuthUi();
+  nameInput.focus();
+  setStatus("填名称与主机后保存；连接则用当前参数");
+});
+
 saveSessionBtn.addEventListener("click", async () => {
   const name = nameInput.value.trim() || hostInput.value.trim();
   const host = hostInput.value.trim();
@@ -559,6 +632,7 @@ saveSessionBtn.addEventListener("click", async () => {
         host,
         port: Number.parseInt(portInput.value, 10) || 22,
         user: userInput.value.trim() || null,
+        jumpSessionId: jumpSessionSelect.value || null,
       },
     });
     await loadTree();
@@ -1395,6 +1469,13 @@ function jumpReq() {
 
 useJumpBox.addEventListener("change", syncAuthUi);
 
+// 从下拉里选一个会话当跳板机：把它的地址/用户带出来，密码仍走保险库
+jumpSessionSelect.addEventListener("change", async () => {
+  const id = jumpSessionSelect.value;
+  const jump = id ? (lastTree?.sessions ?? []).find((x) => x.id === id) : null;
+  await fillJumpFields(jump);
+});
+
 useKeyBox.addEventListener("change", () => {
   if (useKeyBox.checked) useAgentBox.checked = false;
   syncAuthUi();
@@ -1502,7 +1583,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-8",
+  ui: "wt-ui-10",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";

@@ -123,7 +123,7 @@ def test_ssh_connect(server, wt):
 | 调试参数必须由代码传，不能用 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` | `wry` 每次都会 `set_additional_browser_arguments`，会覆盖该环境变量 |
 | 连上 CDP 后立刻 `Emulation.setFocusEmulationEnabled` | 窗口没拿到前台焦点时，WebView2 会偶发吞掉可信鼠标/键盘事件——观察到过一次「点了按钮没反应」的假失败 |
 
-当前覆盖 79 项断言：
+当前覆盖 84 项断言：
 
 - 本地终端：页面加载与 Tauri 桥接、启动自检、点击建会话、句柄可取、首屏输出渲染、
   焦点在终端、键盘输入、命令输出、统计字段非零值、前后端行列一致、ack 回流归零、
@@ -163,7 +163,9 @@ def test_ssh_connect(server, wt):
 - 跳板机（`SES-024`）：勾「经跳板机」展开输入、经跳板机能连上目标、
   跳板后面的目标返回了自己的 shell 横幅（证明第二跳是真 SSH 会话）、
   跳板机与目标的主机密钥都被记录（目标那条经跳板无法 probe，
-  是在 `AcceptAll` 连上后用 `trust_observed_key` 补的）；
+  是在 `AcceptAll` 连上后用 `trust_observed_key` 补的）、
+  跳板机能存成**会话属性**且再点会话自动带出、把会话自己设为跳板机时保存被拒
+  （AC-4，环引用在保存时就拦）、取消跳板后不再带出；
 - 三条防「沉默失效」的自检（都来自 G8 的教训）：  前端版本标记（`window.__wt.ui`）与本次构建一致、二进制内嵌的 `main.js` 与磁盘源文件
   逐字节一致、有终端会话在跑时页面的 `setTimeout` 与 `requestAnimationFrame` 仍在触发；
 - 全程断言页面无未捕获异常。

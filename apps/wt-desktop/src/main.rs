@@ -447,6 +447,9 @@ struct SessionSaveReq {
     port: Option<u16>,
     #[serde(default)]
     user: Option<String>,
+    /// 跳板机会话（`SES-024`）：存进 `options.jumpSessionId`，保存时做环检测
+    #[serde(default)]
+    jump_session_id: Option<String>,
 }
 
 /// 新建或更新一条会话。
@@ -501,6 +504,39 @@ fn session_save(req: SessionSaveReq) -> Result<String, String> {
         .filter(|u| !u.is_empty());
 
     let id = session.id.as_str().to_string();
+
+    // 跳板机链在**保存时**校验（`SES-024` AC-4）：环引用与超过 5 跳都拒绝。
+    // 放到连接时才发现，用户已经忘了自己怎么配的。
+    let jump = req
+        .jump_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if let Some(jump_id) = jump {
+        if jump_id == id {
+            return Err("[SES_JUMP_CYCLE] 会话不能把自己设为跳板机".into());
+        }
+        let snapshot = store.load_snapshot().map_err(|e| e.to_string())?;
+        // 现有配置 + 本次改动 = 待校验的链
+        let mut jumps: HashMap<String, String> = snapshot
+            .sessions
+            .iter()
+            .filter_map(|s| s.jump().map(|j| (s.id.as_str().to_string(), j.as_str().to_string())))
+            .collect();
+        jumps.insert(id.clone(), jump_id.to_string());
+        wt_core::validate_jump_chain(&session.id, |sid| {
+            jumps
+                .get(sid.as_str())
+                .map(|j| vec![wt_core::SessionId::from(j.as_str())])
+                .unwrap_or_default()
+        })
+        .map_err(|e| e.to_string())?;
+    }
+    match jump {
+        Some(jump_id) => session.set_jump(Some(wt_core::SessionId::from(jump_id))),
+        None => session.set_jump(None),
+    }
+
     store.upsert_session(&session).map_err(|e| e.to_string())?;
     Ok(id)
 }
