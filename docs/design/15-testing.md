@@ -123,7 +123,7 @@ def test_ssh_connect(server, wt):
 | 调试参数必须由代码传，不能用 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` | `wry` 每次都会 `set_additional_browser_arguments`，会覆盖该环境变量 |
 | 连上 CDP 后立刻 `Emulation.setFocusEmulationEnabled` | 窗口没拿到前台焦点时，WebView2 会偶发吞掉可信鼠标/键盘事件——观察到过一次「点了按钮没反应」的假失败 |
 
-当前覆盖 61 项断言：
+当前覆盖 69 项断言：
 
 - 本地终端：页面加载与 Tauri 桥接、启动自检、点击建会话、句柄可取、首屏输出渲染、
   焦点在终端、键盘输入、命令输出、统计字段非零值、前后端行列一致、ack 回流归零、
@@ -152,6 +152,10 @@ def test_ssh_connect(server, wt):
 - SFTP 文件面板：打开面板即列出远端目录、**条目类型来自服务端属性**（文件不被当成目录）、
   双击文件下载到本地且内容逐字节一致、同名再下载自动改名而不覆盖、
   上传本地文件后远端列表出现它；
+- 终端剪贴板：双击选中含 `/` 与 `@` 的整串（`TER-011` AC-1）、`Ctrl+Shift+C` 写剪贴板、
+  `Ctrl+Shift+V` 粘贴并执行、粘贴不漏 `^V`、多行粘贴弹确认且取消后零字节
+  （AC-3，同时比对 `pasteCount` 与 `inputLog` 长度）、选中即复制默认开启、
+  右键一定有明确反馈、远端开启 `?2004` 时粘贴被 `\e[200~`/`\e[201~` 包裹（`TER-023`）；
 - 三条防「沉默失效」的自检（都来自 G8 的教训）：
   前端版本标记（`window.__wt.ui`）与本次构建一致、二进制内嵌的 `main.js` 与磁盘源文件
   逐字节一致、有终端会话在跑时页面的 `setTimeout` 与 `requestAnimationFrame` 仍在触发；

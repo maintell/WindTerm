@@ -239,6 +239,42 @@
         flex: none;
       }
       #find-bar[hidden] { display: none; }
+      #paste-confirm {
+        background: #202024;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 6px;
+        padding: 14px 16px;
+        max-width: 520px;
+        font-size: 13px;
+      }
+      #paste-confirm::backdrop { background: #0009; }
+      #paste-confirm form { display: flex; flex-direction: column; gap: 10px; margin: 0; }
+      #paste-info { margin: 0; color: var(--muted); }
+      #paste-preview {
+        margin: 0;
+        max-height: 180px;
+        overflow: auto;
+        background: #17171a;
+        border: 1px solid #2a2a30;
+        border-radius: 4px;
+        padding: 8px;
+        white-space: pre-wrap;
+        word-break: break-all;
+        font-family: "JetBrains Mono", Consolas, monospace;
+        font-size: 12px;
+      }
+      #paste-actions { display: flex; justify-content: flex-end; gap: 8px; }
+      #paste-actions button {
+        background: #2a2a30;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 4px;
+        padding: 4px 14px;
+        font: inherit;
+        cursor: pointer;
+      }
+      #paste-ok { border-color: var(--accent); color: var(--accent); }
       #find-bar input {
         background: #2a2a30;
         color: var(--fg);
@@ -332,6 +368,18 @@
         <div id="term"></div>
       </div>
     </div>
+    <!-- 多行粘贴确认（TER-013）。用原生 <dialog> 而不是 window.confirm：
+         后者会阻塞整个渲染进程，终端在那段时间里连输出都刷不出来。 -->
+    <dialog id="paste-confirm">
+      <form method="dialog">
+        <p id="paste-info"></p>
+        <pre id="paste-preview"></pre>
+        <div id="paste-actions">
+          <button value="no" id="paste-cancel">取消</button>
+          <button value="yes" id="paste-ok">粘贴</button>
+        </div>
+      </form>
+    </dialog>
     <script src="vendor/xterm.js"></script>
     <script src="vendor/addon-fit.js"></script>
     <script src="vendor/addon-search.js"></script>

@@ -16,8 +16,9 @@
 | IPC 数据面（`wt-ipc`） | ✅ 完成 | 会话注册表 + 拉取式二进制读取 + 未确认字节背压 + 事件节流；7 个测试 |
 | MobaXterm 迁移（`SES-020`） | ✅ 可用 | `wt session import/list`：树结构还原、Rlogin 跳过并说明、重复导入按 name+host+port 与会话/文件夹去重 |
 | SFTP（列目录 / 下载 / 上传） | ✅ CLI + 界面 | `wt sftp ls/get/put`（认证参数与 `ssh exec` 一致）+ `wt-ssh::SftpClient`；用例覆盖报文级（内存管道）、真实 SSH 通道、CLI 真实执行路径。界面文件面板：列目录、进出目录、双击下载到本地（同名自动改名）、上传本地文件 |
+| 终端剪贴板（`TER-011` / `TER-013` / `TER-023`） | ✅ 可用 | 双击选整词（含 `user@host:/var/log` 这种串）、选中即复制、`Ctrl+Shift+C` / `Ctrl+Insert` 复制、`Ctrl+Shift+V` / `Shift+Insert` 粘贴、多行粘贴确认（取消后零字节）、bracketed paste 遵守 `?2004`；右键粘贴见 `G11` |
 | 其余协议（RDP / VNC / 隧道） | ⬜ 未开始 | — |
-| UI 壳（Tauri 2 + xterm.js） | ✅ 可交互 | 端到端验收 **61 项**通过（`scripts/e2e-desktop.mjs`）：本地终端全链路 + 多标签 + 查找/字号 + 会话树（新建/删除/过滤/导入含 GBK）+ SSH 密码/密钥/**agent** 三种认证 + TOFU + 保险库（存/填/列/删）+ SFTP 文件面板（列目录/下载/上传）+ 错误路径 + 三条防「沉默失效」的自检（前端版本、内嵌资源一致性、页面任务队列活性） |
+| UI 壳（Tauri 2 + xterm.js） | ✅ 可交互 | 端到端验收 **69 项**通过（`scripts/e2e-desktop.mjs`）：本地终端全链路 + 多标签 + 查找/字号 + 剪贴板（选词/复制/粘贴/多行确认/bracketed paste）+ 会话树（新建/删除/过滤/导入含 GBK）+ SSH 密码/密钥/**agent** 三种认证 + TOFU + 保险库（存/填/列/删）+ SFTP 文件面板（列目录/下载/上传）+ 错误路径 + 三条防「沉默失效」的自检（前端版本、内嵌资源一致性、页面任务队列活性） |
 
 实现按 [`docs/spec/14-roadmap-acceptance.md`](docs/spec/14-roadmap-acceptance.md) 的里程碑推进。
 
@@ -80,6 +81,8 @@ cargo run -p wt-cli -- session list
 | ~~G8~~ | ~~界面里没有 SFTP 文件面板~~ | ✅ 已实现：列目录、进出目录、双击下载到本地（同名自动改名不覆盖）、上传本地文件；传输走真实 SSH + SFTP | — |
 | G8 复盘 | 这个缺口排查了七轮才收口，三个根因都不是「SFTP 不行」，值得记下来 | ① **测试保真度**：`russh_sftp` 的 `FileAttributes::dummy()` 把 `permissions` 写死成 `0o777 \| S_IFDIR`，mock 于是把**每个**条目都报成目录——`notes.txt` 渲染成 `notes.txt/`，而断言在等 `notes.txt`。列目录其实一直是成功的。② **断言会撒谎**：轮询里对「msg 非空」抛错，超时后报的是**第一次**轮询的「读取中…」，于是「成功但条件不匹配」被读成「后端挂起」。③ **IPC 一直走回退路径**：CSP 缺 `connect-src 'self' ipc: http://ipc.localhost`，每次 `invoke` 都先 `fetch` 失败再退到 postMessage。三处都已修，并补了三条常驻断言：前端版本标记、内嵌资源与磁盘源文件逐字节一致、有终端会话时定时器与 rAF 仍在跑 | — |
 | G10 | 文件面板还缺：拖拽传输（`FIL-004`）、多会话并存（`FIL-001`）、新建目录/改名/删除、传输进度与断点续传（`FIL-019`） | 能用，但不如 MobaXterm 顺手：批量要一个个选，大文件没有进度也不能续传 | 按 `FIL-004` → `FIL-001` → `FIL-019` 顺序补 |
+| G11 | 右键 / 中键粘贴暂时不可用：WebView2 里 `navigator.clipboard.readText()` 要剪贴板读权限，当前构建拿不到（既不 resolve 也不 reject） | 键盘路径（`Ctrl+V` / `Ctrl+Shift+V` / `Shift+Insert`）完全可用；右键会明确提示「读剪贴板被拒绝，请用 Ctrl+Shift+V」，不会静默无反应 | 需要 Rust 侧读剪贴板：接 `tauri-plugin-clipboard-manager`，或自己用 `arboard`。**两者在 Linux 上都会引入 X11 客户端依赖**，与 ADR-0012 的「零 X11 依赖」取向相关，须先定调再动手 |
+| G12 | `TER-020` 快捷键体系还没做：键位写死在 `main.js`，不能重绑、不能导出 | 现有键位够用，但用户改不了，也不符合规格的「全部可重绑 + 冲突检测」 | 等设置体系（`SET-001`）落地后一起做键位表 |
 | G6 | 没有分屏、主题自定义 | 多会话已用标签页解决；查找与字号已可用（Ctrl+F / Ctrl+±） | 随 `TER-01x` / `SET-00x` 推进 |
 | G9 | `wt ssh shell` 的**交互路径**没有在真实 sshd 上验证过（本机无 sshd） | 参数解析、连接失败与「连接前不碰终端」已验证；raw 模式下的按键转发、窗口尺寸、远端退出后恢复终端只能靠人工试 | 拿到真实 sshd 后走一遍：`ls` 有颜色、方向键可用、`Ctrl+C` 中断、`Ctrl+D` 退出后本机终端正常 |
 | ~~G7~~ | ~~非 UTF-8 的 ini 会让中文名乱码~~ | ✅ 已修复：`wt_import::decode_ini` 先按 UTF-8 严格解、失败再按 GBK；导入结果里显示用了哪种编码 | — |

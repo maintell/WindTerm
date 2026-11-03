@@ -141,6 +141,10 @@ function createView(label) {
     status: "",
     dataEvents: 0,
     inputLog: [],
+    /** 粘贴次数（验收用：确认「取消后零字节」时对比它没变） */
+    pasteCount: 0,
+    /** 自动复制成功次数（验收用：静默能力也要有可观测的成功信号） */
+    autoCopyCount: 0,
   };
 
   search.onDidChangeResults(({ resultIndex, resultCount }) => {
@@ -157,10 +161,54 @@ function createView(label) {
     );
   });
 
+  // 选中即复制（TER-011）。防抖是因为拖选会连续触发，每次都写剪贴板既浪费
+  // 又会让剪贴板里短暂出现半截内容。
+  let autoCopyTimer = null;
+  term.onSelectionChange(() => {
+    if (!autoCopy) return;
+    const text = term.getSelection();
+    if (!text) return;
+    clearTimeout(autoCopyTimer);
+    autoCopyTimer = setTimeout(() => {
+      navigator.clipboard
+        ?.writeText(text)
+        .then(() => {
+          view.autoCopyCount += 1;
+        })
+        .catch((e) => {
+          if (autoCopyWarned) return;
+          autoCopyWarned = true;
+          setStatus(`自动复制失败：${e}（Ctrl+Shift+C 仍可用）`);
+        });
+    }, 120);
+  });
+
   term.onResize(({ cols, rows }) => {
     if (!view.handle) return;
     invoke("term_resize", { handle: view.handle, cols, rows }).catch(() => {});
   });
+
+  // 右键与中键粘贴（TER-011）。用捕获阶段：应用开启鼠标上报时，
+  // xterm 会先把这两个键拿去当鼠标事件，冒泡阶段就轮不到我们了。
+  el.addEventListener(
+    "contextmenu",
+    (ev) => {
+      ev.preventDefault();
+      if (view !== active) return;
+      void pasteFromClipboard(view);
+    },
+    true,
+  );
+  el.addEventListener(
+    "auxclick",
+    (ev) => {
+      if (ev.button !== 1) return;
+      ev.preventDefault();
+      if (view !== active) return;
+      void pasteFromClipboard(view);
+    },
+    true,
+  );
 
   el.addEventListener("mousedown", () => term.focus());
 
@@ -710,12 +758,164 @@ function setFontSize(next) {
   }
 }
 
+// ── 剪贴板（TER-011 / TER-013 / TER-023）────────────────────
+//
+// 数据只经 `term.paste()` 发出，不自己拼 `\e[200~…\e[201~`。
+// xterm 的 paste 内部已经做了两件我们不该重复的事：`\r?\n` → `\r` 规范化，
+// 以及远端开启 `?2004` 时自动包裹 bracketed paste。再包一层，vim 里会看到
+// 多出来的 `200~` 字样——这就是「粘贴处理」写两遍的典型后果。
+//
+// 已知规格偏差（`spec/06` TER-011 AC-1 与「默认分隔符 `/~+-.&?$%`」自相矛盾）：
+// 按 AC-1 优先，保留 xterm 默认分隔符，使 `user@host:/var/log` 双击能选全串。
+// 若把 `/` 当分隔符，双击只会选中 `user@host:`。
+
+/** 选中即复制（Unix 终端习惯，TER-011）。验收脚本可关掉。 */
+let autoCopy = true;
+/** 自动复制失败只提示一次，避免每拖一次选就刷一条状态 */
+let autoCopyWarned = false;
+
+/** 多行粘贴确认门限：含 ≥ 2 个换行就确认（TER-013） */
+const PASTE_CONFIRM_LINES = 2;
+
+const pasteDialog = document.getElementById("paste-confirm");
+const pasteInfo = document.getElementById("paste-info");
+const pastePreview = document.getElementById("paste-preview");
+
+async function writeClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (e) {
+    // 不能静默：用户按了复制却什么都没进剪贴板，是最难自查的一类问题
+    setStatus(`写剪贴板失败：${e}`);
+    return false;
+  }
+}
+
+async function readClipboard() {
+  // 带超时：WebView2 里 `readText()` 可能既不 resolve 也不 reject（等权限），
+  // 不设上限的话右键就变成「点了什么都没有」——比报错更难排查。
+  const timeout = new Promise((resolve) => setTimeout(() => resolve(null), 1500));
+  try {
+    const text = await Promise.race([navigator.clipboard.readText(), timeout]);
+    if (text === null) {
+      setStatus("读剪贴板被拒绝，请用 Ctrl+Shift+V 粘贴");
+    }
+    return text;
+  } catch (e) {
+    setStatus(`读剪贴板失败：${e}（可用 Ctrl+Shift+V）`);
+    return null;
+  }
+}
+
+/** 复制当前会话的选区（Ctrl+Shift+C / Ctrl+Insert）。 */
+async function copySelection(view = active) {
+  const text = view?.term.getSelection() ?? "";
+  if (!text) {
+    setStatus("没有选中内容");
+    return;
+  }
+  if (await writeClipboard(text)) {
+    setStatus(`已复制 ${text.length} 字符`);
+  }
+}
+
+/** 多行粘贴确认；返回用户是否确认。取消时一个字节都不会发出去。 */
+function confirmPaste(text, view) {
+  const lines = text.split(/\r\n|\r|\n/);
+  pasteInfo.textContent = `${lines.length} 行 · ${text.length} 字符 · 目标会话 ${view.label}`;
+  pastePreview.textContent = lines.slice(0, 3).join("\n");
+  pasteDialog.returnValue = "";
+  pasteDialog.showModal();
+  return new Promise((resolve) => {
+    pasteDialog.addEventListener(
+      "close",
+      () => {
+        resolve(pasteDialog.returnValue === "yes");
+        if (view === active) view.term.focus();
+      },
+      { once: true },
+    );
+  });
+}
+
+/**
+ * 粘贴一段文本（多行先确认，再交给 xterm）。
+ *
+ * 顺序是刻意的：先确认，确认通过后才 `term.paste()`。反过来写就会留下
+ * 「取消之后远端已经收到一半」这种最难解释的现象。
+ */
+async function pasteText(text, view = active) {
+  if (!view?.handle) {
+    setStatus("没有活动会话");
+    return;
+  }
+  if (!text) return;
+
+  const newlines = (text.match(/\r\n|\r|\n/g) ?? []).length;
+  if (newlines >= PASTE_CONFIRM_LINES && !(await confirmPaste(text, view))) {
+    setStatus("粘贴已取消");
+    return;
+  }
+
+  view.term.paste(text);
+  view.pasteCount += 1;
+  setStatus(`已粘贴 ${text.length} 字符`);
+}
+
+/**
+ * 右键 / 中键粘贴：这里没有 `paste` 事件可用，只能自己去读剪贴板。
+ *
+ * `navigator.clipboard.readText()` 在 WebView2 里要「用户激活」才放行，
+ * 脚本合成的事件可能拿不到，所以读失败时给出可执行的替代动作，
+ * 而不是默默什么都不做。
+ */
+async function pasteFromClipboard(view = active) {
+  const text = await readClipboard();
+  // 读失败时 `readClipboard` 已经说明原因与替代办法，这里不再覆盖
+  if (text === null) return;
+  await pasteText(text, view);
+}
+
+// 键盘粘贴与右键菜单粘贴都走这里：`paste` 事件自带数据，不需要剪贴板权限。
+//
+// 为什么不自己处理 Ctrl+Shift+V：浏览器只在真正的粘贴动作上触发 `paste`，
+// 我们拦下来再去读剪贴板反而多一道权限坎。交给浏览器，这条路径在所有平台上都一样。
+document.addEventListener(
+  "paste",
+  (ev) => {
+    const text = ev.clipboardData?.getData("text/plain") ?? "";
+    ev.preventDefault();
+    ev.stopPropagation();
+    void pasteText(text);
+  },
+  true,
+);
+
 // 捕获阶段处理并 stopPropagation：否则 Ctrl+F 会先被 xterm 当成 ^F 发给远端
 document.addEventListener(
   "keydown",
   (ev) => {
-    if (!ev.ctrlKey || ev.altKey || ev.metaKey) return;
-    if (ev.key === "f") {
+    if (ev.altKey || ev.metaKey) return;
+    const key = ev.key;
+
+    // 复制（TER-011）。注意 Ctrl+C **不**在这里拦：它必须继续作为 SIGINT
+    // 发给远端，改了就是破坏肌肉记忆。
+    //
+    // 粘贴（Ctrl+Shift+V / Shift+Insert）也**不拦**：浏览器只在真正的粘贴动作上
+    // 触发 `paste` 事件，拦下按键反而会让事件不产生。事件处理见下面的 paste 监听。
+    if (
+      (ev.ctrlKey && ev.shiftKey && (key === "c" || key === "C")) ||
+      (ev.ctrlKey && key === "Insert")
+    ) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      void copySelection();
+      return;
+    }
+
+    if (!ev.ctrlKey) return;
+    if (key === "f") {
       ev.preventDefault();
       ev.stopPropagation();
       openFind();
@@ -1088,7 +1288,62 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-3",
+  ui: "wt-ui-5",
+  /** 当前选区文本（验收与脚本用） */
+  selection() {
+    return active?.term.getSelection() ?? "";
+  },
+  /**
+   * 屏幕上某段文字的中心点（视口坐标）。
+   *
+   * 用途是让脚本能「点到屏幕上这段字」——比如验收双击选词。走公开 DOM
+   * （`.xterm-rows > div` + `Range`）而不是 xterm 的私有度量，是因为私有 API
+   * 一升级就变，而 DOM 结构是渲染结果本身。
+   */
+  textPoint(text) {
+    if (!text) return null;
+    for (const rowEl of document.querySelectorAll(".xterm-rows > div")) {
+      const idx = rowEl.textContent.indexOf(text);
+      if (idx < 0) continue;
+      const walker = document.createTreeWalker(rowEl, NodeFilter.SHOW_TEXT);
+      let seen = 0;
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const len = node.nodeValue.length;
+        if (seen + len > idx) {
+          const start = idx - seen;
+          const range = document.createRange();
+          range.setStart(node, start);
+          range.setEnd(node, Math.min(start + text.length, len));
+          const r = range.getBoundingClientRect();
+          if (r.width > 0) return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+        }
+        seen += len;
+      }
+    }
+    return null;
+  },
+  /** 粘贴次数：断言「取消后零字节」时对比它没变 */
+  get pasteCount() {
+    return active?.pasteCount ?? 0;
+  },
+  /** 自动复制成功次数 */
+  get autoCopyCount() {
+    return active?.autoCopyCount ?? 0;
+  },
+  /** 多行粘贴确认框是否打开 */
+  get pasteDialogOpen() {
+    return pasteDialog.open;
+  },
+  /** 远端是否要求 bracketed paste（DECSET ?2004） */
+  get bracketedPaste() {
+    return active?.term.modes?.bracketedPasteMode ?? false;
+  },
+  get autoCopy() {
+    return autoCopy;
+  },
+  set autoCopy(on) {
+    autoCopy = !!on;
+  },
   /** 文件面板的当前状态（验收与脚本用） */
   get files() {
     return {

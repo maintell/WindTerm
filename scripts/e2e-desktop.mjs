@@ -304,6 +304,33 @@ async function clickAt(box) {
 }
 
 /**
+ * 派发一个带修饰键的组合（可信事件）。
+ *
+ * `mods` 是 CDP 的位掩码：Alt=1、Ctrl=2、Meta=4、Shift=8。
+ * `vk` 必须给对——xterm 按 `keyCode` 分支，给错就变成另一个键了。
+ */
+async function pressChord(mods, key, code, vk) {
+  const base = {
+    key,
+    code,
+    windowsVirtualKeyCode: vk,
+    nativeVirtualKeyCode: vk,
+    modifiers: mods,
+  };
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", ...base });
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
+}
+
+/** 在视口坐标处双击（两次按下/抬起，第二次 clickCount=2 才会合成 dblclick）。 */
+async function doubleClickAt(box) {
+  const base = { x: box.x, y: box.y, button: "left" };
+  await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...base, clickCount: 1 });
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...base, clickCount: 1 });
+  await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...base, clickCount: 2 });
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...base, clickCount: 2 });
+}
+
+/**
  * 双击文件面板里的一行（按名字找）。
  *
  * 必须发两次按下/抬起并把第二次的 `clickCount` 设为 2：Chromium 是靠这个字段
@@ -445,7 +472,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-3",
+    uiVersion === "wt-ui-5",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -600,6 +627,133 @@ try {
     { timeout: 5000, label: "字号放大" },
   );
   check("Ctrl+= 放大字号", fontAfter === fontBefore + 1, `${fontBefore} → ${fontAfter}`);
+
+  // 9c. 剪贴板（TER-011 / TER-013）
+  // 先往屏幕上打一段「有分隔符歧义」的串：规格里「默认分隔符含 /」与 AC-1
+  //「双击要选全 user@host:/var/log」互相矛盾，这条断言把结论钉在 AC-1 上。
+  await typeText("echo user@host:/var/log");
+  const wordPoint = await waitFor(
+    () => cdp.eval(`window.__wt.textPoint("user@host:/var/log")`),
+    { timeout: 10000, label: "屏幕上出现待选文本" },
+  );
+
+  // 先关掉「选中即复制」，否则下面的复制断言会被自动复制掩盖（测了个寂寞）
+  await cdp.eval(`(window.__wt.autoCopy = false)`);
+  await cdp.eval(`navigator.clipboard.writeText("")`);
+  await doubleClickAt(wordPoint);
+  const selected = await waitFor(
+    async () => (await cdp.eval(`window.__wt.selection()`)) || null,
+    { timeout: 5000, label: "双击选词" },
+  );
+  check(
+    "双击选中含 / 和 @ 的整串（AC-1）",
+    selected === "user@host:/var/log",
+    JSON.stringify(selected),
+  );
+
+  // Ctrl+Shift+C：modifiers 位掩码 Ctrl=2 | Shift=8。
+  // 断言读状态栏而不是把剪贴板读回来：WebView2 里 `navigator.clipboard.readText()`
+  // 要真实用户激活才放行，脚本回读会假失败；而「已复制 N 字符」只在 writeText
+  // 真正成功之后才出现，是可用的成功信号（失败会显示原因）。
+  await pressChord(2 | 8, "C", "KeyC", 67);
+  const copyStatus = await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      return s.startsWith("已复制") || s.includes("失败") || s.includes("没有选中") ? s : null;
+    },
+    { timeout: 5000, label: "复制反馈" },
+  );
+  check(
+    "Ctrl+Shift+C 把选区写进剪贴板",
+    copyStatus === "已复制 18 字符",
+    copyStatus,
+  );
+
+  // Ctrl+Shift+V：单行不弹确认；末尾带 \r 让它粘贴后直接执行
+  await cdp.eval(`navigator.clipboard.writeText("echo pasted-ok\\r")`);
+  const logBefore = await cdp.eval(`window.__wt.inputLog.length`);
+  await pressChord(2 | 8, "V", "KeyV", 86);
+  const pasted = await waitFor(
+    async () => {
+      const screen = await cdp.eval(`window.__wt.screen()`);
+      // 出现两次：一次是粘贴进来的命令行，一次是执行结果
+      return screen.split("pasted-ok").length > 2 ? true : null;
+    },
+    { timeout: 15000, label: "粘贴内容被执行" },
+  ).catch(() => null);
+  check("Ctrl+Shift+V 把剪贴板送进终端", pasted === true);
+
+  // 粘贴不能把 ^V 当控制字符漏给远端：那会让 shell 收到一个 0x16
+  const leaked = await cdp.eval(`window.__wt.inputLog.slice(${logBefore})`);
+  check(
+    "粘贴没有把 ^V 漏给终端",
+    !leaked.some((s) => s === "\u0016"),
+    JSON.stringify(leaked),
+  );
+
+  // 多行粘贴必须确认；取消后一个字节都不能发出去（AC-3）
+  const beforePaste = await cdp.eval(
+    `({ n: window.__wt.pasteCount, log: window.__wt.inputLog.length })`,
+  );
+  const manyLines = Array.from({ length: 100 }, (_, i) => `line${i}`).join("\n");
+  await cdp.eval(`navigator.clipboard.writeText(${JSON.stringify(manyLines)})`);
+  await pressChord(2 | 8, "V", "KeyV", 86);
+  await waitFor(
+    async () => (await cdp.eval(`window.__wt.pasteDialogOpen`)) === true,
+    { timeout: 5000, label: "多行粘贴确认框" },
+  );
+  await clickElement("#paste-cancel");
+  const afterPaste = await cdp.eval(
+    `({ n: window.__wt.pasteCount, log: window.__wt.inputLog.length, open: window.__wt.pasteDialogOpen })`,
+  );
+  check(
+    "多行粘贴弹确认，取消后零字节发出（AC-3）",
+    afterPaste.n === beforePaste.n &&
+      afterPaste.log === beforePaste.log &&
+      afterPaste.open === false,
+    `pasteCount ${beforePaste.n}→${afterPaste.n}，inputLog ${beforePaste.log}→${afterPaste.log}`,
+  );
+
+  // 恢复「选中即复制」并验证它真的写了剪贴板（默认行为，不能被静默关掉）
+  await cdp.eval(`(window.__wt.autoCopy = true)`);
+  const autoBefore = await cdp.eval(`window.__wt.autoCopyCount`);
+  await doubleClickAt(wordPoint);
+  const autoCopied = await waitFor(
+    async () => {
+      const n = await cdp.eval(`window.__wt.autoCopyCount`);
+      return n > autoBefore ? n : null;
+    },
+    { timeout: 5000, label: "自动复制" },
+  ).catch(() => null);
+  check(
+    "选中即复制（默认开启）",
+    autoCopied !== null,
+    `autoCopyCount ${autoBefore} → ${autoCopied}`,
+  );
+
+  // 右键粘贴（H:rightclick-paste）。它走 `navigator.clipboard.readText()`，
+  // 这条 API 要用户激活才放行——用可信右键验证它在真实手势下到底通不通，
+  // 不通就把原因如实报出来，而不是留一个「点了没反应」。
+  await cdp.eval(`navigator.clipboard.writeText("echo right-paste\\r")`);
+  const rb = { x: wordPoint.x, y: wordPoint.y, button: "right", clickCount: 1 };
+  await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...rb });
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...rb });
+  const rightStatus = await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      return /^(已粘贴|读剪贴板)/.test(s) ? s : null;
+    },
+    { timeout: 8000, label: "右键粘贴反馈" },
+  );
+  // 断言的是「一定有明确反馈」，而不是「一定粘贴成功」：
+  // WebView2 里 `navigator.clipboard.readText()` 要剪贴板读权限，当前构建拿不到，
+  // 右键只能退化。这一条守住的是「点了不能没反应」——成功与不可用都必须说出来。
+  // 拿到剪贴板读权限后（见 README 的 G11），这里应当收紧成「已粘贴」。
+  check(
+    "右键粘贴有明确反馈（成功或说明为何不可用）",
+    /^(已粘贴|读剪贴板)/.test(rightStatus),
+    rightStatus,
+  );
 
   // 10. 尺寸变化 → 重新 fit → 后端收到 resize（TER-012）
   //     CDP 造不出真正的窗口拖拽，这里改侧栏宽度让终端变窄，再派发 resize 事件，
@@ -957,6 +1111,26 @@ try {
     true,
     `累计 ${sshOut.length} 字符`,
   );
+
+  // 15b. bracketed paste（TER-023）：远端开启 ?2004 后，粘贴必须被 \e[200~ 包裹。
+  //      自己再包一层就会双重包裹；完全不包则 vim 里会触发自动缩进。
+  //      mock 收到含 "bracketed" 的输入就会发 \e[?2004h，所以这一步是可控的。
+  await typeText("bracketed");
+  // 客户端是逐键发的，服务端要累积才认得出整词；这里等 `?2004` 真的生效
+  await waitFor(
+    async () => (await cdp.eval(`window.__wt.bracketedPaste`)) === true,
+    { timeout: 15000, label: "远端开启 bracketed paste" },
+  );
+  await cdp.eval(`navigator.clipboard.writeText("xyz")`);
+  await pressChord(2 | 8, "V", "KeyV", 86);
+  const bracketed = await waitFor(
+    async () => {
+      const log = await cdp.eval(`window.__wt.inputLog`);
+      return log.some((s) => s.includes("\x1b[200~") && s.includes("\x1b[201~")) ? true : null;
+    },
+    { timeout: 10000, label: "粘贴被 bracketed 包裹" },
+  ).catch(() => null);
+  check("远端要求 bracketed paste 时粘贴被 \\e[200~/\\e[201~ 包裹", bracketed === true);
 
   // 16. 关闭后重连：主机密钥已在 known_hosts 里，不该再报「已记录」
   await closeAllTabs();

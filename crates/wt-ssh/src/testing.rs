@@ -226,6 +226,7 @@ impl russh::server::Server for MockServer {
             channels: Arc::new(AsyncMutex::new(HashMap::new())),
             subsystems: Arc::new(AsyncMutex::new(std::collections::HashSet::new())),
             fs: self.fs.clone(),
+            input_buf: String::new(),
         }
     }
 }
@@ -237,6 +238,9 @@ struct MockHandler {
     subsystems: Arc<AsyncMutex<std::collections::HashSet<ChannelId>>>,
     /// SFTP 子系统用的内存文件系统
     fs: MockFs,
+    /// shell 收到的输入累积（按字符截断）。客户端是**逐键**发的，
+    /// 想识别一段词就必须累积，否则永远匹配不到整词。
+    input_buf: String,
 }
 
 impl russh::server::Handler for MockHandler {
@@ -367,6 +371,22 @@ impl russh::server::Handler for MockHandler {
         }
         let echo = format!("echo:{}", String::from_utf8_lossy(data)).into_bytes();
         session.data(channel, echo)?;
+        // 让上层能验证 bracketed paste：客户端**逐键**发来的输入累积成含
+        // `bracketed` 的一段时，服务端开启 `?2004`，之后客户端的粘贴应当被
+        // `\e[200~` / `\e[201~` 包裹。真实 shell 由 readline 发这个序列，
+        // 这里用可控输入触发，断言才稳定。
+        self.input_buf.push_str(&String::from_utf8_lossy(data));
+        if self.input_buf.chars().count() > 256 {
+            // 只留最近 256 个字符：这个缓冲只用来识别触发词，不需要无限增长
+            let skip = self.input_buf.chars().count() - 256;
+            self.input_buf = self.input_buf.chars().skip(skip).collect();
+        }
+        if self.input_buf.contains("bracketed") {
+            // 触发后清空：否则后续每个键都会再发一次 `?2004h`，把测试流刷满
+            self.input_buf.clear();
+            session.data(channel, b"\x1b[?2004h".to_vec())?;
+            return Ok(());
+        }
         Ok(())
     }
 }
