@@ -16,7 +16,7 @@
 | IPC 数据面（`wt-ipc`） | ✅ 完成 | 会话注册表 + 拉取式二进制读取 + 未确认字节背压 + 事件节流；7 个测试 |
 | MobaXterm 迁移（`SES-020`） | ✅ 可用 | `wt session import/list`：树结构还原、Rlogin 跳过并说明、重复导入按 name+host+port 与会话/文件夹去重 |
 | 其余协议（SFTP / RDP / VNC / 隧道） | ⬜ 未开始 | — |
-| UI 壳（Tauri 2 + xterm.js） | ✅ 可交互 | 端到端验收 38 项通过（`scripts/e2e-desktop.mjs`）：本地终端全链路 + 会话树 + 界面导入（含 GBK）+ SSH 密码/密钥双认证 + TOFU + 保险库存密码与自动填入 + 错误路径 |
+| UI 壳（Tauri 2 + xterm.js） | ✅ 可交互 | 端到端验收 41 项通过（`scripts/e2e-desktop.mjs`）：本地终端全链路 + 会话树（新建/删除/导入含 GBK）+ SSH 密码/密钥双认证 + TOFU + 保险库存密码与自动填入 + 错误路径 |
 
 实现按 [`docs/spec/14-roadmap-acceptance.md`](docs/spec/14-roadmap-acceptance.md) 的里程碑推进。
 

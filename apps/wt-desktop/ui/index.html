@@ -126,6 +126,7 @@
   </head>
   <body>
     <div id="bar">
+      <input id="session-name" placeholder="会话名称" spellcheck="false" />
       <input id="host" placeholder="主机" spellcheck="false" />
       <input id="port" placeholder="端口" value="22" inputmode="numeric" />
       <input id="user" placeholder="用户名" spellcheck="false" />
@@ -133,6 +134,7 @@
       <label id="remember-toggle"><input type="checkbox" id="remember" />记住密码</label>
       <label id="key-toggle"><input type="checkbox" id="use-key" />用密钥</label>
       <button id="ssh">连接 SSH</button>
+      <button id="save-session">保存</button>
       <button id="open">新建本地终端</button>
       <button id="close" disabled>关闭</button>
       <span id="status">未连接</span>
@@ -152,6 +154,7 @@
     <div id="main">
       <aside id="tree">
         <div id="tree-head">
+          <button id="delete-session" disabled title="删除选中的会话">删除</button>
           <button id="import" title="从 MobaXterm.ini 导入会话">导入</button>
           <button id="refresh" title="重新读取会话库">刷新</button>
         </div>

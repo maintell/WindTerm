@@ -362,6 +362,113 @@ fn credential_get(
     }
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionSaveReq {
+    /// 有 id 就是更新，没有就是新建
+    #[serde(default)]
+    id: Option<String>,
+    name: String,
+    host: String,
+    #[serde(default)]
+    port: Option<u16>,
+    #[serde(default)]
+    user: Option<String>,
+}
+
+/// 新建或更新一条会话。
+///
+/// 更新时保留原记录的其它字段（`folder_id`、`credential_ref`、协议选项等），
+/// 只改名称/主机/端口/用户名——用户在界面上只看到这四项，不该顺手把它们抹掉。
+#[tauri::command]
+fn session_save(req: SessionSaveReq) -> Result<String, String> {
+    let name = req.name.trim();
+    let host = req.host.trim();
+    if name.is_empty() {
+        return Err("[SESSION_BAD_ARGUMENT] 会话名称不能为空".into());
+    }
+    if host.is_empty() {
+        return Err("[SESSION_BAD_ARGUMENT] 主机不能为空".into());
+    }
+
+    let mut store = wt_store::Store::open(&sessions_db_path()).map_err(|e| e.to_string())?;
+    let existing = match &req.id {
+        Some(id) => store
+            .load_snapshot()
+            .map_err(|e| e.to_string())?
+            .sessions
+            .into_iter()
+            .find(|s| s.id.as_str() == id),
+        None => None,
+    };
+
+    let mut session = existing.unwrap_or_else(|| wt_core::Session {
+        id: wt_core::SessionId::new(),
+        folder_id: None,
+        name: String::new(),
+        kind: wt_core::SessionKind::Ssh,
+        sort_order: 0,
+        host: None,
+        port: None,
+        username: None,
+        environment: None,
+        credential_ref: None,
+        options: Default::default(),
+        settings: Default::default(),
+        last_used_at: None,
+        last_cwd: None,
+        rev: 1,
+    });
+    session.name = name.to_string();
+    session.host = Some(host.to_string());
+    session.port = req.port;
+    session.username = req
+        .user
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty());
+
+    let id = session.id.as_str().to_string();
+    store.upsert_session(&session).map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+/// 删除一条会话，并顺手清掉保险库里属于它的密码。
+///
+/// 顺序是「先清保险库、再删会话」：前者失败就整体报错、什么都不动，
+/// 免得出现「会话没了、密码还在库里」这种更难收拾的中间态。
+#[tauri::command]
+fn session_delete(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    {
+        let mut st = state.vault.lock().unwrap();
+        if let Some(master) = st.password.clone() {
+            if let Some(vault) = st.vault.as_mut() {
+                let stale: Vec<String> = vault
+                    .entries()
+                    .iter()
+                    .filter(|e| {
+                        matches!(e, wt_crypto::Entry::Password { session_id: Some(s), .. } if s == &id)
+                    })
+                    .map(|e| e.id().to_string())
+                    .collect();
+                if !stale.is_empty() {
+                    for entry in stale {
+                        vault.remove(&entry).map_err(|e| e.to_string())?;
+                    }
+                    let bytes = vault.seal(&master).map_err(|e| e.to_string())?;
+                    std::fs::write(vault_path(), bytes)
+                        .map_err(|e| format!("写入保险库失败：{e}"))?;
+                }
+            }
+        }
+    }
+
+    let mut store = wt_store::Store::open(&sessions_db_path()).map_err(|e| e.to_string())?;
+    store
+        .delete_session(&wt_core::SessionId::from(id.as_str()))
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // ── SSH ─────────────────────────────────────────────────────
 
 /// 应用数据目录。
@@ -591,7 +698,9 @@ fn main() {
             vault_unlock,
             vault_lock,
             credential_save,
-            credential_get
+            credential_get,
+            session_save,
+            session_delete
         ])
         .run(tauri::generate_context!())
         .expect("启动 WindTerm 失败");

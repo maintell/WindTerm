@@ -614,6 +614,42 @@ try {
     `${gbkNames.filter((n) => n.includes("-gbk")).join("、")} / ${gbkMsg.split("\n")[1] ?? ""}`,
   );
 
+  // 12e. 会话的新建与删除（不依赖导入，用户自己加一条）
+  await fillInput("#session-name", "手动会话");
+  await fillInput("#host", "127.0.0.1");
+  await fillInput("#port", String(sshPort));
+  await fillInput("#user", "tester");
+  await clickElement("#save-session");
+  const created = await waitFor(
+    async () => {
+      const names = await cdp.eval(`window.__wt.sessions()`);
+      return names.includes("手动会话") ? names : null;
+    },
+    { timeout: 10000, label: "保存新会话" },
+  );
+  check("界面上能新建会话", true, created.join("、"));
+
+  await clickSessionNode("手动会话");
+  const refilledName = await cdp.eval(`document.getElementById("session-name").value`);
+  check("选中会话时名称也被填回", refilledName === "手动会话", refilledName);
+
+  // 删除是两步：第一次点只变成「确认删除」，第二次才真的删
+  await clickElement("#delete-session");
+  const armed = await cdp.eval(`document.getElementById("delete-session").textContent`);
+  await clickElement("#delete-session");
+  const afterDelete = await waitFor(
+    async () => {
+      const names = await cdp.eval(`window.__wt.sessions()`);
+      return names.includes("手动会话") ? null : names;
+    },
+    { timeout: 10000, label: "删除会话" },
+  );
+  check(
+    "删除要二次确认，确认后从库里消失",
+    armed === "确认删除" && !afterDelete.includes("手动会话"),
+    `第一次点击后按钮文案：${armed}`,
+  );
+
   // 13. 点会话 → 连接参数自动填好（密码不存库，仍要手填）
   await clickSessionNode("mock-ssh");
   const filled = await cdp.eval(`({

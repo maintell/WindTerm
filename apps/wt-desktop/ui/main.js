@@ -34,6 +34,9 @@ const hostInput = document.getElementById("host");
 const portInput = document.getElementById("port");
 const userInput = document.getElementById("user");
 const passInput = document.getElementById("password");
+const nameInput = document.getElementById("session-name");
+const saveSessionBtn = document.getElementById("save-session");
+const deleteSessionBtn = document.getElementById("delete-session");
 const useKeyBox = document.getElementById("use-key");
 const keyRow = document.getElementById("key-row");
 const pickKeyBtn = document.getElementById("pick-key");
@@ -238,6 +241,9 @@ async function selectSession(s) {
     return;
   }
   selectedSession = s;
+  deleteSessionBtn.disabled = false;
+  deleteSessionBtn.textContent = "删除";
+  if (s.name) nameInput.value = s.name;
   if (s.host) hostInput.value = s.host;
   if (s.port) portInput.value = String(s.port);
   if (s.username) userInput.value = s.username;
@@ -318,6 +324,68 @@ async function loadTree() {
 }
 
 refreshBtn.addEventListener("click", loadTree);
+
+// ── 会话的新建 / 保存 / 删除 ────────────────────────────────
+saveSessionBtn.addEventListener("click", async () => {
+  const name = nameInput.value.trim() || hostInput.value.trim();
+  const host = hostInput.value.trim();
+  if (!name || !host) {
+    setStatus("保存会话需要名称与主机");
+    (host ? nameInput : hostInput).focus();
+    return;
+  }
+  try {
+    const id = await invoke("session_save", {
+      req: {
+        id: selectedSession?.id ?? null,
+        name,
+        host,
+        port: Number.parseInt(portInput.value, 10) || 22,
+        user: userInput.value.trim() || null,
+      },
+    });
+    await loadTree();
+    // 保存后按 id 重新选中，避免「刚存的会话在树里点不到」
+    selectedSession = { id, name, host, port: Number.parseInt(portInput.value, 10) || 22, username: userInput.value.trim(), kind: "ssh" };
+    nameInput.value = name;
+    deleteSessionBtn.disabled = false;
+    setStatus(`已保存会话 ${name}`);
+  } catch (e) {
+    setStatus(`保存失败：${e}`);
+  }
+});
+
+// 删除是两步：第一次点变成「确认删除」，3 秒内再点才真的删
+let deleteArmed = false;
+let deleteTimer = null;
+
+deleteSessionBtn.addEventListener("click", async () => {
+  if (!selectedSession) return;
+  if (!deleteArmed) {
+    deleteArmed = true;
+    deleteSessionBtn.textContent = "确认删除";
+    clearTimeout(deleteTimer);
+    deleteTimer = setTimeout(() => {
+      deleteArmed = false;
+      deleteSessionBtn.textContent = "删除";
+    }, 3000);
+    return;
+  }
+
+  clearTimeout(deleteTimer);
+  deleteArmed = false;
+  deleteSessionBtn.textContent = "删除";
+  const name = selectedSession.name;
+  try {
+    await invoke("session_delete", { id: selectedSession.id });
+    selectedSession = null;
+    deleteSessionBtn.disabled = true;
+    await loadTree();
+    setStatus(`已删除会话 ${name}`);
+  } catch (e) {
+    setStatus(`删除失败：${e}`);
+  }
+});
 
 // ── 导入 ────────────────────────────────────────────────────
 const importBtn = document.getElementById("import");
