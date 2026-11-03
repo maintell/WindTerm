@@ -15,14 +15,14 @@
 | `wt` CLI | ✅ 可用 | `version` / `doctor` / `local exec` / `ssh exec`（密码与密钥认证、known_hosts 校验）；ANSI 默认剥离、退出码透传 |
 | IPC 数据面（`wt-ipc`） | ✅ 完成 | 会话注册表 + 拉取式二进制读取 + 未确认字节背压 + 事件节流；7 个测试 |
 | MobaXterm 迁移（`SES-020`） | ✅ 可用 | `wt session import/list`：树结构还原、Rlogin 跳过并说明、重复导入按 name+host+port 与会话/文件夹去重 |
-| SFTP（列目录 / 读 / 写 / 建目录 / 删除） | 🚧 客户端可用 | `wt-ssh::SftpClient`，协议走 `russh-sftp`；3 个用例覆盖真实 SFTP 报文（内存管道）+ 子系统失败映射。**界面与 CLI 入口还没做** |
+| SFTP（列目录 / 下载 / 上传） | ✅ CLI 可用 | `wt sftp ls/get/put`（认证参数与 `ssh exec` 一致）+ `wt-ssh::SftpClient`；3 个用例覆盖真实 SFTP 报文 + 1 个覆盖子系统失败映射。**界面入口还没做** |
 | 其余协议（RDP / VNC / 隧道） | ⬜ 未开始 | — |
 | UI 壳（Tauri 2 + xterm.js） | ✅ 可交互 | 端到端验收 51 项通过（`scripts/e2e-desktop.mjs`）：本地终端全链路 + 多标签 + 查找/字号 + 会话树（新建/删除/过滤/导入含 GBK）+ SSH 密码/密钥双认证 + TOFU + 保险库（存/填/列/删）+ 错误路径 |
 
 实现按 [`docs/spec/14-roadmap-acceptance.md`](docs/spec/14-roadmap-acceptance.md) 的里程碑推进。
 
 ```bash
-cargo test --workspace      # 234 个测试
+cargo test --workspace      # 238 个测试
 cargo clippy --workspace --all-targets   # 零告警
 
 # 跑一下 CLI（真实 PTY）
@@ -30,6 +30,11 @@ cargo run -p wt-cli -- doctor
 cargo run -p wt-cli -- local exec -- cmd /c "echo hello"     # Windows
 cargo run -p wt-cli -- local exec -- sh -c "echo hello"      # Unix
 cargo run -p wt-cli -- ssh exec --host H --user U --password P --insecure-host-key -- uptime
+
+# 文件传输（认证参数与 ssh exec 一致，也支持 --key）
+cargo run -p wt-cli -- sftp ls  --host H --user U --password P --path /var/log
+cargo run -p wt-cli -- sftp get --host H --user U --password P --remote /etc/hosts --local hosts.txt
+cargo run -p wt-cli -- sftp put --host H --user U --password P --local hosts.txt --remote /tmp/hosts.txt
 
 # 桌面壳（会打开窗口）：填主机/用户名/密码点「连接 SSH」，或「新建本地终端」
 cargo run -p wt-desktop
@@ -57,7 +62,7 @@ cargo run -p wt-cli -- session list
 | G3 | ssh-agent 转发未实现；`.ppk` 只支持未加密的 ed25519 | 无法用 ssh-agent 免密；RSA 或带口令的 `.ppk` 仍需 puttygen 转一次 | agent 下一迭代；`.ppk` 的其余类型视需求补 |
 | ~~G4~~ | ~~本地 PTY 关闭挂起~~ | ✅ 已修复：根因是未应答 ConPTY 的 `ESC[6n` 光标查询，补上应答后子进程输出与关闭均正常 | — |
 | G5 | 非 SSH 会话点不动；保险库只能按会话存密码，没有「主密码提示/恢复」机制 | RDP/VNC 会话只能看不能连；主密码忘了保险库就打不开 | 对应协议栈 + 保险库恢复流程（`SEC-*`） |
-| G8 | SFTP 只有客户端库，没有 CLI 与界面入口 | 文件传输目前只能由代码调用，用户点不到 | 下一轮：`wt sftp ls/get/put` + 界面文件面板 |
+| G8 | SFTP 只有 CLI，界面里没有文件面板 | 文件传输要开终端敲命令，不能像 MobaXterm 那样拖文件 | 下一轮：界面文件面板 |
 | G6 | 没有分屏、主题自定义 | 多会话已用标签页解决；查找与字号已可用（Ctrl+F / Ctrl+±） | 随 `TER-01x` / `SET-00x` 推进 |
 | ~~G7~~ | ~~非 UTF-8 的 ini 会让中文名乱码~~ | ✅ 已修复：`wt_import::decode_ini` 先按 UTF-8 严格解、失败再按 GBK；导入结果里显示用了哪种编码 | — |
 

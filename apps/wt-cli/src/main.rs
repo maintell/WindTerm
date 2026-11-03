@@ -7,6 +7,17 @@ use std::process::ExitCode;
 
 use wt_cli::{parse, run_local_exec, Command, EXIT_OK, EXIT_RUNTIME, EXIT_TIMEOUT, EXIT_USAGE};
 
+/// 单线程异步运行时。`ssh exec` 与 `sftp` 都要，抽出来免得两处各建一个。
+fn runtime() -> Result<tokio::runtime::Runtime, ExitCode> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| {
+            eprintln!("无法启动异步运行时：{e}");
+            ExitCode::from(EXIT_RUNTIME as u8)
+        })
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
@@ -59,21 +70,29 @@ fn main() -> ExitCode {
             }
         }
         Command::SshExec { target, command } => {
-            let rt = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
+            let rt = match runtime() {
                 Ok(rt) => rt,
-                Err(e) => {
-                    eprintln!("无法启动异步运行时：{e}");
-                    return ExitCode::from(EXIT_RUNTIME as u8);
-                }
+                Err(code) => return code,
             };
             let mut stdout = std::io::stdout();
             match rt.block_on(wt_cli::run_ssh_exec(&target, &command, &mut stdout)) {
                 Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(EXIT_RUNTIME as u8)),
                 Err(msg) => {
                     eprintln!("SSH 执行失败：{msg}");
+                    ExitCode::from(EXIT_RUNTIME as u8)
+                }
+            }
+        }
+        Command::Sftp { target, action } => {
+            let rt = match runtime() {
+                Ok(rt) => rt,
+                Err(code) => return code,
+            };
+            let mut stdout = std::io::stdout();
+            match rt.block_on(wt_cli::run_sftp(&target, &action, &mut stdout)) {
+                Ok(()) => ExitCode::from(EXIT_OK as u8),
+                Err(msg) => {
+                    eprintln!("文件传输失败：{msg}");
                     ExitCode::from(EXIT_RUNTIME as u8)
                 }
             }

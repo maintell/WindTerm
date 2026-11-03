@@ -40,6 +40,11 @@ pub enum Command {
         target: SshTarget,
         command: String,
     },
+    /// `wt sftp ls|get|put ...`：文件传输
+    Sftp {
+        target: SshTarget,
+        action: SftpAction,
+    },
     /// `wt session import --file <ini> [--db <path>]`
     SessionImport {
         file: std::path::PathBuf,
@@ -60,6 +65,23 @@ pub enum SshAuth {
     Key {
         path: std::path::PathBuf,
         passphrase: Option<String>,
+    },
+}
+
+/// `wt sftp` 的动作。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SftpAction {
+    /// 列目录
+    Ls { path: String },
+    /// 下载
+    Get {
+        remote: String,
+        local: std::path::PathBuf,
+    },
+    /// 上传
+    Put {
+        local: std::path::PathBuf,
+        remote: String,
     },
 }
 
@@ -89,6 +111,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
         "help" | "--help" | "-h" => Ok(Command::Help),
         "local" => parse_local(&args[1..]),
         "ssh" => parse_ssh(&args[1..]),
+        "sftp" => parse_sftp(&args[1..]),
         "session" => parse_session(&args[1..]),
         other => Err(format!("未知子命令 `{other}`")),
     }
@@ -219,6 +242,112 @@ fn parse_ssh(rest: &[String]) -> Result<Command, String> {
         },
         // 远端 shell 会重新解析这一整串，所以按空格拼接即可
         command: command_parts.join(" "),
+    })
+}
+
+/// `wt sftp ls|get|put`：文件传输。
+///
+/// 认证与 `ssh exec` 完全一致（密码 / 私钥），参数也刻意保持一致，
+/// 免得用户在两处记两套。
+fn parse_sftp(rest: &[String]) -> Result<Command, String> {
+    let action = rest
+        .first()
+        .map(String::as_str)
+        .ok_or_else(|| "用法：wt sftp <ls|get|put> --host H --user U ...".to_string())?;
+
+    let mut host = None;
+    let mut port = 22u16;
+    let mut user = None;
+    let mut password = None;
+    let mut key = None;
+    let mut passphrase = None;
+    let mut insecure = false;
+    let mut path = None;
+    let mut remote = None;
+    let mut local = None;
+
+    let mut i = 1;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--host" | "-h" => {
+                host = Some(need(rest, i, "--host")?);
+                i += 2;
+            }
+            "--port" => {
+                let v = need(rest, i, "--port")?;
+                port = v
+                    .parse()
+                    .map_err(|_| format!("--port 需要端口号，收到 `{v}`"))?;
+                i += 2;
+            }
+            "--user" | "-u" => {
+                user = Some(need(rest, i, "--user")?);
+                i += 2;
+            }
+            "--password" | "-p" => {
+                password = Some(need(rest, i, "--password")?);
+                i += 2;
+            }
+            "--key" | "-i" => {
+                key = Some(std::path::PathBuf::from(need(rest, i, "--key")?));
+                i += 2;
+            }
+            "--passphrase" => {
+                passphrase = Some(need(rest, i, "--passphrase")?);
+                i += 2;
+            }
+            "--insecure-host-key" => {
+                insecure = true;
+                i += 1;
+            }
+            "--path" => {
+                path = Some(need(rest, i, "--path")?);
+                i += 2;
+            }
+            "--remote" => {
+                remote = Some(need(rest, i, "--remote")?);
+                i += 2;
+            }
+            "--local" => {
+                local = Some(std::path::PathBuf::from(need(rest, i, "--local")?));
+                i += 2;
+            }
+            other => return Err(format!("sftp 不认识的参数 `{other}`")),
+        }
+    }
+
+    // 先校验子命令再校验认证：`sftp rm` 该报「子命令不认识」，
+    // 而不是「缺认证方式」——后者会把用户引到错误的方向
+    let action = match action {
+        "ls" => SftpAction::Ls {
+            path: path.unwrap_or_else(|| ".".to_string()),
+        },
+        "get" => SftpAction::Get {
+            remote: remote.ok_or_else(|| "sftp get 需要 --remote <远端路径>".to_string())?,
+            local: local.ok_or_else(|| "sftp get 需要 --local <本地路径>".to_string())?,
+        },
+        "put" => SftpAction::Put {
+            local: local.ok_or_else(|| "sftp put 需要 --local <本地路径>".to_string())?,
+            remote: remote.ok_or_else(|| "sftp put 需要 --remote <远端路径>".to_string())?,
+        },
+        other => return Err(format!("sftp 的子命令只有 ls/get/put，收到 `{other}`")),
+    };
+
+    let auth = match (key, password) {
+        (Some(path), _) => SshAuth::Key { path, passphrase },
+        (None, Some(pw)) => SshAuth::Password(pw),
+        (None, None) => return Err("需要认证方式：--password <pw> 或 --key <path>".into()),
+    };
+
+    Ok(Command::Sftp {
+        target: SshTarget {
+            host: host.ok_or_else(|| "缺少 --host".to_string())?,
+            port,
+            user: user.ok_or_else(|| "缺少 --user".to_string())?,
+            auth,
+            insecure_host_key: insecure,
+        },
+        action,
     })
 }
 
@@ -427,6 +556,26 @@ pub async fn run_ssh_exec(
     command: &str,
     out: &mut dyn Write,
 ) -> Result<i32, String> {
+    let conn = connect_target(target).await?;
+
+    let result = conn.exec(command).await.map_err(|e| e.to_string())?;
+
+    if !result.stdout.is_empty() {
+        out.write_all(&result.stdout).map_err(|e| e.to_string())?;
+    }
+    if !result.stderr.is_empty() {
+        out.write_all(&result.stderr).map_err(|e| e.to_string())?;
+    }
+    out.flush().ok();
+    conn.disconnect().await;
+
+    Ok(result.exit_code.unwrap_or(0) as i32)
+}
+
+/// 按 `SshTarget` 建连（密码或私钥），并套用 known_hosts 策略。
+///
+/// `ssh exec` 与 `sftp` 共用：两处各写一遍迟早会出现「一个校验主机密钥、一个不校验」。
+async fn connect_target(target: &SshTarget) -> Result<wt_ssh::SshConnection, String> {
     use wt_ssh::{HostKeyPolicy, KnownHosts, PrivateKeySource, SshConfig, SshConnection};
 
     let cfg = SshConfig {
@@ -445,29 +594,67 @@ pub async fn run_ssh_exec(
         HostKeyPolicy::Known(Box::new(kh))
     };
 
-    let conn = match &target.auth {
+    match &target.auth {
         SshAuth::Password(pw) => SshConnection::connect_password(&cfg, pw, policy).await,
         SshAuth::Key { path, passphrase } => {
-            let pem = std::fs::read(path)
-                .map_err(|e| format!("读取私钥失败 {}: {e}", path.display()))?;
+            let pem =
+                std::fs::read(path).map_err(|e| format!("读取私钥失败 {}: {e}", path.display()))?;
             let src = PrivateKeySource::new(pem, passphrase.clone());
             SshConnection::connect_publickey(&cfg, &src, policy).await
         }
     }
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string())
+}
 
-    let result = conn.exec(command).await.map_err(|e| e.to_string())?;
+/// 文件传输：`ls` / `get` / `put`。
+pub async fn run_sftp(
+    target: &SshTarget,
+    action: &SftpAction,
+    out: &mut dyn Write,
+) -> Result<(), String> {
+    let conn = connect_target(target).await?;
+    let sftp = wt_ssh::SftpClient::open(&conn)
+        .await
+        .map_err(|e| e.to_string())?;
 
-    if !result.stdout.is_empty() {
-        out.write_all(&result.stdout).map_err(|e| e.to_string())?;
+    match action {
+        SftpAction::Ls { path } => {
+            let entries = sftp.list_dir(path).await.map_err(|e| e.to_string())?;
+            for e in entries {
+                let kind = if e.is_dir { "d" } else { "-" };
+                writeln!(out, "{kind} {:>10} {}", e.size, e.name).map_err(|e| e.to_string())?;
+            }
+        }
+        SftpAction::Get { remote, local } => {
+            let data = sftp.read_file(remote).await.map_err(|e| e.to_string())?;
+            std::fs::write(local, &data)
+                .map_err(|e| format!("写入本地文件失败 {}: {e}", local.display()))?;
+            writeln!(
+                out,
+                "已下载 {remote} → {}（{} 字节）",
+                local.display(),
+                data.len()
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        SftpAction::Put { local, remote } => {
+            let data = std::fs::read(local)
+                .map_err(|e| format!("读取本地文件失败 {}: {e}", local.display()))?;
+            sftp.write_file(remote, &data)
+                .await
+                .map_err(|e| e.to_string())?;
+            writeln!(
+                out,
+                "已上传 {} → {remote}（{} 字节）",
+                local.display(),
+                data.len()
+            )
+            .map_err(|e| e.to_string())?;
+        }
     }
-    if !result.stderr.is_empty() {
-        out.write_all(&result.stderr).map_err(|e| e.to_string())?;
-    }
-    out.flush().ok();
+
     conn.disconnect().await;
-
-    Ok(result.exit_code.unwrap_or(0) as i32)
+    Ok(())
 }
 
 /// 在真实 PTY 里执行一条命令，把输出写到 `out`，返回退出码。
@@ -597,6 +784,11 @@ pub fn usage() -> String {
         "                                 导入 MobaXterm 会话（结构优先，密码需重输）",
         "  wt session list [--db <path>] [--json]",
         "                                 列出已导入的会话树",
+        "  wt sftp ls --host <H> --user <U> (--password <PW> | --key <PATH>)",
+        "             [--port <P>] [--path <远端目录>]",
+        "  wt sftp get ... --remote <远端文件> --local <本地路径>",
+        "  wt sftp put ... --local <本地路径> --remote <远端文件>",
+        "                                 文件传输（认证参数与 ssh exec 一致）",
         "  wt local exec [--timeout 秒] [--raw] -- <program> [args...]",
         "                                 在真实终端里执行命令并转发输出",
         "                                 （默认剥离 ANSI，--raw 保留原始字节）",
@@ -618,6 +810,70 @@ mod tests {
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn sftp_ls_defaults_to_current_dir() {
+        let cmd = parse(&s(&[
+            "sftp", "ls", "--host", "h", "--user", "u", "--password", "p",
+        ]))
+        .expect("应能解析");
+        match cmd {
+            Command::Sftp {
+                target,
+                action: SftpAction::Ls { path },
+            } => {
+                assert_eq!(path, ".");
+                assert_eq!(target.port, 22);
+                assert_eq!(target.host, "h");
+            }
+            _ => panic!("应解析成 sftp ls"),
+        }
+    }
+
+    #[test]
+    fn sftp_get_requires_remote_and_local() {
+        let err = parse(&s(&[
+            "sftp", "get", "--host", "h", "--user", "u", "--password", "p",
+        ]))
+        .unwrap_err();
+        assert!(err.contains("--remote"), "实际: {err}");
+    }
+
+    #[test]
+    fn sftp_put_parses_both_paths() {
+        let cmd = parse(&s(&[
+            "sftp",
+            "put",
+            "--host",
+            "h",
+            "--user",
+            "u",
+            "--key",
+            "id_ed25519",
+            "--local",
+            "a.txt",
+            "--remote",
+            "/tmp/a.txt",
+        ]))
+        .expect("应能解析");
+        match cmd {
+            Command::Sftp {
+                action: SftpAction::Put { local, remote },
+                target,
+            } => {
+                assert!(local.to_string_lossy().ends_with("a.txt"));
+                assert_eq!(remote, "/tmp/a.txt");
+                assert!(matches!(target.auth, SshAuth::Key { .. }));
+            }
+            _ => panic!("应解析成 sftp put"),
+        }
+    }
+
+    #[test]
+    fn sftp_unknown_subcommand_is_a_clear_error() {
+        let err = parse(&s(&["sftp", "rm"])).unwrap_err();
+        assert!(err.contains("ls/get/put"), "实际: {err}");
     }
 
     #[test]
