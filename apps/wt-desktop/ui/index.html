@@ -48,8 +48,46 @@
       #bar input:focus { outline: 1px solid var(--accent); }
       #bar button:disabled { opacity: 0.45; cursor: default; border-color: #3a3a44; }
       #status { margin-left: auto; }
-      /* xterm 需要容器有确定尺寸：flex:1 撑开，min-height:0 防止被内容顶高 */
-      #term { flex: 1; min-height: 0; padding: 4px 0 0 6px; }
+      #main { flex: 1; display: flex; min-height: 0; }
+      #tree {
+        width: 190px;
+        flex: none;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        border-right: 1px solid #33333a;
+      }
+      #tree-head {
+        display: flex;
+        justify-content: flex-end;
+        padding: 4px 6px;
+        border-bottom: 1px solid #2a2a30;
+      }
+      #tree-head button {
+        background: #2a2a30;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 4px;
+        padding: 1px 8px;
+        font: inherit;
+        cursor: pointer;
+      }
+      #tree-head button:hover { border-color: var(--accent); }
+      #tree-body { flex: 1; overflow: auto; padding: 4px 0; }
+      .node {
+        padding: 2px 8px;
+        font-size: 12px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .node.folder { color: var(--muted); }
+      .node.session { cursor: pointer; }
+      .node.session:hover { background: #24242a; }
+      #tree-empty { color: var(--muted); font-size: 12px; padding: 6px 8px; margin: 0; white-space: pre-wrap; }
+      /* xterm 需要容器有确定尺寸：flex:1 撑开，min-height/min-width:0 防止被内容顶住
+         （没有 min-width:0 时，终端元素自身的宽度会成为下限，侧栏一变宽终端就不肯收窄） */
+      #term { flex: 1; min-width: 0; min-height: 0; padding: 4px 0 0 6px; }
     </style>
   </head>
   <body>
@@ -63,7 +101,13 @@
       <button id="close" disabled>关闭</button>
       <span id="status">未连接</span>
     </div>
-    <div id="term"></div>
+    <div id="main">
+      <aside id="tree">
+        <div id="tree-head"><button id="refresh" title="重新读取会话库">刷新</button></div>
+        <div id="tree-body"><p id="tree-empty">正在读取会话库…</p></div>
+      </aside>
+      <div id="term"></div>
+    </div>
     <script src="vendor/xterm.js"></script>
     <script src="vendor/addon-fit.js"></script>
     <script src="main.js"></script>

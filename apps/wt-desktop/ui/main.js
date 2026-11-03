@@ -189,6 +189,90 @@ async function closeTerm() {
   setStatus("已关闭");
 }
 
+// ── 会话树 ──────────────────────────────────────────────────
+const treeBody = document.getElementById("tree-body");
+const refreshBtn = document.getElementById("refresh");
+
+function treeEmpty(text) {
+  const p = document.createElement("p");
+  p.id = "tree-empty";
+  p.textContent = text;
+  treeBody.appendChild(p);
+}
+
+/** 点会话 → 把连接参数填进表单。密码不存库，所以仍要用户自己填。 */
+function selectSession(s) {
+  if (s.kind !== "ssh") {
+    setStatus(`${s.name} 是 ${s.kind} 会话，暂不支持`);
+    return;
+  }
+  if (s.host) hostInput.value = s.host;
+  if (s.port) portInput.value = String(s.port);
+  if (s.username) userInput.value = s.username;
+  setStatus(`已选中 ${s.name}，填密码后连接`);
+  passInput.focus();
+}
+
+function renderTree(dto) {
+  treeBody.textContent = "";
+  if (!dto.exists) {
+    treeEmpty(`没有会话库：\n${dto.db_path}\n先导入，再点刷新`);
+    return;
+  }
+
+  const byParent = new Map(); // folderId → 子文件夹
+  const byFolder = new Map(); // folderId → 会话
+  for (const f of dto.folders) {
+    const k = f.parent_id ?? "";
+    if (!byParent.has(k)) byParent.set(k, []);
+    byParent.get(k).push(f);
+  }
+  for (const s of dto.sessions) {
+    const k = s.folder_id ?? "";
+    if (!byFolder.has(k)) byFolder.set(k, []);
+    byFolder.get(k).push(s);
+  }
+
+  const addNode = (text, cls, depth, onClick) => {
+    const el = document.createElement("div");
+    el.className = `node ${cls}`;
+    el.style.paddingLeft = `${8 + depth * 12}px`;
+    el.textContent = text;
+    if (onClick) el.addEventListener("click", onClick);
+    treeBody.appendChild(el);
+    return el;
+  };
+
+  const walk = (key, depth) => {
+    for (const f of byParent.get(key) ?? []) {
+      addNode(f.name, "folder", depth);
+      walk(f.id, depth + 1);
+    }
+    for (const s of byFolder.get(key) ?? []) {
+      addNode(s.name, "session", depth, () => selectSession(s));
+    }
+  };
+  walk("", 0);
+
+  if (!treeBody.childElementCount) treeEmpty("会话库是空的");
+  // 无法解析的记录必须说出来，不能悄悄少几个会话
+  if (dto.warnings.length) {
+    const el = addNode(`⚠ ${dto.warnings.length} 条记录无法解析`, "folder", 0);
+    el.title = dto.warnings.join("\n");
+  }
+}
+
+async function loadTree() {
+  try {
+    renderTree(await invoke("sessions_load"));
+  } catch (e) {
+    treeBody.textContent = "";
+    treeEmpty(`读取会话库失败：${e}`);
+  }
+}
+
+refreshBtn.addEventListener("click", loadTree);
+
 // ── 输入 ────────────────────────────────────────────────────
 /** xterm 交来的输入事件计数，用于诊断「首字符丢失」这类问题 */
 let dataEvents = 0;
@@ -267,10 +351,15 @@ window.__wt = {
     }
     return lines.join("\n");
   },
+  /** 会话树里可见的会话名，供验收断言用 */
+  sessions() {
+    return [...treeBody.querySelectorAll(".node.session")].map((el) => el.textContent);
+  },
 };
 
 // 启动自检：把后端是否可达打到状态栏，避免「白屏但不知道哪坏了」
 (async () => {
+  loadTree();
   try {
     await invoke("term_stats", { handle: "probe" });
   } catch (e) {

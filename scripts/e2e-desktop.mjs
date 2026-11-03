@@ -14,7 +14,7 @@
 //   WT_DESKTOP_EXE=path/to/wt-desktop.exe WT_E2E_PORT=9333 node scripts/e2e-desktop.mjs
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -25,6 +25,8 @@ const EXE =
   join(root, "target", "debug", isWin ? "wt-desktop.exe" : "wt-desktop");
 const PORT = Number(process.env.WT_E2E_PORT ?? 9333);
 const BASE = `http://127.0.0.1:${PORT}`;
+const WT_EXE =
+  process.env.WT_CLI_EXE ?? join(root, "target", "debug", isWin ? "wt.exe" : "wt");
 
 /**
  * 只可能出现在命令**输出**里的标记。
@@ -56,6 +58,7 @@ if (!existsSync(EXE)) {
 // 验收用的数据目录必须是干净的：上一轮记下的主机密钥会让 TOFU 分支测不到
 const DATA_DIR = join(root, "target", "e2e-data");
 rmSync(DATA_DIR, { recursive: true, force: true });
+mkdirSync(DATA_DIR, { recursive: true });
 
 let stderr = "";
 let stdout = "";
@@ -273,6 +276,23 @@ async function clickElement(selector) {
     return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
   })()`);
   if (!box) throw new Error(`找不到元素 ${selector}`);
+  await clickAt(box);
+}
+
+/** 按可见文本点会话树里的节点（节点没有 id，只能按文本找） */
+async function clickSessionNode(name) {
+  const box = await cdp.eval(`(() => {
+    const el = [...document.querySelectorAll(".node.session")]
+      .find((e) => e.textContent === ${JSON.stringify(name)});
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  })()`);
+  if (!box) throw new Error(`会话树里找不到 ${name}`);
+  await clickAt(box);
+}
+
+async function clickAt(box) {
   const base = { x: box.x, y: box.y, button: "left", clickCount: 1 };
   await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...base });
   await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...base });
@@ -412,20 +432,24 @@ try {
   );
   check("背压记账归零（ack 已回流）", true, `unacked=0 buffered=${settled.buffered}`);
 
-  // 10. 尺寸变化：改窗口 → 后端收到 resize（TER-012）
+  // 10. 尺寸变化 → 重新 fit → 后端收到 resize（TER-012）
+  //     CDP 造不出真正的窗口拖拽，这里改侧栏宽度让终端变窄，再派发 resize 事件，
+  //     走的是与真实拖拽完全相同的处理链路（window resize → fit() → term_resize）
   const resized = await cdp.eval(`(async () => {
-    const el = document.getElementById("term");
     const st = () => window.__TAURI__.core.invoke("term_stats", { handle: ${JSON.stringify(h)} });
+    const tree = document.getElementById("tree");
     const before = (await st()).cols;
-    el.style.width = "640px";
+    tree.style.width = "460px";
     window.dispatchEvent(new Event("resize"));
     await new Promise(r => setTimeout(r, 600));
     const after = (await st()).cols;
+    tree.style.width = "190px";
+    window.dispatchEvent(new Event("resize"));
     return { before, after };
   })()`);
   check(
-    "窗口 resize 传播到 PTY",
-    resized && resized.after !== resized.before && resized.after >= 20,
+    "界面尺寸变化传播到 PTY",
+    resized && resized.after < resized.before && resized.after >= 20,
     `${resized?.before} → ${resized?.after} 列`,
   );
 
@@ -457,10 +481,62 @@ try {
   const sshPort = await mockSshPort();
   check("应用内 mock SSH 服务端已启动", sshPort > 0, `127.0.0.1:${sshPort}`);
 
-  // 12. 首次连接：TOFU 应记住主机密钥
-  await fillInput("#host", "127.0.0.1");
-  await fillInput("#port", String(sshPort));
-  await fillInput("#user", "tester");
+  // 12. 用 CLI 从 MobaXterm ini 导入一条会话，界面刷新后应能看到它
+  const iniPath = join(DATA_DIR, "MobaXterm.ini");
+  writeFileSync(
+    iniPath,
+    [
+      "[Bookmarks]",
+      "SubRep=Lab\\",
+      "BookmarkName=mock-ssh",
+      "Host=127.0.0.1",
+      `Port=${sshPort}`,
+      "UserName=tester",
+      "Protocol=0",
+      "",
+    ].join("\r\n"),
+  );
+  const dbPath = join(DATA_DIR, "data.db");
+  if (!existsSync(WT_EXE)) die(`找不到 ${WT_EXE}，先执行 cargo build -p wt-cli`);
+  const imported = spawnSync(
+    WT_EXE,
+    ["session", "import", "--file", iniPath, "--db", dbPath],
+    { encoding: "utf8" },
+  );
+  check(
+    "wt session import 导入成功",
+    imported.status === 0,
+    (imported.stdout || imported.stderr || "").trim().split("\n")[0],
+  );
+
+  await clickElement("#refresh");
+  const listed = await waitFor(
+    async () => {
+      const names = await cdp.eval(`window.__wt.sessions()`);
+      return names.includes("mock-ssh") ? names : null;
+    },
+    { timeout: 10000, label: "会话树刷新" },
+  );
+  check("会话树显示导入的会话", true, listed.join("、"));
+
+  // 13. 点会话 → 连接参数自动填好（密码不存库，仍要手填）
+  await clickSessionNode("mock-ssh");
+  const filled = await cdp.eval(`({
+    host: document.getElementById("host").value,
+    port: document.getElementById("port").value,
+    user: document.getElementById("user").value,
+    focus: document.activeElement?.id ?? "",
+  })`);
+  check(
+    "点会话自动填好主机/端口/用户名",
+    filled.host === "127.0.0.1" &&
+      filled.port === String(sshPort) &&
+      filled.user === "tester",
+    JSON.stringify(filled),
+  );
+  check("焦点落在密码框", filled.focus === "password", filled.focus);
+
+  // 14. 首次连接：TOFU 应记住主机密钥
   await fillInput("#password", "secret");
   await clickElement("#ssh");
   const sshStatus = await waitFor(
@@ -481,7 +557,7 @@ try {
     sshStatus,
   );
 
-  // 13. 在 SSH 通道里输入：mock 先送 WELCOME 横幅，之后把收到的每个数据帧回显成 `echo:<data>`
+  // 15. 在 SSH 通道里输入：mock 先送 WELCOME 横幅，之后把收到的每个数据帧回显成 `echo:<data>`
   //     （逐键发送 → 逐键回显，所以断言用「有序序列」而不是整串）
   await typeText("hello");
   const sshOut = await waitFor(
@@ -499,7 +575,7 @@ try {
     `累计 ${sshOut.length} 字符`,
   );
 
-  // 14. 关闭后重连：主机密钥已在 known_hosts 里，不该再报「已记录」
+  // 16. 关闭后重连：主机密钥已在 known_hosts 里，不该再报「已记录」
   await clickElement("#close");
   await waitFor(
     async () => (await cdp.eval(`document.getElementById("status").textContent`)) === "已关闭",
@@ -528,7 +604,7 @@ try {
     `${khPath}（${khText.split("\n").filter(Boolean).length} 条）`,
   );
 
-  // 15. 连不上的错误路径：必须给出稳定错误码，不能静默失败
+  // 17. 连不上的错误路径：必须给出稳定错误码，不能静默失败
   await clickElement("#close");
   await waitFor(
     async () => (await cdp.eval(`document.getElementById("status").textContent`)) === "已关闭",
@@ -549,7 +625,7 @@ try {
     errScreen.split(/\r?\n/).find((l) => l.includes("SSH_CONNECT_FAILED"))?.trim() ?? "",
   );
 
-  // 16. 页面无未捕获异常
+  // 18. 页面无未捕获异常
   check("页面无未捕获异常", cdp.exceptions.length === 0, cdp.exceptions.join(" | ") || "0 条");
 
   ws.close();

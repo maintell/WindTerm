@@ -101,6 +101,52 @@ fn term_close(state: State<'_, AppState>, handle: String) {
     state.registry.close(&h);
 }
 
+// ── 会话列表 ────────────────────────────────────────────────
+
+/// 会话库位置，与 `wt` CLI 的默认值一致（`%APPDATA%\WindTerm\data.db`），
+/// 这样 `wt session import` 导入的结果在界面里直接能看到。
+fn sessions_db_path() -> std::path::PathBuf {
+    data_dir().join("data.db")
+}
+
+#[derive(serde::Serialize)]
+struct SessionsDto {
+    db_path: String,
+    /// 库文件是否存在。不存在时界面提示「先去导入」，而不是显示一个空树
+    exists: bool,
+    folders: Vec<wt_core::Folder>,
+    sessions: Vec<wt_core::Session>,
+    warnings: Vec<String>,
+}
+
+/// 读取会话树。
+///
+/// 库不存在时返回空结果而不是创建空库：用户第一次打开界面不该被悄悄塞一个文件，
+/// 而且「库不存在」和「库是空的」对用户是两种不同的提示。
+#[tauri::command]
+fn sessions_load() -> Result<SessionsDto, String> {
+    let db = sessions_db_path();
+    let db_path = db.display().to_string();
+    if !db.exists() {
+        return Ok(SessionsDto {
+            db_path,
+            exists: false,
+            folders: Vec::new(),
+            sessions: Vec::new(),
+            warnings: Vec::new(),
+        });
+    }
+    let store = wt_store::Store::open(&db).map_err(|e| e.to_string())?;
+    let snap = store.load_snapshot().map_err(|e| e.to_string())?;
+    Ok(SessionsDto {
+        db_path,
+        exists: true,
+        folders: snap.folders,
+        sessions: snap.sessions,
+        warnings: snap.warnings,
+    })
+}
+
 // ── SSH ─────────────────────────────────────────────────────
 
 /// 应用数据目录。
@@ -256,7 +302,8 @@ fn main() {
             term_resize,
             term_stats,
             term_close,
-            ssh_open
+            ssh_open,
+            sessions_load
         ])
         .run(tauri::generate_context!())
         .expect("启动 WindTerm 失败");
