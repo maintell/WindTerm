@@ -29,8 +29,13 @@ use crate::client::SshConnection;
 pub struct ForwardStats {
     /// 当前活跃连接数
     pub active: usize,
-    /// 累计连接数
+    /// 累计**被接受**的连接数
     pub total: usize,
+    /// 因为超过并发上限被拒的连接数（`design/10` §3.1 的 `MAX_PER_TUNNEL`）
+    ///
+    /// 与 `total` 分开计数：把被拒的混进 `total` 会让「这条隧道到底接了
+    /// 多少连接」变得不可读，而两者混在一起也看不出「是不是被打了」。
+    pub rejected: usize,
     /// 本地 → 远端 的字节数
     pub up_bytes: u64,
     /// 远端 → 本地 的字节数
@@ -47,6 +52,7 @@ pub struct ForwardStats {
 pub(crate) struct Counters {
     active: AtomicUsize,
     total: AtomicUsize,
+    rejected: AtomicUsize,
     up: AtomicU64,
     down: AtomicU64,
     last_error: std::sync::Mutex<Option<String>>,
@@ -65,6 +71,39 @@ impl Counters {
         self.total.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub(crate) fn inc_rejected(&self) {
+        self.rejected.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// 还能不能再接一条（`max = 0` 表示不限制）。
+    pub(crate) fn try_accept(&self, max: usize) -> bool {
+        if max == 0 {
+            self.inc_total();
+            self.inc_active();
+            return true;
+        }
+        // 先加再用 compare_exchange 挡回去，避免「检查通过、插入时已满」的竞态
+        let mut current = self.active.load(Ordering::Relaxed);
+        loop {
+            if current >= max {
+                self.inc_rejected();
+                return false;
+            }
+            match self.active.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    self.inc_total();
+                    return true;
+                }
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
     pub(crate) fn add_bytes(&self, up: u64, down: u64) {
         self.up.fetch_add(up, Ordering::Relaxed);
         self.down.fetch_add(down, Ordering::Relaxed);
@@ -74,6 +113,7 @@ impl Counters {
         ForwardStats {
             active: self.active.load(Ordering::Relaxed),
             total: self.total.load(Ordering::Relaxed),
+            rejected: self.rejected.load(Ordering::Relaxed),
             up_bytes: self.up.load(Ordering::Relaxed),
             down_bytes: self.down.load(Ordering::Relaxed),
             last_error: self.last_error.lock().ok().and_then(|e| e.clone()),
@@ -175,12 +215,33 @@ async fn bind_listener(
 ///
 /// `conn` 用 `Arc` 是为了让多条隧道共享同一条 SSH 连接：每连接都是一次完整的
 /// 握手与认证，隧道多了代价明显，而 `russh` 的 `Handle` 本身支持并发开通道。
+/// 每条隧道的默认并发上限（`design/10` §3.1 的 `MAX_PER_TUNNEL`）。
+///
+/// 有上限本身就是保护：没有它，一个失控的客户端可以把一条隧道打到把机器拖垮。
+/// 目前是常量而不是按隧道配置——`TunnelSpec` 加字段要一次 schema 迁移，
+/// 而「有没有上限」比「上限是多少」重要得多。
+pub const MAX_PER_TUNNEL: usize = 64;
+
+/// 启动一条本地转发（并发上限用默认值）。
 pub async fn start_local(
     conn: Arc<SshConnection>,
     listen_host: &str,
     listen_port: u16,
     target_host: &str,
     target_port: u16,
+) -> Result<LocalForward, WtError> {
+    start_local_limited(conn, listen_host, listen_port, target_host, target_port, MAX_PER_TUNNEL)
+        .await
+}
+
+/// 同 `start_local`，但可指定并发上限（`max = 0` 表示不限制）。
+pub async fn start_local_limited(
+    conn: Arc<SshConnection>,
+    listen_host: &str,
+    listen_port: u16,
+    target_host: &str,
+    target_port: u16,
+    max_connections: usize,
 ) -> Result<LocalForward, WtError> {
     let host = if listen_host.trim().is_empty() {
         "127.0.0.1"
@@ -214,8 +275,11 @@ pub async fn start_local(
                         // accept 失败（如对端在握手期间消失）不该终止整条隧道
                         continue;
                     };
-                    loop_counters.total.fetch_add(1, Ordering::Relaxed);
-                    loop_counters.active.fetch_add(1, Ordering::Relaxed);
+                    if !loop_counters.try_accept(max_connections) {
+                        // 超上限：直接关掉，让客户端立刻知道，而不是挂着等超时
+                        drop(socket);
+                        continue;
+                    }
                     let conn = conn.clone();
                     let (host, port) = target.clone();
                     let c = loop_counters.clone();
@@ -279,11 +343,23 @@ async fn serve_one(
 ///
 /// `auth` 为 `Some` 时强制用户名密码认证——不做「两者都接受」，
 /// 否则「无凭据被拒」这条就永远测不出来。
+/// 启动 SOCKS5 动态转发（并发上限用默认值）。
 pub async fn start_socks5(
     conn: Arc<SshConnection>,
     listen_host: &str,
     listen_port: u16,
     auth: Option<(String, String)>,
+) -> Result<LocalForward, WtError> {
+    start_socks5_limited(conn, listen_host, listen_port, auth, MAX_PER_TUNNEL).await
+}
+
+/// 同 `start_socks5`，但可指定并发上限。
+pub async fn start_socks5_limited(
+    conn: Arc<SshConnection>,
+    listen_host: &str,
+    listen_port: u16,
+    auth: Option<(String, String)>,
+    max_connections: usize,
 ) -> Result<LocalForward, WtError> {
     let (listener, listen_addr) = bind_listener(listen_host, listen_port).await?;
     let counters = Arc::new(Counters::default());
@@ -302,8 +378,11 @@ pub async fn start_socks5(
                     let Ok((mut socket, peer)) = accepted else {
                         continue;
                     };
-                    loop_counters.total.fetch_add(1, Ordering::Relaxed);
-                    loop_counters.active.fetch_add(1, Ordering::Relaxed);
+                    if !loop_counters.try_accept(max_connections) {
+                        // 超上限：直接关掉，让客户端立刻知道，而不是挂着等超时
+                        drop(socket);
+                        continue;
+                    }
                     let conn = conn.clone();
                     let auth = auth.clone();
                     let c = loop_counters.clone();

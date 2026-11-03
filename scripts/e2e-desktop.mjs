@@ -640,7 +640,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-20",
+    uiVersion === "wt-ui-21",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -660,7 +660,20 @@ try {
   );
 
   // 4. 点击「新建本地终端」——可信鼠标点击，走真实事件链
-  await clickElement("#open");
+  // 首次点击偶发被 WebView2 吞掉（会话刚起时的已知行为），最多补点 2 次
+  for (let i = 0; i < 2; i += 1) {
+    await clickElement("#open");
+    const quick = await cdp.eval(`(async () => {
+      const t0 = Date.now();
+      while (Date.now() - t0 < 2000) {
+        const s = document.getElementById("status").textContent;
+        if (!s.startsWith("就绪")) return s;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      return null;
+    })()`);
+    if (quick !== null) break;
+  }
   const handle = await cdp.eval(`(async () => {
     const t0 = Date.now();
     while (Date.now() - t0 < 15000) {
@@ -669,7 +682,23 @@ try {
       if (s.startsWith("打开失败")) throw new Error(s);
       await new Promise(r => setTimeout(r, 50));
     }
-    throw new Error("点击后 15s 内状态未变为已连接，当前：" + document.getElementById("status").textContent);
+    throw new Error(
+    "点击后 15s 内状态未变为已连接，当前：" +
+      document.getElementById("status").textContent +
+      " 诊断：" +
+      JSON.stringify(
+        (() => {
+          const b = document.getElementById("open");
+          const r = b.getBoundingClientRect();
+          const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+          return {
+            rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) },
+            hit: hit ? hit.id || hit.tagName : "视口外",
+            dialogOpen: document.getElementById("name-dialog").open,
+          };
+        })(),
+      ),
+  );
   })()`);
   check("点击「新建本地终端」建立会话", typeof handle === "string" && handle.startsWith("已连接"), handle);
 

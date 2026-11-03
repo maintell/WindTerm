@@ -30,8 +30,8 @@ pub use client::{
 };
 pub use keys::{inspect as inspect_key, KeyInfo, PrivateKeySource};
 pub use forward::{
-    exposes_to_lan, start_local, start_remote, start_socks5, ForwardStats, LocalForward,
-    RemoteForward,
+    exposes_to_lan, start_local, start_local_limited, start_remote, start_socks5,
+    start_socks5_limited, ForwardStats, LocalForward, MAX_PER_TUNNEL, RemoteForward,
 };
 pub use jump::connect_via;
 pub use sftp::{RemoteEntry, SftpClient, SftpWriter};

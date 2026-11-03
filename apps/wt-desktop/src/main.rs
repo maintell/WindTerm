@@ -1276,6 +1276,8 @@ struct TunnelDto {
     running: bool,
     active: usize,
     total: usize,
+    /// 因为超过并发上限被拒的连接数
+    rejected: usize,
     up_bytes: u64,
     down_bytes: u64,
     /// 最近一次转发失败的原因；成功转发后清空。界面据此把「运行中」降级成红色
@@ -1331,6 +1333,7 @@ fn tunnel_dto(meta: &TunnelMeta, fwd: &RunningTunnel) -> TunnelDto {
         running: true,
         active: s.active,
         total: s.total,
+        rejected: s.rejected,
         up_bytes: s.up_bytes,
         down_bytes: s.down_bytes,
         last_error: s.last_error,
@@ -1364,6 +1367,7 @@ fn tunnel_dto_from_spec(spec: &wt_core::TunnelSpec) -> TunnelDto {
         running: false,
         active: 0,
         total: 0,
+        rejected: 0,
         up_bytes: 0,
         down_bytes: 0,
         last_error: None,

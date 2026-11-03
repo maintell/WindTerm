@@ -1583,6 +1583,8 @@ function renderTunnels(rows) {
         `↑${formatBytes(t.up_bytes)} ↓${formatBytes(t.down_bytes)}`,
         `via ${t.via}`,
       ];
+      // 被拒的连接要单独说出来：看到「拒绝 30」才知道是撞上限，而不是网络抖
+      if (t.rejected) parts.push(`拒绝 ${t.rejected}`);
       if (t.last_error) parts.push(`上次错误：${t.last_error}`);
       line2.textContent = parts.join(" · ");
       line2.title = t.last_error ?? "";
@@ -1948,7 +1950,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-20",
+  ui: "wt-ui-21",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";

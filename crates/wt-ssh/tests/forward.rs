@@ -154,6 +154,49 @@ async fn unreachable_target_fails_loudly_instead_of_hanging() {
     fwd.stop().await;
 }
 
+#[tokio::test]
+async fn local_forward_rejects_connections_over_the_limit() {
+    let server = MockSshServer::start().await;
+    let echo = spawn_echo().await;
+    let conn = connect(server.port).await;
+
+    // 上限设成 1：第一条占住，第二条必须被拒（而不是排队或被悄悄放进来）
+    let fwd = wt_ssh::start_local_limited(
+        conn,
+        "127.0.0.1",
+        0,
+        &echo.ip().to_string(),
+        echo.port(),
+        1,
+    )
+    .await
+    .expect("启动带上限的转发");
+
+    let mut first = tokio::net::TcpStream::connect(fwd.listen_addr())
+        .await
+        .expect("第一条应被接受");
+    first.write_all(b"x").await.expect("写");
+    let mut buf = [0u8; 1];
+    first.read_exact(&mut buf).await.expect("读回");
+
+    // 第二条：连得上（本地监听还在）但会被立刻关掉
+    let mut second = tokio::net::TcpStream::connect(fwd.listen_addr())
+        .await
+        .expect("仍应能完成 TCP 连接");
+    let ended = tokio::time::timeout(Duration::from_secs(5), second.read(&mut buf)).await;
+    let Ok(Ok(n)) = ended else {
+        panic!("超上限的连接必须干净结束，实际：{ended:?}");
+    };
+    assert_eq!(n, 0, "应当立刻 EOF，而不是有数据");
+
+    let stats = wait_stats(&fwd, |s| s.rejected >= 1).await;
+    assert_eq!(stats.rejected, 1, "被拒的连接要单独计数");
+    assert_eq!(stats.total, 1, "被拒的不该混进 total");
+
+    drop(first);
+    fwd.stop().await;
+}
+
 #[test]
 fn lan_exposure_detection() {    // NET-001 行为规格第 1 条：选这些地址要红色警告 + 确认
     for host in ["0.0.0.0", "::", "[::]", "*"] {
