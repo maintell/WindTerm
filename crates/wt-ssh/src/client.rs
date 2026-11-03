@@ -404,6 +404,26 @@ impl SshConnection {
             .await;
     }
 
+    /// 打开一个子系统通道（目前只有 `sftp` 用）。
+    ///
+    /// 返回的是 `AsyncRead + AsyncWrite` 的流，交给上层协议实现（`crate::sftp`）。
+    /// `russh` 的类型不外泄：这里是 `pub(crate)`。
+    pub(crate) async fn open_subsystem(
+        &self,
+        name: &str,
+    ) -> Result<russh::ChannelStream<russh::client::Msg>, WtError> {
+        let channel = self
+            .handle
+            .channel_open_session()
+            .await
+            .map_err(map_channel_error)?;
+        channel
+            .request_subsystem(true, name)
+            .await
+            .map_err(map_channel_error)?;
+        Ok(channel.into_stream())
+    }
+
     /// 发一条心跳并**等待回应**，用来判断连接是否还活着。
     ///
     /// 半开连接（对端掉电、NAT 表被清）不会自己报错，只有主动探测才发现。
