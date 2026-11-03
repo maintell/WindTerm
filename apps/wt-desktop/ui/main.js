@@ -394,12 +394,30 @@ async function selectSession(s) {
   }
 }
 
+/** 上一次读到的会话树；过滤时直接复用，不重复查库 */
+let lastTree = null;
+const filterInput = document.getElementById("tree-filter");
+
+/** 这个文件夹（含更深层）里有没有名字匹配的会话 */
+function folderHasMatch(id, query, byParent, byFolder) {
+  for (const s of byFolder.get(id) ?? []) {
+    if (s.name.toLowerCase().includes(query)) return true;
+  }
+  for (const f of byParent.get(id) ?? []) {
+    if (folderHasMatch(f.id, query, byParent, byFolder)) return true;
+  }
+  return false;
+}
+
 function renderTree(dto) {
+  lastTree = dto;
   treeBody.textContent = "";
   if (!dto.exists) {
     treeEmpty(`没有会话库：\n${dto.db_path}\n先导入，再点刷新`);
     return;
   }
+
+  const query = filterInput.value.trim().toLowerCase();
 
   const byParent = new Map(); // folderId → 子文件夹
   const byFolder = new Map(); // folderId → 会话
@@ -426,22 +444,35 @@ function renderTree(dto) {
 
   const walk = (key, depth) => {
     for (const f of byParent.get(key) ?? []) {
+      // 过滤时保留「里面有匹配会话」的文件夹，否则会话会从树里消失得莫名其妙
+      const keep =
+        !query ||
+        f.name.toLowerCase().includes(query) ||
+        folderHasMatch(f.id, query, byParent, byFolder);
+      if (!keep) continue;
       addNode(f.name, "folder", depth);
       walk(f.id, depth + 1);
     }
     for (const s of byFolder.get(key) ?? []) {
+      if (query && !s.name.toLowerCase().includes(query)) continue;
       addNode(s.name, "session", depth, () => selectSession(s));
     }
   };
   walk("", 0);
 
-  if (!treeBody.childElementCount) treeEmpty("会话库是空的");
+  if (!treeBody.childElementCount) {
+    treeEmpty(query ? `没有匹配「${filterInput.value.trim()}」的会话` : "会话库是空的");
+  }
   // 无法解析的记录必须说出来，不能悄悄少几个会话
-  if (dto.warnings.length) {
+  if (dto.warnings.length && !query) {
     const el = addNode(`⚠ ${dto.warnings.length} 条记录无法解析`, "folder", 0);
     el.title = dto.warnings.join("\n");
   }
 }
+
+filterInput.addEventListener("input", () => {
+  if (lastTree) renderTree(lastTree);
+});
 
 async function loadTree() {
   try {

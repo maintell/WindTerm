@@ -99,6 +99,18 @@
       }
       #tree-head button:hover { border-color: var(--accent); }
       #tree-body { flex: 1; overflow: auto; padding: 4px 0; }
+      #tree-filter-row { padding: 4px 6px; }
+      #tree-filter-row input {
+        width: 100%;
+        background: #2a2a30;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 4px;
+        padding: 2px 6px;
+        font: inherit;
+        font-size: 12px;
+      }
+      #tree-filter-row input:focus { outline: 1px solid var(--accent); }
       #vault-panel {
         border-bottom: 1px solid #2a2a30;
         padding: 4px 0;
@@ -252,6 +264,9 @@
         </div>
         <div id="vault-panel" hidden></div>
         <p id="tree-msg" hidden></p>
+        <div id="tree-filter-row">
+          <input id="tree-filter" placeholder="过滤会话" spellcheck="false" />
+        </div>
         <div id="tree-body"><p id="tree-empty">正在读取会话库…</p></div>
         <input id="import-file" type="file" accept=".ini,text/plain" hidden />
       </aside>

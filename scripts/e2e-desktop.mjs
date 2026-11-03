@@ -326,6 +326,17 @@ async function nodeIdOf(selector) {
   return nodeId;
 }
 
+/** 直接设值并派发 input 事件：用于「靠 input 事件触发」的控件（过滤、查找） */
+async function setInputValue(selector, value) {
+  await cdp.eval(`(() => {
+    const el = document.querySelector(${JSON.stringify(selector)});
+    el.focus();
+    el.value = ${JSON.stringify(value)};
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    return true;
+  })()`);
+}
+
 /** 关掉所有标签页（多标签之后，「关闭」只关当前那个） */
 async function closeAllTabs() {
   await waitFor(
@@ -784,6 +795,41 @@ try {
     "删除要二次确认，确认后从库里消失",
     armed === "确认删除" && !afterDelete.includes("手动会话"),
     `第一次点击后按钮文案：${armed}`,
+  );
+
+  // 12f. 会话树过滤：多会话之后靠它找东西
+  const allSessions = await cdp.eval(`window.__wt.sessions()`);
+  await setInputValue("#tree-filter", "mock");
+  const filtered = await waitFor(
+    async () => {
+      const names = await cdp.eval(`window.__wt.sessions()`);
+      return names.length === 1 && names[0] === "mock-ssh" ? names : null;
+    },
+    { timeout: 5000, label: "会话树过滤" },
+  );
+  check("会话树能按名字过滤", true, `${allSessions.length} → ${filtered.join("、")}`);
+
+  await setInputValue("#tree-filter", "绝不存在的名字");
+  const noMatch = await waitFor(
+    async () => {
+      const names = await cdp.eval(`window.__wt.sessions()`);
+      const empty = await cdp.eval(`document.getElementById("tree-empty")?.textContent ?? ""`);
+      return names.length === 0 && empty.includes("没有匹配") ? empty : null;
+    },
+    { timeout: 5000, label: "过滤无匹配" },
+  );
+  await setInputValue("#tree-filter", "");
+  const restored = await waitFor(
+    async () => {
+      const names = await cdp.eval(`window.__wt.sessions()`);
+      return names.length === allSessions.length ? names : null;
+    },
+    { timeout: 5000, label: "清空过滤" },
+  );
+  check(
+    "过滤无匹配时给出提示，清空后恢复",
+    noMatch.includes("没有匹配") && restored.length === allSessions.length,
+    `${restored.length} 条恢复`,
   );
 
   // 13. 点会话 → 连接参数自动填好（密码不存库，仍要手填）
