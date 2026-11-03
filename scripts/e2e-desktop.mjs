@@ -446,18 +446,24 @@ function socksExchange(proxyPort, targetHost, targetPort, payload) {
   });
 }
 
-/** 点某类隧道行（`L`/`D`）里的「停止」按钮。 */
-async function clickTunnelStop(kind) {
+/**
+ * 点某类隧道行（`L`/`D`）里的按钮。
+ *
+ * `which`：`toggle` = 启动/停止（第一个按钮），`delete` = 删除（第二个）。
+ * 停止后配置仍留在库里（灰灯），所以「删除」是独立的一步。
+ */
+async function clickTunnelButton(kind, which) {
+  const idx = which === "delete" ? 1 : 0;
   const box = await cdp.eval(`(() => {
     const row = [...document.querySelectorAll("#tunnel-list .tunnel")].find((r) =>
       (r.querySelector(".line1")?.textContent ?? "").startsWith("●" + ${JSON.stringify(kind)}),
     );
-    const btn = row?.querySelector("button");
+    const btn = row?.querySelectorAll("button")[${idx}];
     if (!btn) return null;
     const r = btn.getBoundingClientRect();
     return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
   })()`);
-  if (!box) throw new Error(`找不到 ${kind} 类型隧道的停止按钮`);
+  if (!box) throw new Error(`找不到 ${kind} 类型隧道的 ${which} 按钮`);
   await clickAt(box);
 }
 
@@ -603,7 +609,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-11",
+    uiVersion === "wt-ui-12",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -1621,14 +1627,41 @@ try {
       : "统计未更新",
   );
 
-  // 停止后必须真的不再监听，否则留下一个幽灵端口
-  await clickElement("#tunnel-list .tunnel button");
-  const stopped = await waitFor(
-    async () => ((await cdp.eval(`window.__wt.tunnels`)).length === 0 ? true : null),
+  // 停止后配置仍留在库里（灰灯）——这正是「不用重填」的前提
+  await clickTunnelButton("L", "toggle");
+  const tunStopped = await waitFor(
+    async () => {
+      const t = (await cdp.eval(`window.__wt.tunnels`)).find((x) => x.kind === "L");
+      return t && t.running === false ? t : null;
+    },
     { timeout: 15000, label: "隧道停止" },
   ).catch(() => null);
-  check("停止后隧道从列表消失", stopped === true);
+  check("停止后隧道仍留在列表里（配置已保存）", tunStopped !== null, "灰灯 + 未运行");
   check("停止后端口不再监听", (await portOpen(listenPort)) === false, `端口 ${listenPort}`);
+
+  // 没有承载会话时，「启动已保存的隧道」必须给出明确原因，
+  // 而不是拿空密码去认证、让用户对着「认证失败」猜自己填错了什么
+  const noSession = await cdp.eval(`(async () => {
+    const t = (await window.__TAURI__.core.invoke("tunnel_stats")).find((x) => x.kind === "L");
+    try {
+      await window.__TAURI__.core.invoke("tunnel_start_saved", { id: t.id });
+      return "没有拦住";
+    } catch (e) {
+      return String(e);
+    }
+  })()`);
+  check("没有承载会话时启动给出明确原因", /TUN_NO_SESSION/.test(noSession), noSession);
+
+  // 删除才是真的从库里消失
+  await clickTunnelButton("L", "delete");
+  const tunDeleted = await waitFor(
+    async () => {
+      const list = await cdp.eval(`window.__wt.tunnels`);
+      return list.some((x) => x.kind === "L") ? null : true;
+    },
+    { timeout: 15000, label: "删除隧道" },
+  ).catch(() => null);
+  check("删除后隧道从列表消失", tunDeleted === true);
 
   // 局域网监听不确认就必须被挡住（NET-001 行为规格第 1 条）
   const lanGuard = await cdp.eval(`window.__TAURI__.core.invoke("tunnel_start", {
@@ -1676,13 +1709,26 @@ try {
   );
   check("SOCKS5 代理把字节送到目标", viaSocks === "socks-ok", JSON.stringify(viaSocks));
 
-  await clickTunnelStop("D");
+  await clickTunnelButton("D", "toggle");
   const dynStopped = await waitFor(
-    async () => ((await cdp.eval(`window.__wt.tunnels`)).length === 0 ? true : null),
+    async () => {
+      const t = (await cdp.eval(`window.__wt.tunnels`)).find((x) => x.kind === "D");
+      return t && t.running === false ? t : null;
+    },
     { timeout: 15000, label: "动态代理停止" },
   ).catch(() => null);
-  check("动态代理停止后从列表消失", dynStopped === true);
+  check("动态代理停止后保留在列表里", dynStopped !== null);
   check("动态代理停止后端口不再监听", (await portOpen(proxyPort)) === false, `端口 ${proxyPort}`);
+
+  await clickTunnelButton("D", "delete");
+  const dynDeleted = await waitFor(
+    async () => {
+      const list = await cdp.eval(`window.__wt.tunnels`);
+      return list.some((x) => x.kind === "D") ? null : true;
+    },
+    { timeout: 15000, label: "删除动态代理" },
+  ).catch(() => null);
+  check("动态代理删除后从列表消失", dynDeleted === true);
 
   await clickElement("#tunnels-toggle");
   echo.server.close();

@@ -176,8 +176,8 @@ pub async fn connect_chain(hops: &[Hop], target: (String, u16)) -> Result<Stream
 | `MAX_PER_TUNNEL` 每隧道连接上限 | ❌ 无上限 | 被恶意端打满连接时没有保护，见 `G13` |
 | `listener` 在重连期间保持（§3.4） | ❌ 未做 | 承载连接断开后监听仍在但每个连接都失败；靠 `last_error` 让用户看得见 |
 | `-R`（§3.5）、`-D` SOCKS5（§3.6） | `-D` ✅（`wt_ssh::socks5` + `start_socks5`，CONNECT-only）；`-R` ❌ | `NET-002` 待做 |
-| 隧道配置落库 | 🟡 数据层已做（`TunnelSpec` + schema v2 + `upsert_tunnel`/`delete_tunnel`），界面未接线 | 关掉应用仍会丢；见 `README` 的 `G13` |
-| `autoStart` / 重连期保持监听（§3.4） | ❌ 未做 | 需要先有 `viaSessionId` 才能自动拿到承载连接 |
+| 隧道配置落库 | ✅ 已做（`TunnelSpec` + schema v2；界面停止后保留灰灯，可「启动」/「删除」） | 承载会话记在 `viaSessionId`，启动时从保险库取密码 |
+| `autoStart` / 重连期保持监听（§3.4） | `autoStart` 只落库、未接进启动流程；重连未做 | 见 `README` 的 `G13` |
 
 ### 3.1 结构
 

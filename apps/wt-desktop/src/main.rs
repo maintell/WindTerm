@@ -45,13 +45,17 @@ struct AppState {
     /// 运行中的隧道（`NET-004`）。`LocalForward` 不是 `Clone`，停止时要从表里
     /// 取出来调用 `stop()`——所以存值而不是存引用。
     tunnels: std::sync::Mutex<HashMap<String, (TunnelMeta, wt_ssh::LocalForward)>>,
+    /// 库里的隧道配置。启动时读一次，增删改后同步更新——
+    /// 不要在 1 s 一次的统计轮询里开 SQLite。
+    tunnel_specs: std::sync::Mutex<Vec<wt_core::TunnelSpec>>,
 }
 
 /// 一条隧道的展示信息。运行期状态（字节数、连接数）在 `stats` 里实时取。
 #[derive(Clone)]
 struct TunnelMeta {
     id: String,
-    /// `L` / `R` / `D`，目前只实现 `L`
+    name: String,
+    /// `L` / `R` / `D`，目前只实现 `L` 与 `D`
     kind: char,
     listen_host: String,
     listen_port: u16,
@@ -1140,13 +1144,16 @@ async fn sftp_upload(
 #[derive(serde::Serialize)]
 struct TunnelDto {
     id: String,
-    /// `L` / `R` / `D`。目前只实现 `L`，其余两种在界面上不出现
+    name: String,
+    /// `L` / `R` / `D`。目前只实现 `L` 与 `D`，其余两种在界面上不出现
     kind: String,
-    /// 实际监听地址（`listen_port = 0` 时是系统分配的端口）
+    /// 实际监听地址（`listen_port = 0` 时是系统分配的端口；未运行时是配置值）
     listen: String,
     target: String,
     /// 承载它的 SSH 目标，界面按这个分组
     via: String,
+    /// 是否正在运行。库里存着的隧道也会出现在列表里，但为 `false`
+    running: bool,
     active: usize,
     total: usize,
     up_bytes: u64,
@@ -1164,6 +1171,12 @@ struct TunnelStartArg {
     /// `local`（默认，`NET-001`）或 `dynamic`（SOCKS5，`NET-003`）
     #[serde(default)]
     kind: Option<String>,
+    /// 显示名。省略时用「目标 或 监听端口」拼一个，方便下次认出来
+    #[serde(default)]
+    name: Option<String>,
+    /// 承载会话：存下来，下次可以从这条会话的凭据直接拉起
+    #[serde(default)]
+    via_session_id: Option<String>,
     #[serde(default)]
     listen_host: Option<String>,
     listen_port: u16,
@@ -1174,6 +1187,9 @@ struct TunnelStartArg {
     /// 监听 `0.0.0.0` 等对外地址必须显式确认（`NET-001` 行为规格第 1 条）
     #[serde(default)]
     allow_lan: bool,
+    /// 应用启动后自动拉起（`NET-005`）。界面暂未提供开关，先落库保证语义不掉
+    #[serde(default)]
+    auto_start: Option<bool>,
     /// `SES-024`：经跳板机建承载连接
     #[serde(default)]
     jump: Option<JumpReq>,
@@ -1187,15 +1203,62 @@ fn tunnel_dto(meta: &TunnelMeta, fwd: &wt_ssh::LocalForward) -> TunnelDto {
     let s = fwd.stats();
     TunnelDto {
         id: meta.id.clone(),
+        name: meta.name.clone(),
         kind: meta.kind.to_string(),
         listen: format!("{}:{}", meta.listen_host, meta.listen_port),
         target: format!("{}:{}", meta.target_host, meta.target_port),
         via: meta.via.clone(),
+        running: true,
         active: s.active,
         total: s.total,
         up_bytes: s.up_bytes,
         down_bytes: s.down_bytes,
         last_error: s.last_error,
+    }
+}
+
+/// 只存在于库里的隧道：状态灯为灰，计数全零。
+///
+/// 不编造统计值（比如沿用上次的字节数）——那会让「已停止」看起来像「在跑但没流量」。
+fn tunnel_dto_from_spec(spec: &wt_core::TunnelSpec) -> TunnelDto {
+    let kind = match spec.kind {
+        wt_core::TunnelKind::Local => "L",
+        wt_core::TunnelKind::Remote => "R",
+        wt_core::TunnelKind::Dynamic => "D",
+    };
+    let target = match (&spec.target_host, spec.target_port) {
+        (Some(h), Some(p)) => format!("{h}:{p}"),
+        _ => String::new(),
+    };
+    TunnelDto {
+        id: spec.id.clone(),
+        name: spec.name.clone(),
+        kind: kind.to_string(),
+        listen: format!("{}:{}", spec.listen_host, spec.listen_port),
+        target,
+        via: spec
+            .via_session_id
+            .as_ref()
+            .map(|s| s.as_str().to_string())
+            .unwrap_or_default(),
+        running: false,
+        active: 0,
+        total: 0,
+        up_bytes: 0,
+        down_bytes: 0,
+        last_error: None,
+    }
+}
+
+/// 读出库里的隧道配置。库不存在就是空——不为了「读隧道」去建一个空库。
+fn load_tunnel_specs() -> Vec<wt_core::TunnelSpec> {
+    let db = sessions_db_path();
+    if !db.exists() {
+        return Vec::new();
+    }
+    match wt_store::Store::open(&db).and_then(|s| s.load_snapshot()) {
+        Ok(snap) => snap.tunnels,
+        Err(_) => Vec::new(),
     }
 }
 
@@ -1275,32 +1338,272 @@ async fn tunnel_start(
 
     let listen_port = fwd.listen_addr().port();
     trace(&format!("[tunnel_start] 已监听 {listen_host}:{listen_port}"));
+    let id = format!("f{}", TUNNEL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    let name = arg
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            if dynamic {
+                format!("SOCKS5 {listen_port}")
+            } else {
+                format!("{target_host}:{}", arg.target_port)
+            }
+        });
+    let via_session_id = arg
+        .via_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(wt_core::SessionId::from);
     let meta = TunnelMeta {
-        id: format!("f{}", TUNNEL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)),
+        id: id.clone(),
+        name,
         kind: if dynamic { 'D' } else { 'L' },
-        listen_host,
+        listen_host: listen_host.clone(),
         listen_port,
-        target_host: if dynamic { String::new() } else { target_host },
+        // 动态代理没有固定目标
+        target_host: if dynamic { String::new() } else { target_host.clone() },
         target_port: if dynamic { 0 } else { arg.target_port },
         via,
+    };
+    let dto = tunnel_dto(&meta, &fwd);
+
+    // 落库：配置要能在重启后还在（`G13`）。存的是**配置**不是运行状态，
+    // 而且 `listen_port` 存的是用户填的值（0 = 每次随机），不是这次分配到的端口。
+    let spec = wt_core::TunnelSpec {
+        id: id.clone(),
+        name: meta.name.clone(),
+        kind: if dynamic {
+            wt_core::TunnelKind::Dynamic
+        } else {
+            wt_core::TunnelKind::Local
+        },
+        listen_host: listen_host.clone(),
+        listen_port: arg.listen_port,
+        target_host: if dynamic { None } else { Some(target_host) },
+        target_port: if dynamic { None } else { Some(arg.target_port) },
+        via_session_id,
+        auto_start: arg.auto_start.unwrap_or(false),
+    };
+    if let Ok(mut store) = wt_store::Store::open(&sessions_db_path()) {
+        if let Err(e) = store.upsert_tunnel(&spec) {
+            // 存不下来不该让已经跑起来的隧道失败，但必须说清楚
+            trace(&format!("[tunnel_start] 配置落库失败：{e}"));
+            set_tunnel_spec_cache(&state, spec.clone(), true);
+            state
+                .tunnels
+                .lock()
+                .map_err(|_| "[INTERNAL] 隧道表状态异常".to_string())?
+                .insert(id, (meta, fwd));
+            return Err(format!("隧道已启动，但配置没能保存：{e}"));
+        }
+    }
+    set_tunnel_spec_cache(&state, spec, false);
+    state
+        .tunnels
+        .lock()
+        .map_err(|_| "[INTERNAL] 隧道表状态异常".to_string())?
+        .insert(id, (meta, fwd));
+    Ok(dto)
+}
+
+/// 更新内存里的配置缓存（`replace = true` 表示覆盖同 id 的旧项）。
+fn set_tunnel_spec_cache(state: &State<'_, AppState>, spec: wt_core::TunnelSpec, replace: bool) {
+    if let Ok(mut specs) = state.tunnel_specs.lock() {
+        if replace {
+            if let Some(slot) = specs.iter_mut().find(|s| s.id == spec.id) {
+                *slot = spec;
+                return;
+            }
+        }
+        specs.retain(|s| s.id != spec.id);
+        specs.push(spec);
+    }
+}
+
+/// 实时统计（`NET-004` 要求 ≤ 2 s 刷新，界面按 1 s 轮询）。
+///
+/// 返回**两类**：正在跑的（带实时计数）与只存在于库里的（灰灯）。
+/// 只返回正在跑的会让用户以为「保存过的隧道没保存成功」。
+#[tauri::command]
+fn tunnel_stats(state: State<'_, AppState>) -> Result<Vec<TunnelDto>, String> {
+    let running = state
+        .tunnels
+        .lock()
+        .map_err(|_| "[INTERNAL] 隧道表状态异常".to_string())?;
+    let specs = state
+        .tunnel_specs
+        .lock()
+        .map_err(|_| "[INTERNAL] 隧道配置状态异常".to_string())?;
+
+    let mut out = Vec::new();
+    for spec in specs.iter() {
+        match running.get(&spec.id) {
+            Some((meta, fwd)) => out.push(tunnel_dto(meta, fwd)),
+            None => out.push(tunnel_dto_from_spec(spec)),
+        }
+    }
+    // 运行时新建但没进缓存的（落库失败那条路径）也要显示，不能凭空少一条
+    for (id, (meta, fwd)) in running.iter() {
+        if !specs.iter().any(|s| &s.id == id) {
+            out.push(tunnel_dto(meta, fwd));
+        }
+    }
+    Ok(out)
+}
+
+/// 从库里的配置拉起一条隧道。
+///
+/// 承载连接用 `viaSessionId` 指向的会话：主机/端口/用户名从会话取，
+/// 密码从保险库取。**没有保存密码时直接说清楚**，而不是弹一个空密码去认证，
+/// 让用户对着「认证失败」猜自己是不是填错了。
+#[tauri::command]
+async fn tunnel_start_saved(state: State<'_, AppState>, id: String) -> Result<TunnelDto, String> {
+    let spec = {
+        let specs = state
+            .tunnel_specs
+            .lock()
+            .map_err(|_| "[INTERNAL] 隧道配置状态异常".to_string())?;
+        specs
+            .iter()
+            .find(|s| s.id == id)
+            .cloned()
+            .ok_or_else(|| format!("[TUN_UNKNOWN] 没有 id 为 {id} 的隧道"))
+    }?;
+
+    let session_id = spec.via_session_id.as_ref().ok_or_else(|| {
+        "[TUN_NO_SESSION] 这条隧道没有记录承载会话，无法直接用保存的配置启动；\
+         请在表单里重新填写并启动一次（会覆盖保存）"
+            .to_string()
+    })?;
+
+    // 会话参数
+    let store = wt_store::Store::open(&sessions_db_path()).map_err(|e| e.to_string())?;
+    let snap = store.load_snapshot().map_err(|e| e.to_string())?;
+    let session = snap
+        .sessions
+        .iter()
+        .find(|s| s.id == *session_id)
+        .ok_or_else(|| {
+            format!(
+                "[TUN_NO_SESSION] 承载会话 {} 已经不存在了；请重新指定",
+                session_id.as_str()
+            )
+        })?;
+    let host = session.host.clone().unwrap_or_default();
+    let user = session.username.clone().unwrap_or_default();
+    if host.is_empty() || user.is_empty() {
+        return Err("[TUN_NO_SESSION] 承载会话缺少主机或用户名".into());
+    }
+
+    // 密码：只从保险库取，不猜
+    let password = {
+        let st = state.vault.lock().unwrap();
+        let Some(vault) = st.vault.as_ref() else {
+            return Err(
+                "[VAULT_LOCKED] 保险库没解锁，无法取出承载会话的密码；先解锁再启动".into(),
+            );
+        };
+        vault
+            .entries()
+            .iter()
+            .find_map(|e| match e {
+                wt_crypto::Entry::Password {
+                    secret,
+                    session_id: Some(s),
+                    ..
+                } if *s == session_id.as_str() => B64.decode(secret).ok(),
+                _ => None,
+            })
+            .map(|raw| String::from_utf8_lossy(&raw).to_string())
+    };
+    let Some(password) = password else {
+        return Err(format!(
+            "[TUN_NO_PASSWORD] 承载会话 {} 没有保存密码；先在会话树里连一次并勾「记住密码」",
+            session.name
+        ));
+    };
+
+    let cfg = wt_ssh::SshConfig {
+        host,
+        port: session.port.unwrap_or(22),
+        user,
+        ..Default::default()
+    };
+    let auth = AuthInput::Password(password);
+    let (conn, _added) = connect_accept_new(&cfg, &auth, None).await?;
+    let conn = std::sync::Arc::new(conn);
+    let fwd = match spec.kind {
+        wt_core::TunnelKind::Dynamic => {
+            wt_ssh::start_socks5(conn, &spec.listen_host, spec.listen_port, None)
+                .await
+                .map_err(|e| e.to_string())?
+        }
+        wt_core::TunnelKind::Local => {
+            let target_host = spec.target_host.clone().unwrap_or_default();
+            let target_port = spec.target_port.unwrap_or(0);
+            wt_ssh::start_local(
+                conn,
+                &spec.listen_host,
+                spec.listen_port,
+                &target_host,
+                target_port,
+            )
+            .await
+            .map_err(|e| e.to_string())?
+        }
+        wt_core::TunnelKind::Remote => {
+            return Err("[TUN_UNSUPPORTED_KIND] 远程转发（-R）还没实现".into())
+        }
+    };
+
+    let listen_port = fwd.listen_addr().port();
+    let meta = TunnelMeta {
+        id: spec.id.clone(),
+        name: spec.name.clone(),
+        kind: if spec.kind == wt_core::TunnelKind::Dynamic { 'D' } else { 'L' },
+        listen_host: spec.listen_host.clone(),
+        listen_port,
+        target_host: spec.target_host.clone().unwrap_or_default(),
+        target_port: spec.target_port.unwrap_or(0),
+        via: session.name.clone(),
     };
     let dto = tunnel_dto(&meta, &fwd);
     state
         .tunnels
         .lock()
         .map_err(|_| "[INTERNAL] 隧道表状态异常".to_string())?
-        .insert(meta.id.clone(), (meta, fwd));
+        .insert(spec.id.clone(), (meta, fwd));
     Ok(dto)
 }
 
-/// 实时统计（`NET-004` 要求 ≤ 2 s 刷新，界面按 1 s 轮询）。
+/// 删除一条隧道：**先停再删**。留着运行中的监听端口却把配置删了，
+/// 用户会得到一条谁也停不掉、界面上也看不见的隧道。
 #[tauri::command]
-fn tunnel_stats(state: State<'_, AppState>) -> Result<Vec<TunnelDto>, String> {
-    let map = state
-        .tunnels
-        .lock()
-        .map_err(|_| "[INTERNAL] 隧道表状态异常".to_string())?;
-    Ok(map.values().map(|(meta, fwd)| tunnel_dto(meta, fwd)).collect())
+async fn tunnel_delete(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+    let taken = {
+        state
+            .tunnels
+            .lock()
+            .map_err(|_| "[INTERNAL] 隧道表状态异常".to_string())?
+            .remove(&id)
+    };
+    if let Some((_, fwd)) = taken {
+        fwd.stop().await;
+    }
+    if let Ok(mut store) = wt_store::Store::open(&sessions_db_path()) {
+        if let Err(e) = store.delete_tunnel(&id) {
+            trace(&format!("[tunnel_delete] 删除失败：{e}"));
+            return Err(format!("停止成功，但删除配置失败：{e}"));
+        }
+    }
+    if let Ok(mut specs) = state.tunnel_specs.lock() {
+        specs.retain(|s| s.id != id);
+    }
+    Ok(true)
 }
 
 #[tauri::command]
@@ -1399,6 +1702,7 @@ fn main() {
             registry: SessionRegistry::new(),
             vault: std::sync::Mutex::new(VaultState::locked()),
             tunnels: std::sync::Mutex::new(HashMap::new()),
+            tunnel_specs: std::sync::Mutex::new(load_tunnel_specs()),
         })
         .setup(|app| {
             create_main_window(app)?;
@@ -1423,6 +1727,8 @@ fn main() {
             sftp_download,
             sftp_upload,
             tunnel_start,
+            tunnel_start_saved,
+            tunnel_delete,
             tunnel_stats,
             tunnel_stop,
             vault_status,

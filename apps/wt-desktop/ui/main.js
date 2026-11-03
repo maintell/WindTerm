@@ -527,6 +527,7 @@ async function applyJumpFromSession(s) {
 function renderTree(dto) {  lastTree = dto;
   treeBody.textContent = "";
   refreshJumpSelect(dto);
+  refreshTunnelSessionSelect();
   if (!dto.exists) {
     treeEmpty(`没有会话库：\n${dto.db_path}\n先导入，再点刷新`);
     return;
@@ -1229,6 +1230,7 @@ const tunnelList = document.getElementById("tunnel-list");
 const tunnelMsgEl = document.getElementById("tunnel-msg");
 const tunnelListen = document.getElementById("tunnel-listen");
 const tunnelKind = document.getElementById("tunnel-kind");
+const tunnelSessionSelect = document.getElementById("tunnel-session");
 const tunnelTarget = document.getElementById("tunnel-target");
 const tunnelLan = document.getElementById("tunnel-lan");
 const tunnelAdd = document.getElementById("tunnel-add");
@@ -1274,39 +1276,77 @@ function renderTunnels(rows) {
     const dot = document.createElement("span");
     dot.className = "dot";
     dot.textContent = "●";
-    dot.title = "运行中";
-    // 有上次错误就变红：承载连接断了以后监听还在，但每个连接都会失败，
-    // 这时候继续显示绿灯等于骗人
-    if (t.last_error) {
+    if (!t.running) {
+      // 灰灯：配置在库里，但当前没跑
+      dot.style.color = "#8a8a92";
+      dot.title = "已停止";
+    } else if (t.last_error) {
+      // 有上次错误就变红：承载连接断了以后监听还在，但每个连接都会失败，
+      // 这时候继续显示绿灯等于骗人
       dot.style.color = "#e5534b";
       dot.title = `最近一次转发失败：${t.last_error}`;
+    } else {
+      dot.title = "运行中";
     }
     const route = document.createElement("span");
     // 动态代理没有固定目标：路由由客户端每次请求决定
     route.textContent =
       t.kind === "D" ? `${t.kind} ${t.listen}` : `${t.kind} ${t.listen} → ${t.target}`;
-    const stop = document.createElement("button");
-    stop.textContent = "停止";
-    stop.title = `停止 ${t.listen}`;
-    stop.dataset.id = t.id;
-    stop.addEventListener("click", () => void stopTunnel(t.id));
-    line1.append(dot, route, stop);
+    route.title = t.name ? `${t.name}（via ${t.via || "手填参数"}）` : "";
+    line1.append(dot, route);
+
+    const startBtn = document.createElement("button");
+    startBtn.textContent = t.running ? "停止" : "启动";
+    startBtn.title = t.running ? `停止 ${t.listen}` : `用保存的配置启动 ${t.listen}`;
+    startBtn.addEventListener("click", () =>
+      t.running ? void stopTunnel(t.id) : void startSavedTunnel(t.id),
+    );
+    line1.append(startBtn);
+
+    const delBtn = document.createElement("button");
+    delBtn.textContent = "删除";
+    delBtn.title = `删除 ${t.listen}`;
+    delBtn.addEventListener("click", () => void deleteTunnel(t.id));
+    line1.append(delBtn);
 
     const line2 = document.createElement("div");
     line2.className = "line2";
-    const parts = [
-      `${t.active} 连接`,
-      `累计 ${t.total}`,
-      `↑${formatBytes(t.up_bytes)} ↓${formatBytes(t.down_bytes)}`,
-      `via ${t.via}`,
-    ];
-    if (t.last_error) parts.push(`上次错误：${t.last_error}`);
-    line2.textContent = parts.join(" · ");
-    line2.title = t.last_error ?? "";
+    if (!t.running) {
+      line2.textContent = "未运行 · 配置已保存";
+      line2.title = "";
+    } else {
+      const parts = [
+        `${t.active} 连接`,
+        `累计 ${t.total}`,
+        `↑${formatBytes(t.up_bytes)} ↓${formatBytes(t.down_bytes)}`,
+        `via ${t.via}`,
+      ];
+      if (t.last_error) parts.push(`上次错误：${t.last_error}`);
+      line2.textContent = parts.join(" · ");
+      line2.title = t.last_error ?? "";
+    }
 
     box.append(line1, line2);
     tunnelList.appendChild(box);
   }
+}
+
+/** 刷新「承载会话」下拉（只有 SSH 能承载隧道）。 */
+function refreshTunnelSessionSelect() {
+  const keep = tunnelSessionSelect.value;
+  tunnelSessionSelect.textContent = "";
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = "承载会话（可选，保存后便于重启）";
+  tunnelSessionSelect.appendChild(none);
+  for (const s of lastTree?.sessions ?? []) {
+    if (s.kind !== "ssh") continue;
+    const o = document.createElement("option");
+    o.value = s.id;
+    o.textContent = s.name;
+    tunnelSessionSelect.appendChild(o);
+  }
+  tunnelSessionSelect.value = keep;
 }
 
 async function refreshTunnels() {
@@ -1323,6 +1363,28 @@ async function stopTunnel(id) {
     setTunnelMsg("已停止");
   } catch (e) {
     setTunnelMsg(`停止失败：${e}`);
+  }
+  await refreshTunnels();
+}
+
+/** 用保存的配置启动：承载会话与密码都从库里取（密码走保险库）。 */
+async function startSavedTunnel(id) {
+  setTunnelMsg("启动中…");
+  try {
+    const t = await withDeadline(invoke("tunnel_start_saved", { id }), 30000, "启动隧道");
+    setTunnelMsg(`已启动 ${t.kind} ${t.listen}${t.target ? ` → ${t.target}` : ""}`);
+  } catch (e) {
+    setTunnelMsg(`启动失败：${e}`);
+  }
+  await refreshTunnels();
+}
+
+async function deleteTunnel(id) {
+  try {
+    await invoke("tunnel_delete", { id });
+    setTunnelMsg("已删除");
+  } catch (e) {
+    setTunnelMsg(`删除失败：${e}`);
   }
   await refreshTunnels();
 }
@@ -1366,6 +1428,7 @@ async function startTunnel() {
           targetHost,
           targetPort,
           allowLan,
+          viaSessionId: tunnelSessionSelect.value || null,
           jump: jumpReq(),
         },
       }),
@@ -1604,7 +1667,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-11",
+  ui: "wt-ui-12",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";
