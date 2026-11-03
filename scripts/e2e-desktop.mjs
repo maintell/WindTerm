@@ -326,6 +326,20 @@ async function nodeIdOf(selector) {
   return nodeId;
 }
 
+/** 关掉所有标签页（多标签之后，「关闭」只关当前那个） */
+async function closeAllTabs() {
+  await waitFor(
+    async () => {
+      const n = await cdp.eval(`window.__wt.tabs().length`);
+      if (n === 0) return true;
+      await cdp.eval(`document.getElementById("close").click()`);
+      await new Promise((r) => setTimeout(r, 300));
+      return null;
+    },
+    { timeout: 20000, label: "关闭所有标签页" },
+  );
+}
+
 // ── 主流程 ──────────────────────────────────────────────────
 let cdp = null;
 
@@ -489,6 +503,68 @@ try {
     "关闭后句柄失效",
     closed?.status === "已关闭" && closed.stale.includes("IPC_UNKNOWN_HANDLE"),
     `${closed?.status} / ${closed?.stale}`,
+  );
+
+  // 11b. 多标签：同时开两个会话，各自独立
+  await clickElement("#open");
+  await waitFor(
+    async () => {
+      const n = await cdp.eval(`document.querySelectorAll("#tabs .tab").length`);
+      return n === 1 ? n : null;
+    },
+    { timeout: 20000, label: "第一个标签页" },
+  );
+  await clickElement("#open");
+  const twoTabs = await waitFor(
+    async () => {
+      const state = await cdp.eval(
+        `({ dom: document.querySelectorAll("#tabs .tab").length, tabs: window.__wt.tabs() })`,
+      );
+      return state.dom === 2 && state.tabs.length === 2 ? state : null;
+    },
+    { timeout: 20000, label: "第二个标签页" },
+  );
+  check(
+    "能同时开多个会话（标签页）",
+    twoTabs.dom === 2 && twoTabs.tabs.filter((t) => t.active).length === 1,
+    twoTabs.tabs.map((t) => `${t.label}${t.active ? "*" : ""}`).join(" | "),
+  );
+
+  // 切回第一个标签：内容必须还在（说明是隐藏而不是重建）
+  const firstHandle = twoTabs.tabs[0].handle;
+  await cdp.eval(`document.querySelectorAll("#tabs .tab")[0].click()`);
+  const switched = await waitFor(
+    async () => {
+      const state = await cdp.eval(
+        `({ handle: window.__wt.handle, screen: window.__wt.screen() })`,
+      );
+      return state.handle === firstHandle && state.screen.trim().length > 0 ? state : null;
+    },
+    { timeout: 10000, label: "切回第一个标签" },
+  );
+  check(
+    "切回标签页时内容还在（不是重建）",
+    switched.screen.includes("PS "),
+    switched.screen.split(/\r?\n/)[0].slice(0, 40),
+  );
+
+  // 关掉一个，另一个必须还在
+  await clickElement("#close");
+  const oneLeft = await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.tabs()`);
+      return t.length === 1 ? t : null;
+    },
+    { timeout: 10000, label: "关闭一个标签" },
+  );
+  check("关掉一个标签不会带走另一个", oneLeft.length === 1, oneLeft[0].label);
+  await clickElement("#close");
+  await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.tabs()`);
+      return t.length === 0 ? t : null;
+    },
+    { timeout: 10000, label: "关闭最后一个标签" },
   );
 
   // ── SSH：用应用内建的 mock 服务端验证整条链路 ──────────────
@@ -707,11 +783,7 @@ try {
   );
 
   // 16. 关闭后重连：主机密钥已在 known_hosts 里，不该再报「已记录」
-  await clickElement("#close");
-  await waitFor(
-    async () => (await cdp.eval(`document.getElementById("status").textContent`)) === "已关闭",
-    { timeout: 10000, label: "SSH 会话关闭" },
-  );
+  await closeAllTabs();
   await clickElement("#ssh");
   const secondStatus = await waitFor(
     async () => {
@@ -785,11 +857,7 @@ try {
   );
 
   // 18. 保险库：把密码存起来，下次选中会话自动填
-  await clickElement("#close");
-  await waitFor(
-    async () => (await cdp.eval(`document.getElementById("status").textContent`)) === "已关闭",
-    { timeout: 10000, label: "关闭密钥会话" },
-  );
+  await closeAllTabs();
 
   // 先退出密钥模式：密钥模式下没有密码可存，「记住密码」会被禁用
   await clickElement("#use-key");
@@ -853,11 +921,7 @@ try {
   );
 
   // 关掉、清空密码框、重新选中会话：密码应从保险库自动填入
-  await clickElement("#close");
-  await waitFor(
-    async () => (await cdp.eval(`document.getElementById("status").textContent`)) === "已关闭",
-    { timeout: 10000, label: "关闭保险库会话" },
-  );
+  await closeAllTabs();
   await fillInput("#password", "");
   await clickSessionNode("mock-ssh");
   const refilled = await waitFor(
@@ -918,11 +982,7 @@ try {
   );
 
   // 20. 连不上的错误路径：必须给出稳定错误码，不能静默失败
-  await clickElement("#close");
-  await waitFor(
-    async () => (await cdp.eval(`document.getElementById("status").textContent`)) === "已关闭",
-    { timeout: 10000, label: "关闭第二次会话" },
-  );
+  await closeAllTabs();
   await fillInput("#port", "1");
   await clickElement("#ssh");
   const errScreen = await waitFor(

@@ -153,7 +153,36 @@
       #tree-msg[hidden] { display: none; }
       /* xterm 需要容器有确定尺寸：flex:1 撑开，min-height/min-width:0 防止被内容顶住
          （没有 min-width:0 时，终端元素自身的宽度会成为下限，侧栏一变宽终端就不肯收窄） */
-      #term { flex: 1; min-width: 0; min-height: 0; padding: 4px 0 0 6px; }
+      #right { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+      #tabs {
+        display: flex;
+        gap: 2px;
+        padding: 2px 4px 0;
+        overflow-x: auto;
+        border-bottom: 1px solid #33333a;
+        flex: none;
+      }
+      .tab {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 2px 8px;
+        font-size: 12px;
+        color: var(--muted);
+        background: #24242a;
+        border: 1px solid #33333a;
+        border-bottom: none;
+        border-radius: 4px 4px 0 0;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .tab.active { color: var(--fg); background: #2f2f38; }
+      .tab .x { color: #8a8a92; }
+      .tab .x:hover { color: #e8e8ea; }
+      #term { flex: 1; min-width: 0; min-height: 0; position: relative; }
+      /* 每个会话一个绝对定位的视图；切走的只是隐藏，xterm 实例与滚动位置都留着 */
+      .term-view { position: absolute; inset: 0; padding: 4px 0 0 6px; display: none; }
+      .term-view.active { display: block; }
     </style>
   </head>
   <body>
@@ -196,7 +225,10 @@
         <div id="tree-body"><p id="tree-empty">正在读取会话库…</p></div>
         <input id="import-file" type="file" accept=".ini,text/plain" hidden />
       </aside>
-      <div id="term"></div>
+      <div id="right">
+        <div id="tabs"></div>
+        <div id="term"></div>
+      </div>
     </div>
     <script src="vendor/xterm.js"></script>
     <script src="vendor/addon-fit.js"></script>

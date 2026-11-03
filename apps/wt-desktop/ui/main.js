@@ -26,7 +26,6 @@ if (typeof Terminal !== "function" || typeof FitAddon !== "function") {
   );
 }
 
-const hostEl = document.getElementById("term");
 const openBtn = document.getElementById("open");
 const sshBtn = document.getElementById("ssh");
 const closeBtn = document.getElementById("close");
@@ -58,65 +57,155 @@ let vaultUnlocked = false;
 /** 会话树里当前选中的会话（保存密码要按它记） */
 let selectedSession = null;
 
-const term = new Terminal({
-  fontFamily: '"JetBrains Mono", Consolas, "Cascadia Mono", monospace',
-  fontSize: 13,
-  lineHeight: 1.2,
-  cursorBlink: true,
-  scrollback: 5000,
-  theme: {
-    background: "#1a1a1c",
-    foreground: "#e8e8ea",
-    cursor: "#5b9bff",
-    selectionBackground: "#2f4f7f",
-  },
-});
-const fit = new FitAddon();
-term.loadAddon(fit);
-term.open(hostEl);
-fit.fit();
-
-/** @type {string | null} */
-let handle = null;
-let running = false;
-/** 已交给 xterm 但尚未向后端确认的字节数 */
-let pending = 0;
+const termHost = document.getElementById("term");
+const tabsEl = document.getElementById("tabs");
 
 /** 攒够这么多未确认字节就先确认一次，减少 IPC 往返 */
 const ACK_BATCH = 32 * 1024;
 /** 低流量时也定期确认，避免 pending 长期挂账 */
 const ACK_INTERVAL = 200;
 
+/** 所有已打开的会话：id → view */
+const sessions = new Map();
+/** 当前激活的 view；`null` 表示没有会话 */
+let active = null;
+let nextViewId = 1;
+
 function setStatus(text) {
   statusEl.textContent = text;
 }
 
-function setConnected(on) {
-  openBtn.disabled = on;
-  sshBtn.disabled = on;
-  closeBtn.disabled = !on;
-}
-
-async function ackPending() {
-  if (!handle || pending === 0) return;
-  const n = pending;
-  pending = 0;
-  try {
-    await invoke("term_ack", { handle, n });
-  } catch {
-    // 会话已关闭时确认会失败，这是正常收尾路径
-  }
+/** 打开/关闭按钮的可用状态：多会话后开新会话不该被禁用 */
+function refreshButtons() {
+  closeBtn.disabled = sessions.size === 0;
+  openBtn.disabled = false;
+  sshBtn.disabled = false;
 }
 
 function frame() {
   return new Promise((r) => requestAnimationFrame(() => r()));
 }
 
-async function pump() {
-  while (running && handle) {
+/**
+ * 建一个终端视图（一个标签页）。
+ *
+ * 每个会话有自己的 xterm 实例、FitAddon、未确认计数与拉取循环——
+ * 共用一份状态会让「切走的标签页停止 ack」变成静默的背压泄漏。
+ */
+function createView(label) {
+  const el = document.createElement("div");
+  el.className = "term-view";
+  termHost.appendChild(el);
+
+  const term = new Terminal({
+    fontFamily: '"JetBrains Mono", Consolas, "Cascadia Mono", monospace',
+    fontSize: 13,
+    lineHeight: 1.2,
+    cursorBlink: true,
+    scrollback: 5000,
+    theme: {
+      background: "#1a1a1c",
+      foreground: "#e8e8ea",
+      cursor: "#5b9bff",
+      selectionBackground: "#2f4f7f",
+    },
+  });
+  const fit = new FitAddon();
+  term.loadAddon(fit);
+  term.open(el);
+
+  const view = {
+    id: nextViewId++,
+    label,
+    term,
+    fit,
+    el,
+    handle: null,
+    running: false,
+    pending: 0,
+    status: "",
+    dataEvents: 0,
+    inputLog: [],
+  };
+
+  term.onData((data) => {
+    if (!view.handle) return;
+    view.dataEvents += 1;
+    if (view.inputLog.length < 64) view.inputLog.push(data);
+    invoke("term_write", { handle: view.handle, data }).catch((e) =>
+      setStatus(`写入失败：${e}`),
+    );
+  });
+
+  term.onResize(({ cols, rows }) => {
+    if (!view.handle) return;
+    invoke("term_resize", { handle: view.handle, cols, rows }).catch(() => {});
+  });
+
+  el.addEventListener("mousedown", () => term.focus());
+
+  sessions.set(view.id, view);
+  return view;
+}
+
+function renderTabs() {
+  tabsEl.textContent = "";
+  for (const view of sessions.values()) {
+    const tab = document.createElement("div");
+    tab.className = view === active ? "tab active" : "tab";
+
+    const label = document.createElement("span");
+    label.textContent = view.label;
+    label.title = view.status || view.label;
+
+    const x = document.createElement("span");
+    x.className = "x";
+    x.textContent = "×";
+    x.title = "关闭";
+    x.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      void closeView(view);
+    });
+
+    tab.append(label, x);
+    tab.addEventListener("click", () => setActive(view));
+    tabsEl.appendChild(tab);
+  }
+}
+
+function setActive(view) {
+  active = view;
+  for (const v of sessions.values()) {
+    v.el.classList.toggle("active", v === view);
+  }
+  renderTabs();
+  refreshButtons();
+  if (!view) {
+    setStatus("已关闭");
+    return;
+  }
+  view.fit.fit();
+  view.term.focus();
+  setStatus(view.status || `已连接 ${view.label}`);
+}
+
+async function ackView(view, force = false) {
+  if (!view.handle || view.pending === 0) return;
+  if (!force && view.pending < ACK_BATCH) return;
+  const n = view.pending;
+  view.pending = 0;
+  try {
+    await invoke("term_ack", { handle: view.handle, n });
+  } catch {
+    // 会话已关闭时确认会失败，这是正常收尾路径
+  }
+}
+
+async function pump(view) {
+  while (view.running && view.handle) {
     let bytes;
     try {
-      const buf = await invoke("term_read", { handle, maxBytes: 65536 });
+      const buf = await invoke("term_read", { handle: view.handle, maxBytes: 65536 });
       bytes = new Uint8Array(buf);
     } catch (e) {
       setStatus(`读取失败：${e}`);
@@ -127,39 +216,45 @@ async function pump() {
       continue;
     }
     const n = bytes.length;
-    term.write(bytes, () => {
-      pending += n;
-      if (pending >= ACK_BATCH) void ackPending();
+    // ack 在 xterm 消费完之后才发，否则后端算出的「未确认字节」是假的
+    view.term.write(bytes, () => {
+      view.pending += n;
+      if (view.pending >= ACK_BATCH) void ackView(view);
     });
     await frame();
   }
 }
 
-/** 会话建立后的公共收尾：状态、焦点、拉取循环 */
-function afterOpen(statusText) {
-  running = true;
-  pending = 0;
-  setConnected(true);
+/** 会话建立后的公共收尾：激活标签、开始拉取 */
+function afterOpen(view, statusText) {
+  view.running = true;
+  view.pending = 0;
+  view.status = statusText;
+  setActive(view);
   setStatus(statusText);
-  term.focus();
-  pump();
+  void pump(view);
 }
 
 async function openLocal() {
-  if (handle) return;
-  fit.fit();
-  term.reset();
+  const view = createView("本地终端");
+  view.fit.fit();
   try {
-    handle = await invoke("local_open", { cols: term.cols, rows: term.rows });
+    view.handle = await invoke("local_open", {
+      cols: view.term.cols,
+      rows: view.term.rows,
+    });
   } catch (e) {
-    setStatus(`打开失败：${e}`);
+    view.status = `打开失败：${e}`;
+    view.term.write(`\r\n\x1b[31m打开失败：${e}\x1b[0m\r\n`);
+    setActive(view);
+    setStatus("打开失败");
     return;
   }
-  afterOpen(`已连接 ${handle.slice(0, 8)}`);
+  view.label = `本地 ${view.handle.slice(0, 6)}`;
+  afterOpen(view, `已连接 ${view.handle.slice(0, 8)}`);
 }
 
 async function openSsh() {
-  if (handle) return;
   const host = hostInput.value.trim();
   const user = userInput.value.trim();
   const port = Number.parseInt(portInput.value, 10) || 22;
@@ -174,9 +269,11 @@ async function openSsh() {
     return;
   }
 
-  fit.fit();
-  term.reset();
-  setStatus(`正在连接 ${user}@${host}…`);
+  const view = createView(`${user}@${host}`);
+  view.fit.fit();
+  view.status = `正在连接 ${user}@${host}…`;
+  setActive(view);
+  setStatus(view.status);
   sshBtn.disabled = true;
   try {
     const r = await invoke("ssh_open", {
@@ -188,40 +285,53 @@ async function openSsh() {
         password: useKeyBox.checked ? null : passInput.value,
         keyPem: useKeyBox.checked ? keyPem : null,
         keyPassphrase: useKeyBox.checked ? keyPassInput.value || null : null,
-        cols: term.cols,
-        rows: term.rows,
+        cols: view.term.cols,
+        rows: view.term.rows,
       },
     });
-    handle = r.handle;
-    afterOpen(
-      `已连接 ${user}@${host}${r.host_key_added ? "（已记录主机密钥）" : ""}`,
-    );
-    if (r.fingerprint) term.write(`\x1b[2m主机密钥 ${r.fingerprint}\x1b[0m\r\n`);
+    view.handle = r.handle;
+    const text = `已连接 ${user}@${host}${r.host_key_added ? "（已记录主机密钥）" : ""}`;
+    afterOpen(view, text);
+    if (r.fingerprint) view.term.write(`\x1b[2m主机密钥 ${r.fingerprint}\x1b[0m\r\n`);
     await savePasswordIfAsked();
   } catch (e) {
-    // 失败原因写进终端：状态栏放不下 hints，而且用户需要能复制下来
-    term.write(`\r\n\x1b[31m${String(e)}\x1b[0m\r\n`);
+    // 失败原因写进这个标签页：状态栏放不下 hints，而且用户需要能复制下来
+    view.term.write(`\r\n\x1b[31m${String(e)}\x1b[0m\r\n`);
+    view.status = `连接失败：${user}@${host}`;
     setStatus("连接失败");
+    renderTabs();
   } finally {
-    if (!handle) sshBtn.disabled = false;
+    sshBtn.disabled = false;
   }
 }
 
-async function closeTerm() {
-  if (!handle) return;
-  running = false;
-  await ackPending();
-  const h = handle;
-  handle = null;
-  try {
-    await invoke("term_close", { handle: h });
-  } catch {
-    /* 关闭失败不阻塞界面 */
+async function closeView(view) {
+  view.running = false;
+  if (view.handle) {
+    await ackView(view, true);
+    const h = view.handle;
+    view.handle = null;
+    try {
+      await invoke("term_close", { handle: h });
+    } catch {
+      /* 关闭失败不阻塞界面 */
+    }
   }
-  pending = 0;
-  setConnected(false);
-  setStatus("已关闭");
+  sessions.delete(view.id);
+  view.el.remove();
+  const next = sessions.values().next().value ?? null;
+  setActive(next);
 }
+
+async function closeTerm() {
+  if (active) await closeView(active);
+}
+
+// 低流量时也定期确认，避免 pending 长期挂账（对所有会话生效）
+// 注意要 force：否则低于 ACK_BATCH 的零散字节永远等不到确认，背压就卡住了
+setInterval(() => {
+  for (const view of sessions.values()) void ackView(view, true);
+}, ACK_INTERVAL);
 
 // ── 会话树 ──────────────────────────────────────────────────
 const treeBody = document.getElementById("tree-body");
@@ -479,33 +589,15 @@ vaultToggleBtn.addEventListener("click", async () => {
   await renderVaultPanel();
 });
 
-// ── 输入 ────────────────────────────────────────────────────
-/** xterm 交来的输入事件计数，用于诊断「首字符丢失」这类问题 */
-let dataEvents = 0;
-/** 最近的输入载荷，诊断用（只留前 64 条，避免无界增长） */
-const inputLog = [];
-
-term.onData((data) => {
-  if (!handle) return;
-  dataEvents += 1;
-  if (inputLog.length < 64) inputLog.push(data);
-  invoke("term_write", { handle, data }).catch((e) => setStatus(`写入失败：${e}`));
-});
-
-term.onResize(({ cols, rows }) => {
-  if (!handle) return;
-  invoke("term_resize", { handle, cols, rows }).catch(() => {});
-});
-
-// 窗口尺寸变化 → 重新计算行列（去抖 100 ms）
+// ── 窗口尺寸 ────────────────────────────────────────────────
+// 每个会话各自 fit：切换标签页时也要重新算，否则隐藏期间的 resize 会漏掉
 let resizeTimer = null;
 window.addEventListener("resize", () => {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => fit.fit(), 100);
+  resizeTimer = setTimeout(() => {
+    for (const view of sessions.values()) view.fit.fit();
+  }, 100);
 });
-
-// 点击终端区域重新聚焦（点工具栏后焦点会跑到按钮上）
-hostEl.addEventListener("mousedown", () => term.focus());
 
 openBtn.addEventListener("click", openLocal);
 sshBtn.addEventListener("click", openSsh);
@@ -616,45 +708,53 @@ async function savePasswordIfAsked() {
     await refreshVault();
     if (!vaultPanel.hidden) await renderVaultPanel();
   } catch (e) {
-    term.write(`\r\n\x1b[33m密码未保存：${e}\x1b[0m\r\n`);
+    active?.term.write(`\r\n\x1b[33m密码未保存：${e}\x1b[0m\r\n`);
   }
 }
-
-setInterval(() => void ackPending(), ACK_INTERVAL);
 
 // 自动化验收接口（`scripts/e2e-desktop.mjs` 用 CDP 读它）。
 // 只读、无副作用：靠 DOM 文本反推会话句柄会变成脆弱实现，
 // 而「界面可被脚本驱动」本身也是 AI Agent 体验的一部分。
 window.__wt = {
+  /** 当前激活会话的句柄 */
   get handle() {
-    return handle;
+    return active?.handle ?? null;
   },
   get running() {
-    return running;
+    return active?.running ?? false;
   },
   get pending() {
-    return pending;
+    return active?.pending ?? 0;
   },
   get dataEvents() {
-    return dataEvents;
+    return active?.dataEvents ?? 0;
   },
   get inputLog() {
-    return inputLog.slice();
+    return (active?.inputLog ?? []).slice();
   },
   get cols() {
-    return term.cols;
+    return active?.term.cols ?? 0;
   },
   get rows() {
-    return term.rows;
+    return active?.term.rows ?? 0;
   },
   /** 当前屏幕文本（含回滚区），供验收断言用 */
   screen() {
-    const buf = term.buffer.active;
+    if (!active) return "";
+    const buf = active.term.buffer.active;
     const lines = [];
     for (let i = 0; i < buf.length; i++) {
       lines.push(buf.getLine(i)?.translateToString(true) ?? "");
     }
     return lines.join("\n");
+  },
+  /** 标签页：每个会话一行，标出哪个是激活的 */
+  tabs() {
+    return [...sessions.values()].map((v) => ({
+      label: v.label,
+      active: v === active,
+      handle: v.handle,
+    }));
   },
   /** 会话树里可见的会话名，供验收断言用 */
   sessions() {
