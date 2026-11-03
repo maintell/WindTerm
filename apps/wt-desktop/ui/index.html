@@ -515,6 +515,8 @@
             <select id="tunnel-session" title="用哪条会话做承载连接（保存后可从库直接启动）"></select>
             <input id="tunnel-listen" placeholder="本地端口，0 为随机" inputmode="numeric" />
             <input id="tunnel-target" placeholder="目标主机:端口" spellcheck="false" />
+            <input id="tunnel-socks-user" placeholder="代理用户名（可空）" spellcheck="false" hidden />
+            <input id="tunnel-socks-pass" type="password" placeholder="代理密码" hidden />
             <label id="tunnel-lan-row"
               ><input type="checkbox" id="tunnel-lan" />允许局域网访问</label
             >

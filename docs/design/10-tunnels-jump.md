@@ -175,8 +175,9 @@ pub async fn connect_chain(hops: &[Hop], target: (String, u16)) -> Result<Stream
 | `stats.last_error` | ✅ 有（`ForwardStats::last_error`，成功转发后清空） | 界面能把「运行中」降级成红点 + 原因（`NET-004` AC-3 的一半） |
 | `MAX_PER_TUNNEL` 每隧道连接上限 | ✅ 有（默认 64，超限的连接立刻关闭并单独计入 `rejected`） | 常量而非按隧道配置：`TunnelSpec` 加字段要一次 schema 迁移 |
 | `listener` 在重连期间保持（§3.4） | ❌ 未做 | 承载连接断开后监听仍在但每个连接都失败；靠 `last_error` 让用户看得见 |
-| `-R`（§3.5）、`-D` SOCKS5（§3.6） | 两者都已实现：`-D` 是 `wt_ssh::socks5` + `start_socks5`（CONNECT-only）；`-R` 是 `start_remote`（`tcpip-forward` + 回调里接 `forwarded-tcpip`） | `-R` 依赖服务端允许 `AllowTcpForwarding`；监听非回环地址还要 `GatewayPorts` |
+| `-R`（§3.5）、`-D` SOCKS5（§3.6） | 两者都已实现：`-D` 是 `wt_ssh::socks5` + `start_socks5`（CONNECT-only）；`-R` 是 `start_remote`（`tcpip-forward` + 回调里接 `forwarded-tcpip`） | `-R` 依赖服务端允许 `AllowTcpForwarding`；监听非回环地址还要 `GatewayPorts`；`-D` 支持可选用户名密码认证 |
 | 隧道配置落库 | ✅ 已做（`TunnelSpec` + schema v2；界面停止后保留灰灯，可「启动」/「删除」） | 承载会话记在 `viaSessionId`，启动时从保险库取密码 |
+| SOCKS5 代理认证（`-D`，`NET-003` AC-3） | ✅ RFC 1929 用户名密码。**带凭据的隧道不落库**，`TunnelDto.persisted = false` 让界面提示「重启后需重填」 | 只对 `dynamic` 有效；给了用户名没给密码直接拒（`TUN_BAD_ARGUMENT`），不猜；落库等于把口令明文存盘 |
 | `autoStart` / 重连期保持监听（§3.4） | `autoStart` ✅（保险库解锁后 + 打开隧道面板时触发，与手动启动共用 `start_spec`）；重连未做 | 冷启动即拉起需要交出主密码，属安全取舍，见 `G13` |
 
 ### 3.1 结构

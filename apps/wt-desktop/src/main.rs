@@ -91,6 +91,8 @@ struct TunnelMeta {
     target_port: u16,
     /// 承载它的 SSH 目标，界面上按这个分组（`NET-004` 行为第 3 条）
     via: String,
+    /// 配置是否已落库（带代理认证的隧道不落库）
+    persisted: bool,
 }
 
 /// 前端拉取单次上限：64 KB（`design/02` §5.2）。
@@ -1274,6 +1276,9 @@ struct TunnelDto {
     via: String,
     /// 是否正在运行。库里存着的隧道也会出现在列表里，但为 `false`
     running: bool,
+    /// 配置是否落库。带 SOCKS5 认证的隧道**不落库**（凭据不写配置文件），
+    /// 界面据此说明「重启后要重填」
+    persisted: bool,
     active: usize,
     total: usize,
     /// 因为超过并发上限被拒的连接数
@@ -1309,6 +1314,11 @@ struct TunnelStartArg {
     /// 监听 `0.0.0.0` 等对外地址必须显式确认（`NET-001` 行为规格第 1 条）
     #[serde(default)]
     allow_lan: bool,
+    /// SOCKS5 的代理认证（RFC 1929，`NET-003` AC-3）。只在 `dynamic` 时有效。
+    #[serde(default)]
+    socks_user: Option<String>,
+    #[serde(default)]
+    socks_password: Option<String>,
     /// 应用启动后自动拉起（`NET-005`）。界面暂未提供开关，先落库保证语义不掉
     #[serde(default)]
     auto_start: Option<bool>,
@@ -1331,6 +1341,7 @@ fn tunnel_dto(meta: &TunnelMeta, fwd: &RunningTunnel) -> TunnelDto {
         target: format!("{}:{}", meta.target_host, meta.target_port),
         via: meta.via.clone(),
         running: true,
+        persisted: meta.persisted,
         active: s.active,
         total: s.total,
         rejected: s.rejected,
@@ -1365,6 +1376,7 @@ fn tunnel_dto_from_spec(spec: &wt_core::TunnelSpec) -> TunnelDto {
             .map(|s| s.as_str().to_string())
             .unwrap_or_default(),
         running: false,
+        persisted: true,
         active: 0,
         total: 0,
         rejected: 0,
@@ -1446,9 +1458,23 @@ async fn tunnel_start(
 
     let via = format!("{}@{}", cfg.user, cfg.host);
     let conn = std::sync::Arc::new(conn);
+    // SOCKS5 的代理认证（RFC 1929）。只给用户名不给密码是配置错误，不猜。
+    let socks_auth = match (
+        arg.socks_user.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+        arg.socks_password.clone().filter(|s| !s.is_empty()),
+    ) {
+        (None, _) => None,
+        (Some(_), None) => {
+            return Err("[TUN_BAD_ARGUMENT] 填了代理用户名就必须填密码".into())
+        }
+        (Some(u), Some(p)) => Some((u.to_string(), p)),
+    };
+    if socks_auth.is_some() && !matches!(kind, wt_core::TunnelKind::Dynamic) {
+        return Err("[TUN_BAD_ARGUMENT] 代理认证只对动态代理（SOCKS5）有意义".into());
+    }
     let (fwd, bound) = match kind {
         wt_core::TunnelKind::Dynamic => {
-            let f = wt_ssh::start_socks5(conn, &listen_host, arg.listen_port, None)
+            let f = wt_ssh::start_socks5(conn, &listen_host, arg.listen_port, socks_auth.clone())
                 .await
                 .map_err(|e| e.to_string())?;
             let p = f.listen_addr().port();
@@ -1524,6 +1550,8 @@ async fn tunnel_start(
         target_host: if dynamic { String::new() } else { target_host.clone() },
         target_port: if dynamic { 0 } else { arg.target_port },
         via,
+        // 带代理认证的隧道不落库：口令不写进配置库
+        persisted: socks_auth.is_none(),
     };
     let dto = tunnel_dto(&meta, &fwd);
 
@@ -1540,7 +1568,11 @@ async fn tunnel_start(
         via_session_id,
         auto_start: arg.auto_start.unwrap_or(false),
     };
-    if let Ok(mut store) = wt_store::Store::open(&sessions_db_path()) {
+    if socks_auth.is_some() {
+        // 有代理口令就不落库：把它写进配置库等于把口令明文存盘。
+        // 代价是重启后要重填——界面会提示（`persisted = false`）。
+        trace("[tunnel_start] 带代理认证，跳过落库");
+    } else if let Ok(mut store) = wt_store::Store::open(&sessions_db_path()) {
         if let Err(e) = store.upsert_tunnel(&spec) {
             // 存不下来不该让已经跑起来的隧道失败，但必须说清楚
             trace(&format!("[tunnel_start] 配置落库失败：{e}"));
@@ -1754,6 +1786,7 @@ async fn start_spec(state: &AppState, spec: &wt_core::TunnelSpec) -> Result<Tunn
         target_host: spec.target_host.clone().unwrap_or_default(),
         target_port: spec.target_port.unwrap_or(0),
         via: session.name.clone(),
+        persisted: true,
     };
     let dto = tunnel_dto(&meta, &fwd);
     state
@@ -1815,9 +1848,15 @@ async fn tunnel_delete(state: State<'_, AppState>, id: String) -> Result<bool, S
         fwd.stop().await;
     }
     if let Ok(mut store) = wt_store::Store::open(&sessions_db_path()) {
-        if let Err(e) = store.delete_tunnel(&id) {
-            trace(&format!("[tunnel_delete] 删除失败：{e}"));
-            return Err(format!("停止成功，但删除配置失败：{e}"));
+        match store.delete_tunnel(&id) {
+            Ok(()) => {}
+            // 从没落过库的隧道（例如带代理认证的那类）——本来就没有可删的，
+            // 这不是错误。当成错误会让「删除」永远失败、条目留着删不掉。
+            Err(e) if e.code == "STORE_NOT_FOUND" => {}
+            Err(e) => {
+                trace(&format!("[tunnel_delete] 删除失败：{e}"));
+                return Err(format!("停止成功，但删除配置失败：{e}"));
+            }
         }
     }
     if let Ok(mut specs) = state.tunnel_specs.lock() {

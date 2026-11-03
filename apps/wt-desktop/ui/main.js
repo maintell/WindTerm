@@ -1495,6 +1495,8 @@ const tunnelKind = document.getElementById("tunnel-kind");
 const tunnelSessionSelect = document.getElementById("tunnel-session");
 const tunnelTarget = document.getElementById("tunnel-target");
 const tunnelLan = document.getElementById("tunnel-lan");
+const tunnelSocksUser = document.getElementById("tunnel-socks-user");
+const tunnelSocksPass = document.getElementById("tunnel-socks-pass");
 const tunnelAdd = document.getElementById("tunnel-add");
 
 /** 最近一次取到的隧道状态（验收与脚本读它，避免去解析 DOM 文本） */
@@ -1636,7 +1638,8 @@ async function startSavedTunnel(id) {
   setTunnelMsg("启动中…");
   try {
     const t = await withDeadline(invoke("tunnel_start_saved", { id }), 30000, "启动隧道");
-    setTunnelMsg(`已启动 ${t.kind} ${t.listen}${t.target ? ` → ${t.target}` : ""}`);
+    const tail = t.persisted ? "" : "（带代理认证，配置未保存：重启后需重填）";
+    setTunnelMsg(`已启动 ${t.kind} ${t.listen}${t.target ? ` → ${t.target}` : ""}${tail}`);
   } catch (e) {
     setTunnelMsg(`启动失败：${e}`);
   }
@@ -1692,6 +1695,9 @@ async function startTunnel() {
           targetHost,
           targetPort,
           allowLan,
+          // 只有动态代理才带代理认证；其它类型后端会拒绝
+          socksUser: dynamic ? tunnelSocksUser.value.trim() || null : null,
+          socksPassword: dynamic ? tunnelSocksPass.value || null : null,
           viaSessionId: tunnelSessionSelect.value || null,
           jump: jumpReq(),
         },
@@ -1699,7 +1705,8 @@ async function startTunnel() {
       30000,
       "启动隧道",
     );
-    setTunnelMsg(`已启动 ${t.kind} ${t.listen}${t.target ? ` → ${t.target}` : ""}`);
+    const tail = t.persisted ? "" : "（带代理认证，配置未保存：重启后需重填）";
+    setTunnelMsg(`已启动 ${t.kind} ${t.listen}${t.target ? ` → ${t.target}` : ""}${tail}`);
     await refreshTunnels();
   } catch (e) {
     setTunnelMsg(`启动失败：${e}`);
@@ -1715,6 +1722,9 @@ function syncTunnelKind() {
   const dynamic = kind === "dynamic";
   const remote = kind === "remote";
   tunnelTarget.disabled = dynamic;
+  // 代理认证只对 SOCKS5 有意义；其余类型隐藏而不是禁用，避免被当成「暂时用不上」
+  tunnelSocksUser.hidden = !dynamic;
+  tunnelSocksPass.hidden = !dynamic;
   tunnelListen.placeholder = remote ? "服务器上的端口，0 为随机" : "本地端口，0 为随机";
   tunnelTarget.placeholder = dynamic
     ? "动态代理不需要目标"
@@ -1950,7 +1960,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-21",
+  ui: "wt-ui-22",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";

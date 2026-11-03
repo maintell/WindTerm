@@ -336,6 +336,85 @@ async function pressChord(mods, key, code, vk) {
   await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
 }
 
+/** 只做方法协商、看代理要哪种认证（用来验证「无凭据被拒」）。 */
+function socksNoAuthProbe(proxyPort) {
+  return new Promise((resolve, reject) => {
+    const sock = netConnect({ host: "127.0.0.1", port: proxyPort });
+    sock.setTimeout(5000, () => {
+      sock.destroy();
+      reject(new Error("SOCKS5 探测超时"));
+    });
+    sock.on("connect", () => sock.write(Buffer.from([5, 1, 0])));
+    sock.on("data", (d) => {
+      sock.destroy();
+      resolve(d);
+    });
+    sock.on("error", reject);
+  });
+}
+
+/** 带用户名密码的 SOCKS5 客户端（RFC 1929）。 */
+function socksExchangeAuth(proxyPort, user, pass, targetHost, targetPort, payload) {
+  return new Promise((resolve, reject) => {
+    const sock = netConnect({ host: "127.0.0.1", port: proxyPort });
+    let stage = "greet";
+    let got = "";
+    sock.setTimeout(8000, () => {
+      sock.destroy();
+      reject(new Error("SOCKS5(认证) 超时"));
+    });
+    sock.on("connect", () => sock.write(Buffer.from([5, 1, 2])));
+    sock.on("data", (d) => {
+      if (stage === "greet") {
+        if (d[0] !== 5 || d[1] !== 2) {
+          reject(new Error(`协商被拒 ${d.toString("hex")}`));
+          return;
+        }
+        stage = "auth";
+        sock.write(
+          Buffer.concat([
+            Buffer.from([1, Buffer.byteLength(user)]),
+            Buffer.from(user),
+            Buffer.from([Buffer.byteLength(pass)]),
+            Buffer.from(pass),
+          ]),
+        );
+        return;
+      }
+      if (stage === "auth") {
+        if (d[1] !== 0) {
+          reject(new Error(`认证失败 status=${d[1]}`));
+          return;
+        }
+        stage = "reply";
+        sock.write(
+          Buffer.concat([
+            Buffer.from([5, 1, 0, 3, Buffer.byteLength(targetHost)]),
+            Buffer.from(targetHost),
+            Buffer.from([targetPort >> 8, targetPort & 0xff]),
+          ]),
+        );
+        return;
+      }
+      if (stage === "reply") {
+        if (d[1] !== 0) {
+          reject(new Error(`CONNECT 被拒 REP=${d[1]}`));
+          return;
+        }
+        stage = "data";
+        sock.write(payload);
+        return;
+      }
+      got += d.toString();
+      if (got.length >= payload.length) {
+        sock.end();
+        resolve(got);
+      }
+    });
+    sock.on("error", reject);
+  });
+}
+
 /**
  * 单击文件面板里的某一行（按名字），用于选中。
  *
@@ -640,7 +719,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-21",
+    uiVersion === "wt-ui-22",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -1998,6 +2077,63 @@ try {
     { timeout: 15000, label: "删除动态代理" },
   ).catch(() => null);
   check("动态代理删除后从列表消失", dynDeleted === true);
+
+  // 16f-2. SOCKS5 代理认证（NET-003 AC-3）
+  await cdp.eval(`(() => {
+    const kind = document.getElementById("tunnel-kind");
+    kind.value = "dynamic";
+    kind.dispatchEvent(new Event("change", { bubbles: true }));
+    document.getElementById("tunnel-listen").value = "0";
+    document.getElementById("tunnel-socks-user").value = "u";
+    document.getElementById("tunnel-socks-pass").value = "p";
+    return true;
+  })()`);
+  check(
+    "切到动态代理后出现代理认证输入",
+    (await cdp.eval(`document.getElementById("tunnel-socks-user").hidden`)) === false,
+  );
+  await clickElement("#tunnel-add");
+  const dynAuth = await waitFor(
+    async () => {
+      const list = await cdp.eval(`window.__wt.tunnels`);
+      return list.find((t) => t.kind === "D") ?? null;
+    },
+    { timeout: 30000, label: "带认证的动态代理" },
+  );
+  const authPort = Number(String(dynAuth.listen).split(":").pop());
+  check(
+    "带代理认证的隧道不落库（口令不写配置库）",
+    dynAuth.persisted === false,
+    `persisted=${dynAuth.persisted}`,
+  );
+
+  // 无凭据必须被拒（05 FF）
+  const probe = await socksNoAuthProbe(authPort).catch((e) => `失败：${e.message}`);
+  check(
+    "代理要求认证时无凭据连接被拒",
+    Buffer.isBuffer(probe) && probe[1] === 0xff,
+    Buffer.isBuffer(probe) ? probe.toString("hex") : String(probe),
+  );
+
+  // 带凭据才能用
+  const viaAuth = await socksExchangeAuth(
+    authPort,
+    "u",
+    "p",
+    "127.0.0.1",
+    echo.port,
+    "socks-auth-ok",
+  ).catch((e) => `失败：${e.message}`);
+  check("带凭据的 SOCKS5 能穿过隧道", viaAuth === "socks-auth-ok", JSON.stringify(viaAuth));
+
+  await clickTunnelButton("D", "delete");
+  await waitFor(
+    async () => {
+      const list = await cdp.eval(`window.__wt.tunnels`);
+      return list.some((x) => x.kind === "D") ? null : true;
+    },
+    { timeout: 15000, label: "删除带认证的动态代理" },
+  );
 
   // 16g. 远程转发（-R，NET-002）：监听在**服务器**上，连接进来后被转到本机
   await cdp.eval(`(() => {
