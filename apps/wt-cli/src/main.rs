@@ -97,6 +97,19 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Command::SshShell { target } => {
+            let rt = match runtime() {
+                Ok(rt) => rt,
+                Err(code) => return code,
+            };
+            match rt.block_on(wt_cli::run_ssh_shell(&target)) {
+                Ok(()) => ExitCode::from(EXIT_OK as u8),
+                Err(msg) => {
+                    eprintln!("SSH 会话失败：{msg}");
+                    ExitCode::from(EXIT_RUNTIME as u8)
+                }
+            }
+        }
         Command::LocalExec {
             program,
             args,

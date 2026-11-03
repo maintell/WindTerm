@@ -40,6 +40,10 @@ pub enum Command {
         target: SshTarget,
         command: String,
     },
+    /// `wt ssh shell`：在本机终端里跑远端交互式 shell
+    SshShell {
+        target: SshTarget,
+    },
     /// `wt sftp ls|get|put ...`：文件传输
     Sftp {
         target: SshTarget,
@@ -167,8 +171,12 @@ fn parse_local(rest: &[String]) -> Result<Command, String> {
 }
 
 fn parse_ssh(rest: &[String]) -> Result<Command, String> {
-    if rest.first().map(String::as_str) != Some("exec") {
-        return Err("ssh 目前只支持 `exec`，用法：wt ssh exec --host H -- <command...>".into());
+    let sub = rest
+        .first()
+        .map(String::as_str)
+        .ok_or_else(|| "用法：wt ssh <exec|shell> --host H ...".to_string())?;
+    if sub != "exec" && sub != "shell" {
+        return Err(format!("ssh 的子命令只有 exec / shell，收到 `{sub}`"));
     }
 
     let mut host = None;
@@ -222,13 +230,8 @@ fn parse_ssh(rest: &[String]) -> Result<Command, String> {
                 use_agent = true;
                 i += 1;
             }
-            other => return Err(format!("ssh exec 不认识的参数 `{other}`")),
+            other => return Err(format!("ssh {sub} 不认识的参数 `{other}`")),
         }
-    }
-
-    let command_parts = rest.get(i..).unwrap_or(&[]);
-    if command_parts.is_empty() {
-        return Err("缺少要执行的命令：wt ssh exec --host H -- <command...>".into());
     }
 
     let auth = match (use_agent, key, password) {
@@ -242,14 +245,25 @@ fn parse_ssh(rest: &[String]) -> Result<Command, String> {
         }
     };
 
+    let target = SshTarget {
+        host: host.ok_or_else(|| "缺少 --host".to_string())?,
+        port,
+        user: user.ok_or_else(|| "缺少 --user".to_string())?,
+        auth,
+        insecure_host_key: insecure,
+    };
+
+    if sub == "shell" {
+        return Ok(Command::SshShell { target });
+    }
+
+    let command_parts = rest.get(i..).unwrap_or(&[]);
+    if command_parts.is_empty() {
+        return Err("缺少要执行的命令：wt ssh exec --host H -- <command...>".into());
+    }
+
     Ok(Command::SshExec {
-        target: SshTarget {
-            host: host.ok_or_else(|| "缺少 --host".to_string())?,
-            port,
-            user: user.ok_or_else(|| "缺少 --user".to_string())?,
-            auth,
-            insecure_host_key: insecure,
-        },
+        target,
         // 远端 shell 会重新解析这一整串，所以按空格拼接即可
         command: command_parts.join(" "),
     })
@@ -626,6 +640,99 @@ async fn connect_target(target: &SshTarget) -> Result<wt_ssh::SshConnection, Str
 }
 
 /// 文件传输：`ls` / `get` / `put`。
+/// `wt ssh shell`：在本机终端里跑一个远端交互式 shell。
+///
+/// 与 `ssh exec` 的区别：这里接管本机终端（raw 模式），字节双向直通，
+/// 所以远端发来的光标移动、颜色、清屏都能正常渲染。
+///
+/// # raw 模式是必须的
+///
+/// 默认的规范模式（canonical）会缓冲整行、并拦截 Ctrl+C / Ctrl+Z，
+/// 远端 shell 就收不到这些控制字符——行编辑、中断、挂起全部失效。
+/// 进入 raw 模式后 stdin 变成原始字节流，我们原样转发。
+///
+/// # 退出
+///
+/// 远端关闭通道即退出；本机 stdin 读到 EOF（Ctrl+D / 管道结束）也退出。
+/// Ctrl+C 不在这里处理——它作为 `0x03` 发给远端，由远端的 shell 决定含义，
+/// 这才是终端该有的行为。
+pub async fn run_ssh_shell(target: &SshTarget) -> Result<(), String> {
+    use std::io::{Read, Write};
+
+    let conn = connect_target(target).await?;
+
+    let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+    let mut channel = conn
+        .open_shell("xterm-256color", cols as u32, rows as u32)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    crossterm::terminal::enable_raw_mode()
+        .map_err(|e| format!("无法进入终端原始模式：{e}"))?;
+    // 无论怎么退出都要恢复终端，否则用户的 shell 会留在 raw 模式里
+    let _guard = RawModeGuard;
+
+    // stdin 读取是阻塞的，放独立线程；主循环只管 select
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+    std::thread::spawn(move || {
+        let mut stdin = std::io::stdin();
+        let mut buf = [0u8; 4096];
+        loop {
+            match stdin.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if tx.blocking_send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    let mut out = std::io::stdout();
+    loop {
+        tokio::select! {
+            input = rx.recv() => {
+                match input {
+                    Some(bytes) => {
+                        if channel.write(&bytes).await.is_err() {
+                            break;
+                        }
+                    }
+                    None => break,
+                }
+            }
+            msg = channel.next() => {
+                match msg {
+                    Some(wt_ssh::ChannelData::Stdout(b))
+                    | Some(wt_ssh::ChannelData::Stderr(b)) => {
+                        if out.write_all(&b).is_err() {
+                            break;
+                        }
+                        let _ = out.flush();
+                    }
+                    Some(wt_ssh::ChannelData::Exit(_)) => {}
+                    None => break,
+                }
+            }
+        }
+    }
+
+    // 恢复终端后再断开，让最后的输出正常落到屏幕上
+    drop(_guard);
+    conn.disconnect().await;
+    Ok(())
+}
+
+/// 退出时恢复终端模式。
+struct RawModeGuard;
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = crossterm::terminal::disable_raw_mode();
+    }
+}
+
 pub async fn run_sftp(
     target: &SshTarget,
     action: &SftpAction,
@@ -801,6 +908,9 @@ pub fn usage() -> String {
         "              -- <command...>",
         "                                 连接真实 SSH 执行命令（默认校验 known_hosts）",
         "                                 --agent：用 ssh-agent 里的身份，私钥不出 agent",
+        "  wt ssh shell --host <H> --user <U> (--password <PW> | --key <PATH> | --agent)",
+        "              [--port <P>] [--insecure-host-key]",
+        "                                 远端交互式 shell（接管本机终端，Ctrl+C 发给远端）",
         "  wt session import --file <MobaXterm.ini> [--db <path>]",
         "                                 导入 MobaXterm 会话（结构优先，密码需重输）",
         "  wt session list [--db <path>] [--json]",
@@ -895,6 +1005,28 @@ mod tests {
     fn sftp_unknown_subcommand_is_a_clear_error() {
         let err = parse(&s(&["sftp", "rm"])).unwrap_err();
         assert!(err.contains("ls/get/put"), "实际: {err}");
+    }
+
+    #[test]
+    fn parses_ssh_shell_without_a_command() {
+        let cmd = parse(&s(&[
+            "ssh", "shell", "--host", "h", "--user", "u", "--agent",
+        ]))
+        .expect("应能解析");
+        match cmd {
+            Command::SshShell { target } => {
+                assert_eq!(target.host, "h");
+                assert_eq!(target.port, 22);
+                assert!(matches!(target.auth, SshAuth::Agent));
+            }
+            _ => panic!("应解析成 ssh shell"),
+        }
+    }
+
+    #[test]
+    fn ssh_unknown_subcommand_lists_both() {
+        let err = parse(&s(&["ssh", "sftp"])).unwrap_err();
+        assert!(err.contains("exec") && err.contains("shell"), "实际: {err}");
     }
 
     #[test]

@@ -12,7 +12,7 @@
 | 本地终端（ConPTY + TermSession） | ✅ 完成 | `wt-term` 40 个测试；真实 shell 启停、输入回显、resize、背压 ack、反复开关 |
 | SSH 协议层（算法/主机密钥/连接/通道/双认证/TOFU/终端会话） | ✅ 完成 | `wt-ssh` 57 个测试，含进程内 mock 服务端的正向路径与终端回显验收 |
 | 统一终端抽象 | ✅ 完成 | `TerminalSession` trait：本地 PTY 与 SSH 通道同一套 read/ack 背压模型 |
-| `wt` CLI | ✅ 可用 | `version` / `doctor` / `local exec` / `ssh exec` / `sftp`（密码、私钥、**ssh-agent** 三种认证 + known_hosts 校验）；ANSI 默认剥离、退出码透传 |
+| `wt` CLI | ✅ 可用 | `version` / `doctor` / `local exec` / `ssh exec` / `ssh shell`（交互式，接管本机终端）/ `sftp`；密码、私钥、ssh-agent 三种认证 + known_hosts 校验 |
 | IPC 数据面（`wt-ipc`） | ✅ 完成 | 会话注册表 + 拉取式二进制读取 + 未确认字节背压 + 事件节流；7 个测试 |
 | MobaXterm 迁移（`SES-020`） | ✅ 可用 | `wt session import/list`：树结构还原、Rlogin 跳过并说明、重复导入按 name+host+port 与会话/文件夹去重 |
 | SFTP（列目录 / 下载 / 上传） | ✅ CLI 可用 | `wt sftp ls/get/put`（认证参数与 `ssh exec` 一致）+ `wt-ssh::SftpClient`；9 个用例：报文级（内存管道）+ 真实 SSH 通道 + CLI 真实执行路径。**界面入口还没做**（试过，Tauri 命令层挂起，已回退） |
@@ -34,6 +34,9 @@ cargo run -p wt-cli -- ssh exec --host H --user U --password P --insecure-host-k
 # 用 ssh-agent（私钥不出 agent）：Windows 先启动「OpenSSH Authentication Agent」服务，
 # 或 Windows 上用 Pageant；Unix 让 SSH_AUTH_SOCK 指向 agent socket
 cargo run -p wt-cli -- ssh exec --host H --user U --agent -- uptime
+
+# 远端交互式 shell（接管本机终端；Ctrl+C 发给远端，Ctrl+D 退出）
+cargo run -p wt-cli -- ssh shell --host H --user U --agent
 
 # 文件传输（认证参数与 ssh exec 一致，也支持 --key）
 cargo run -p wt-cli -- sftp ls  --host H --user U --password P --path /var/log
@@ -69,6 +72,7 @@ cargo run -p wt-cli -- session list
 | G8 | 界面里没有 SFTP 文件面板（CLI 可用） | 文件传输要开终端敲命令，不能像 MobaXterm 那样拖文件 | 排查记录见下 |
 | G8 排查记录 | 试过三轮，均回退 | **已排除**：库与 CLI（4 个用例 0.08s）、跨命令持有通道流、`canonicalize`、连接参数、async vs sync 命令、`block_on` 与 `spawn+超时`（给命令套超时包装本身会让它不返回）。**三个探针确立的事实**：① 点击触发 `e2e_sftp_stage` 跑通「建连 → 开子系统 → 列目录」三步（`1:connected / 2:sftp-ready / 3:listed 0`）；② 点击触发 `e2e_sftp_list_simple`（AcceptAll + 基本类型参数）返回 `0`；③ 点击触发 `sftp_list`（经 `open_sftp`）挂起 | **范围已缩到 `open_sftp` 这一个函数**：它与探针 ② 的差别只有两点——读写 `known_hosts`，以及「返回 `SftpClient`（持有连接）」这个形状。下一步在这两点上二分 |
 | G6 | 没有分屏、主题自定义 | 多会话已用标签页解决；查找与字号已可用（Ctrl+F / Ctrl+±） | 随 `TER-01x` / `SET-00x` 推进 |
+| G9 | `wt ssh shell` 的**交互路径**没有在真实 sshd 上验证过（本机无 sshd） | 参数解析、连接失败与「连接前不碰终端」已验证；raw 模式下的按键转发、窗口尺寸、远端退出后恢复终端只能靠人工试 | 拿到真实 sshd 后走一遍：`ls` 有颜色、方向键可用、`Ctrl+C` 中断、`Ctrl+D` 退出后本机终端正常 |
 | ~~G7~~ | ~~非 UTF-8 的 ini 会让中文名乱码~~ | ✅ 已修复：`wt_import::decode_ini` 先按 UTF-8 严格解、失败再按 GBK；导入结果里显示用了哪种编码 | — |
 
 ---
