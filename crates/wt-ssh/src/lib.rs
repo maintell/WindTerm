@@ -24,7 +24,7 @@ pub use client::{
     SshConnection,
 };
 pub use keys::{inspect as inspect_key, KeyInfo, PrivateKeySource};
-pub use term::SshTermSession;
+pub use term::{Keepalive, SshTermSession};
 pub use known_hosts::{
     fingerprint_sha256, hash_host, CheckOutcome, HostKeyId, KnownHosts, KnownHostsEntry, Marker,
 };
@@ -38,6 +38,8 @@ pub struct SshConfig {
     pub term_type: String,
     /// keepalive 间隔（秒），0 = 关闭
     pub keepalive_secs: u32,
+    /// 连续多少次心跳没有回应就判定连接已断（默认 3）
+    pub keepalive_max_missed: u32,
     pub compression: bool,
     /// 兼容开关（弱算法）
     pub compat: CompatFlags,
@@ -53,6 +55,7 @@ impl Default for SshConfig {
             user: String::new(),
             term_type: "xterm-256color".into(),
             keepalive_secs: 30,
+            keepalive_max_missed: 3,
             compression: false,
             compat: CompatFlags::default(),
             connect_timeout_secs: 10,

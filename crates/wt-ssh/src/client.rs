@@ -404,6 +404,18 @@ impl SshConnection {
             .await;
     }
 
+    /// 发一条心跳并**等待回应**，用来判断连接是否还活着。
+    ///
+    /// 半开连接（对端掉电、NAT 表被清）不会自己报错，只有主动探测才发现。
+    /// 这个方法会一直等到回应，调用方必须自己套超时。
+    pub async fn probe(&self) -> Result<(), WtError> {
+        self.handle.send_ping().await.map_err(|e| {
+            WtError::new("SSH_KEEPALIVE_FAILED")
+                .message("心跳发送失败，连接可能已断开")
+                .detail(e.to_string())
+        })
+    }
+
     /// 发一条 keepalive。
     ///
     /// `want_reply = false` 是常见的「保活」用法：只要还能把包发出去，

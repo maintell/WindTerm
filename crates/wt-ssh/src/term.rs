@@ -26,6 +26,57 @@ enum TermCmd {
     Close,
 }
 
+/// keepalive 配置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Keepalive {
+    /// 心跳间隔
+    pub interval: Duration,
+    /// 连续多少次没有回应就判定连接已断
+    pub max_missed: u32,
+}
+
+impl Keepalive {
+    pub fn new(interval: Duration, max_missed: u32) -> Self {
+        Self {
+            interval,
+            max_missed: max_missed.max(1),
+        }
+    }
+}
+
+/// 心跳的失败计数。
+///
+/// 单独抽出来是为了能直接测策略：真去构造一条「半开连接」很难，
+/// 但「连续 N 次没回应就放弃、中间有一次回应就清零」是可测的。
+#[derive(Debug, Clone)]
+struct KeepaliveTracker {
+    max_missed: u32,
+    missed: u32,
+}
+
+impl KeepaliveTracker {
+    fn new(max_missed: u32) -> Self {
+        Self {
+            max_missed: max_missed.max(1),
+            missed: 0,
+        }
+    }
+
+    fn on_reply(&mut self) {
+        self.missed = 0;
+    }
+
+    /// 记一次无回应；返回 `true` 表示应该放弃这条连接。
+    fn on_miss(&mut self) -> bool {
+        self.missed += 1;
+        self.missed >= self.max_missed
+    }
+
+    fn missed(&self) -> u32 {
+        self.missed
+    }
+}
+
 /// 一条 SSH 交互式终端会话。
 pub struct SshTermSession {
     ring: Arc<Mutex<RingBuffer>>,
@@ -55,10 +106,10 @@ impl SshTermSession {
     /// 打开会话并**接管连接**，按 `keepalive` 周期发心跳。
     ///
     /// 接管的两个理由：① 连接句柄与通道同寿命，不再依赖「`Handle` 被 drop 不会断开」
-    /// 这个实现细节；② 只有拿着句柄才能发 keepalive。
+    /// 这个实现细节；② 只有拿着句柄才能发心跳、也只有它能等到心跳的回应。
     pub async fn open_owned(
         conn: SshConnection,
-        keepalive: Option<Duration>,
+        keepalive: Option<Keepalive>,
         term: &str,
         cols: u16,
         rows: u16,
@@ -72,7 +123,7 @@ impl SshTermSession {
         mut channel: crate::client::SshChannel,
         ring: RingBuffer,
         owner: Option<SshConnection>,
-        keepalive: Option<Duration>,
+        keepalive: Option<Keepalive>,
         cols: u16,
         rows: u16,
     ) -> Self {
@@ -81,12 +132,14 @@ impl SshTermSession {
         let (tx, mut rx) = mpsc::channel::<TermCmd>(64);
 
         let task = tokio::spawn(async move {
-            let mut ticker = keepalive.map(|period| {
-                let mut it = tokio::time::interval(period);
+            let mut ticker = keepalive.map(|k| {
+                let mut it = tokio::time::interval(k.interval);
                 // 落后时不要补发一串心跳，按原节奏继续
                 it.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 it
             });
+            let interval = keepalive.map(|k| k.interval).unwrap_or_default();
+            let mut tracker = keepalive.map(|k| KeepaliveTracker::new(k.max_missed));
             // interval 的第一次 tick 立即完成；先消费掉，避免刚连上就发心跳
             if let Some(t) = ticker.as_mut() {
                 t.tick().await;
@@ -131,10 +184,24 @@ impl SshTermSession {
                             None => std::future::pending::<()>().await,
                         }
                     } => {
-                        if let Some(conn) = owner.as_ref() {
-                            // 发不出去说明连接已经断了；不用在这里退出，
-                            // channel.next() 会给出 None 让循环正常收尾
-                            let _ = conn.send_keepalive(false).await;
+                        let (Some(conn), Some(tracker)) = (owner.as_ref(), tracker.as_mut()) else {
+                            continue;
+                        };
+                        // 一个间隔内没有回应就算一次失败：这正是「半开连接」的样子
+                        match tokio::time::timeout(interval, conn.probe()).await {
+                            Ok(Ok(())) => tracker.on_reply(),
+                            _ => {
+                                if tracker.on_miss() {
+                                    // 连接已经不可用。把原因写进终端——
+                                    // 用户看的就是这块屏，静默卡住比报错更糟。
+                                    let note = format!(
+                                        "\r\n\x1b[31m[连接已断开：连续 {} 次心跳无回应]\x1b[0m\r\n",
+                                        tracker.missed()
+                                    );
+                                    ring_task.lock().unwrap().push(note.as_bytes());
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
@@ -240,6 +307,32 @@ impl Drop for SshTermSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keepalive_tracker_gives_up_after_max_missed() {
+        let mut t = KeepaliveTracker::new(3);
+        assert!(!t.on_miss());
+        assert!(!t.on_miss());
+        assert!(t.on_miss(), "第 3 次无回应应判定断开");
+        assert_eq!(t.missed(), 3);
+    }
+
+    #[test]
+    fn keepalive_tracker_resets_after_a_reply() {
+        let mut t = KeepaliveTracker::new(2);
+        assert!(!t.on_miss());
+        t.on_reply(); // 中间有一次回应，计数必须清零
+        assert_eq!(t.missed(), 0);
+        assert!(!t.on_miss());
+        assert!(t.on_miss(), "清零后仍需连续 2 次才判定断开");
+    }
+
+    #[test]
+    fn keepalive_tracker_treats_zero_as_one() {
+        // max_missed = 0 会让「第一次无回应就断开」变得不可配置；夹到 1 更安全
+        let mut t = KeepaliveTracker::new(0);
+        assert!(t.on_miss());
+    }
 
     #[test]
     fn ring_buffer_backpressure_is_shared_with_local_terminal() {

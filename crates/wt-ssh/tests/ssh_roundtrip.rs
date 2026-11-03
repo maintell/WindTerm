@@ -258,7 +258,7 @@ async fn keepalive_keeps_session_responsive() {
     // 20ms 一次心跳：几百毫秒里会触发十几次，足够暴露「心跳把读循环饿死」这类问题
     let mut session = wt_ssh::SshTermSession::open_owned(
         conn,
-        Some(Duration::from_millis(20)),
+        Some(wt_ssh::Keepalive::new(Duration::from_millis(20), 3)),
         "xterm-256color",
         120,
         40,

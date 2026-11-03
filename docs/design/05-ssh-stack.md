@@ -427,12 +427,16 @@ pub struct Timeouts {
 **为什么不用 TCP keepalive**：默认 2 小时，太慢；且中间设备可能只对应用层活动有反应。
 
 **当前实现（M1）**：`SshTermSession::open_owned` 接管连接句柄，在同一个 `select!` 循环里
-按 `SshConfig.keepalive_secs`（默认 30 s，0 = 关闭）发 `keepalive@openssh.com`
-（`russh` 的 `Handle::send_keepalive`，报文与上面一致）。
+按 `SshConfig.keepalive_secs`（默认 30 s，0 = 关闭）做两件事：
 
-**未实现**：`keepalive_max_missed` 的「连续 N 次无响应判定断开」——
-现在只发心跳（`want_reply = false`），断线仍然靠 TCP 自身的 FIN/RST 或读写错误发现。
-半开连接的主动探测要改成 `want_reply = true` 并统计回包，属于 `SES-001` AC-7 的剩余部分。
+- **保活**：每个间隔发 `keepalive@openssh.com` 全局请求，把 NAT/防火墙的空闲计时器续上；
+- **探活**：`Handle::send_ping()` 会等对端回应，套一个「一个间隔」的超时；
+  连续 `keepalive_max_missed`（默认 3）次没回应就判定连接已断，往终端写一行
+  `[连接已断开：连续 N 次心跳无回应]` 并结束会话——半开连接不会自己报错，
+  静默卡住比报错更糟。
+
+计数策略抽成 `KeepaliveTracker` 单独测：中间有一次回应就清零，`max_missed = 0` 夹到 1。
+真去构造「半开连接」很难，但策略本身是可测的。
 
 ## 9. 连接池
 

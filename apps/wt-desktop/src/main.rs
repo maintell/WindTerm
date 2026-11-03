@@ -508,9 +508,14 @@ async fn ssh_open(state: State<'_, AppState>, req: SshOpenReq) -> Result<SshOpen
     };
 
     let fingerprint = conn.server_fingerprint().unwrap_or_default();
-    // 空闲连接会被 NAT/防火墙静默断开，按会话配置发心跳（默认 30 秒）
-    let keepalive = (cfg.keepalive_secs > 0)
-        .then(|| std::time::Duration::from_secs(u64::from(cfg.keepalive_secs)));
+    // 空闲连接会被 NAT/防火墙静默断开，按会话配置发心跳（默认 30 秒）；
+    // 连续 max_missed 次无回应判定断开
+    let keepalive = (cfg.keepalive_secs > 0).then(|| {
+        wt_ssh::Keepalive::new(
+            std::time::Duration::from_secs(u64::from(cfg.keepalive_secs)),
+            cfg.keepalive_max_missed,
+        )
+    });
     let session = wt_ssh::SshTermSession::open_owned(
         conn,
         keepalive,
