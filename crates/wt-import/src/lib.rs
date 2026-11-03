@@ -165,6 +165,28 @@ fn map_protocol(raw: &str) -> Result<SessionKind, String> {
 // 主流程
 // ─────────────────────────────────────────────────────────────
 
+/// 解码 ini 字节流，返回 `(文本, 实际使用的编码名)`。
+///
+/// MobaXterm 在中文 Windows 上写的是 GBK。直接 `from_utf8_lossy` 会把中文名变成
+/// 一串 `�`——导入「成功」了，会话名却是乱码，用户只会觉得软件坏了。
+///
+/// 顺序：先按 UTF-8 严格解（正常情况），失败再按 GBK 解。
+/// 两者都不对的情况（比如 UTF-16）会得到带替换字符的文本，由调用方提示用户。
+pub fn decode_ini(bytes: &[u8]) -> (String, &'static str) {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => (text.to_string(), "utf-8"),
+        Err(_) => {
+            let (text, _, had_errors) = encoding_rs::GBK.decode(bytes);
+            let name = if had_errors {
+                "gbk（含无法解码字节）"
+            } else {
+                "gbk"
+            };
+            (text.into_owned(), name)
+        }
+    }
+}
+
 /// 解析 `MobaXterm.ini` 文本，产出可直接写入 `wt-store` 的导入计划。
 pub fn parse_mobaxterm_ini(text: &str) -> Result<ImportPlan, WtError> {
     parse_mobaxterm_ini_with(text, DuplicatePolicy::Rename)
@@ -515,6 +537,41 @@ BookmarkName=old-rlogin
 Host=10.0.9.9
 Protocol=2
 "#;
+
+    #[test]
+    fn decode_ini_prefers_utf8_then_falls_back_to_gbk() {
+        // UTF-8：原样返回
+        let (text, enc) = decode_ini("生产服务器".as_bytes());
+        assert_eq!(enc, "utf-8");
+        assert_eq!(text, "生产服务器");
+
+        // GBK（中文 Windows 上 MobaXterm 的默认写法）：必须正确解码，不能变成 �
+        let (gbk_bytes, _, _) = encoding_rs::GBK.encode("生产服务器");
+        let (text, enc) = decode_ini(&gbk_bytes);
+        assert_eq!(enc, "gbk");
+        assert_eq!(text, "生产服务器");
+    }
+
+    #[test]
+    fn gbk_ini_imports_with_readable_names() {
+        // 会话名是中文的 GBK ini：导入后名称必须是可读中文
+        let ini = "[Bookmarks]\r\nSubRep=生产\\\r\nBookmarkName=生产服务器\r\nHost=10.0.1.5\r\nPort=22\r\nProtocol=0\r\n";
+        let (gbk_bytes, _, _) = encoding_rs::GBK.encode(ini);
+        let (text, enc) = decode_ini(&gbk_bytes);
+        assert_eq!(enc, "gbk");
+
+        let plan = parse_mobaxterm_ini(&text).expect("应能解析");
+        assert!(
+            plan.sessions.iter().any(|s| s.name == "生产服务器"),
+            "会话名应为可读中文，实际 {:?}",
+            plan.sessions.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+        assert!(
+            plan.folders.iter().any(|f| f.name == "生产"),
+            "文件夹名应为可读中文，实际 {:?}",
+            plan.folders.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
+    }
 
     #[test]
     fn parses_ini_sections_and_keys() {

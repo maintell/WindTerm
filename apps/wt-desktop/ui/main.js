@@ -290,17 +290,18 @@ importFile.addEventListener("change", async () => {
   if (!file) return;
   importBtn.disabled = true;
   try {
-    // 收文本不收路径：`<input type=file>` 拿不到真实路径，也不该为它引入对话框插件
-    const text = await file.text();
-    const r = await invoke("import_mobaxterm", { text });
+    // 传字节不传文本：中文 Windows 上的 MobaXterm 写 GBK，按 UTF-8 解会把中文名
+    // 变成 �。编码判定放在 Rust 侧（wt_import::decode_ini），与 CLI 同一套逻辑。
+    const buf = new Uint8Array(await file.arrayBuffer());
+    const r = await invoke("import_mobaxterm", { bytes: Array.from(buf) });
     const lines = [`导入完成：文件夹 ${r.folders} 个、会话 ${r.sessions} 个`];
+    if (r.encoding !== "utf-8") lines.push(`按 ${r.encoding} 解码`);
     if (r.reused_folders) lines.push(`复用已有文件夹 ${r.reused_folders} 个`);
     if (r.duplicates.length) {
       lines.push(`已跳过 ${r.duplicates.length} 个已存在会话：${r.duplicates.join("、")}`);
     }
     for (const w of r.warnings) lines.push(`提示：${w}`);
     for (const s of r.skipped) lines.push(`跳过：${s.name} —— ${s.reason}`);
-    if (r.lossy) lines.push("文件里有非 UTF-8 字节，部分名称可能显示为乱码");
     showImportMsg(lines);
     await loadTree();
   } catch (e) {

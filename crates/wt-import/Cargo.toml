@@ -10,3 +10,5 @@ wt-common = { path = "../wt-common" }
 wt-core = { path = "../wt-core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# MobaXterm 在中文 Windows 上写 GBK，必须能正确解码，不能静默替换成 �
+encoding_rs = "0.8"

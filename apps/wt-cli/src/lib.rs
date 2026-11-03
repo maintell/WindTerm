@@ -298,9 +298,12 @@ pub fn import_mobaxterm(
     out: &mut dyn Write,
 ) -> Result<(), String> {
     let bytes = std::fs::read(file).map_err(|e| format!("读取失败 {}: {e}", file.display()))?;
-    // MobaXterm 在中文 Windows 上可能写 GBK；这里先按 UTF-8 解，失败再用替换字符兜底，
-    // 真正的编码探测留给后续迭代（当前只影响注释与少数字段名）。
-    let text = String::from_utf8_lossy(&bytes).to_string();
+    // 中文 Windows 上 MobaXterm 写 GBK：先按 UTF-8 严格解，失败再按 GBK，
+    // 不能让中文会话名变成一串 �
+    let (text, encoding) = wt_import::decode_ini(&bytes);
+    if encoding != "utf-8" {
+        writeln!(out, "按 {encoding} 解码").map_err(|e| e.to_string())?;
+    }
 
     let plan = wt_import::parse_mobaxterm_ini(&text).map_err(|e| e.to_string())?;
 

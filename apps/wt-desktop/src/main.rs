@@ -161,16 +161,20 @@ struct ImportDto {
     duplicates: Vec<String>,
     warnings: Vec<String>,
     skipped: Vec<SkippedDto>,
-    /// 文件里出现了无法解码的字节（U+FFFD），名称可能乱码
-    lossy: bool,
+    /// 实际使用的编码（`utf-8` / `gbk` / …）。非 UTF-8 时界面要告诉用户。
+    encoding: String,
 }
 
-/// 从 MobaXterm 的 ini 文本导入会话。
+/// 从 MobaXterm 的 ini **字节流**导入会话。
 ///
-/// 收**文本**而不是路径：界面里的 `<input type=file>` 拿不到真实路径，
+/// 收字节不收路径：界面里的 `<input type=file>` 拿不到真实路径，
 /// 也不该为了拿路径去引入文件对话框插件。文件内容不出本机。
+///
+/// 收字节也不收文本：中文 Windows 上的 MobaXterm 写 GBK，交给前端按 UTF-8 解
+/// 会把中文名变成 �——编码判定必须放在这里（`wt_import::decode_ini`）。
 #[tauri::command]
-fn import_mobaxterm(text: String) -> Result<ImportDto, String> {
+fn import_mobaxterm(bytes: Vec<u8>) -> Result<ImportDto, String> {
+    let (text, encoding) = wt_import::decode_ini(&bytes);
     let plan = wt_import::parse_mobaxterm_ini(&text).map_err(|e| e.to_string())?;
 
     let db = sessions_db_path();
@@ -196,8 +200,7 @@ fn import_mobaxterm(text: String) -> Result<ImportDto, String> {
                 reason: s.reason,
             })
             .collect(),
-        // 静默替换成 � 是最容易蒙混过去的降级，这里必须让用户看见
-        lossy: text.contains('\u{fffd}'),
+        encoding: encoding.to_string(),
     })
 }
 

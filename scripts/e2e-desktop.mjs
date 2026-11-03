@@ -336,6 +336,9 @@ try {
   });
   cdp = new Cdp(ws);
   await cdp.send("Runtime.enable");
+  // WebView2 的窗口没拿到前台焦点时，会偶发吞掉可信鼠标/键盘事件（观察到过一次
+  // 「点了按钮没反应」）。让页面始终被当成已聚焦，事件投递才稳定。
+  await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {});
 
   // 2. 页面就绪：DOM 完成 + Tauri 桥接注入
   await waitFor(() => cdp.eval(`document.readyState === "complete"`), { label: "DOM 就绪" });
@@ -570,6 +573,38 @@ try {
     namesAfterDup.filter((n) => n === "ui-imported").length === 1 &&
       dupMsg.includes("ui-imported"),
     dupMsg.split("\n").slice(0, 2).join(" / "),
+  );
+
+  // 12d. GBK 编码的 ini（中文 Windows 上 MobaXterm 的默认写法）：中文名必须可读，
+  //      不能变成 �。「生产」的 GBK 字节是 C9 FA B2 FA。
+  const gbkIni = join(DATA_DIR, "MobaXterm-gbk.ini");
+  const shengChan = Buffer.from([0xc9, 0xfa, 0xb2, 0xfa]);
+  writeFileSync(
+    gbkIni,
+    Buffer.concat([
+      Buffer.from("[Bookmarks]\r\nSubRep=", "ascii"),
+      shengChan,
+      Buffer.from("\\\r\nBookmarkName=", "ascii"),
+      shengChan,
+      Buffer.from(
+        `-gbk\r\nHost=127.0.0.1\r\nPort=${sshPort}\r\nUserName=tester\r\nProtocol=0\r\n`,
+        "ascii",
+      ),
+    ]),
+  );
+  await cdp.send("DOM.setFileInputFiles", { nodeId, files: [gbkIni] });
+  const gbkNames = await waitFor(
+    async () => {
+      const names = await cdp.eval(`window.__wt.sessions()`);
+      return names.some((n) => n.includes("-gbk")) ? names : null;
+    },
+    { timeout: 15000, label: "GBK ini 导入" },
+  );
+  const gbkMsg = await cdp.eval(`document.getElementById("tree-msg").textContent`);
+  check(
+    "GBK 编码的 ini 中文名可读（不变成乱码）",
+    gbkNames.includes("生产-gbk") && gbkMsg.includes("按 gbk 解码"),
+    `${gbkNames.filter((n) => n.includes("-gbk")).join("、")} / ${gbkMsg.split("\n")[1] ?? ""}`,
   );
 
   // 13. 点会话 → 连接参数自动填好（密码不存库，仍要手填）
