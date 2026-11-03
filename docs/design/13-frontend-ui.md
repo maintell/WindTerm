@@ -27,7 +27,6 @@
 | SolidJS 1.9 | 无框架，直接操作 DOM | 这一阶段只验证「数据能从 Rust 到界面、输入能从界面到 PTY」，框架选型不影响 IPC 形状 |
 | Vite 6 | 无构建步骤，`frontendDist: "ui"` 直接内联 | 避免 npm 依赖与构建链；`cargo build` 一步出可运行产物 |
 | `@xterm/xterm` 5.x | 6.0.0（UMD 静态文件内联在 `ui/vendor/`） | 6.x 是当前版本；UMD 版可零构建使用，许可证随文件存放 |
-
 偏差的代价是**可维护性**：`main.js` 约 230 行、单文件，够用但没有组件化。
 补上 SolidJS + Vite 是纯前端工作，不影响 Rust 侧与 IPC 契约；
 届时 `terminal-pump.ts` 可以直接照抄现在的 `pump()` 逻辑。

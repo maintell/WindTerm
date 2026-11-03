@@ -16,13 +16,18 @@ const invoke = window.__TAURI__.core.invoke;
 //   vendor/addon-fit.js → globalThis.FitAddon 是命名空间对象
 const Terminal = window.Terminal;
 const FitAddon = window.FitAddon?.FitAddon;
+const SearchAddon = window.SearchAddon?.SearchAddon;
 
 const statusEl = document.getElementById("status");
 
-if (typeof Terminal !== "function" || typeof FitAddon !== "function") {
-  statusEl.textContent = "前端依赖未加载：vendor/xterm.js 或 vendor/addon-fit.js 缺失";
+if (
+  typeof Terminal !== "function" ||
+  typeof FitAddon !== "function" ||
+  typeof SearchAddon !== "function"
+) {
+  statusEl.textContent = "前端依赖未加载：vendor 下的 xterm.js / addon-fit.js / addon-search.js 缺失";
   throw new Error(
-    `xterm 加载失败：Terminal=${typeof Terminal} FitAddon=${typeof FitAddon}`,
+    `xterm 加载失败：Terminal=${typeof Terminal} FitAddon=${typeof FitAddon} SearchAddon=${typeof SearchAddon}`,
   );
 }
 
@@ -92,6 +97,9 @@ function frame() {
  * 每个会话有自己的 xterm 实例、FitAddon、未确认计数与拉取循环——
  * 共用一份状态会让「切走的标签页停止 ack」变成静默的背压泄漏。
  */
+/** 当前字号；Ctrl+= / Ctrl+- 调整，对所有会话生效 */
+let fontSize = 13;
+
 function createView(label) {
   const el = document.createElement("div");
   el.className = "term-view";
@@ -99,10 +107,13 @@ function createView(label) {
 
   const term = new Terminal({
     fontFamily: '"JetBrains Mono", Consolas, "Cascadia Mono", monospace',
-    fontSize: 13,
+    fontSize,
     lineHeight: 1.2,
     cursorBlink: true,
     scrollback: 5000,
+    // 查找高亮用到了 decorations（proposed API）。不开这个开关，
+    // addon-search 的 findNext 会直接抛错，界面上表现为「搜索框没反应」。
+    allowProposedApi: true,
     theme: {
       background: "#1a1a1c",
       foreground: "#e8e8ea",
@@ -112,6 +123,8 @@ function createView(label) {
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
+  const search = new SearchAddon();
+  term.loadAddon(search);
   term.open(el);
 
   const view = {
@@ -119,6 +132,7 @@ function createView(label) {
     label,
     term,
     fit,
+    search,
     el,
     handle: null,
     running: false,
@@ -127,6 +141,11 @@ function createView(label) {
     dataEvents: 0,
     inputLog: [],
   };
+
+  search.onDidChangeResults(({ resultIndex, resultCount }) => {
+    if (view !== active) return;
+    updateFindCount(resultIndex, resultCount);
+  });
 
   term.onData((data) => {
     if (!view.handle) return;
@@ -589,6 +608,107 @@ vaultToggleBtn.addEventListener("click", async () => {
   await renderVaultPanel();
 });
 
+// ── 终端查找与字号 ─────────────────────────────────────────
+const findBar = document.getElementById("find-bar");
+const findInput = document.getElementById("find-input");
+const findCount = document.getElementById("find-count");
+const findPrev = document.getElementById("find-prev");
+const findNext = document.getElementById("find-next");
+const findClose = document.getElementById("find-close");
+
+function updateFindCount(index, total) {
+  if (!total) {
+    findCount.textContent = findInput.value ? "0" : "";
+    return;
+  }
+  findCount.textContent = `${index + 1}/${total}`;
+}
+
+function openFind() {
+  if (!active) return;
+  findBar.hidden = false;
+  findInput.focus();
+  findInput.select();
+}
+
+function closeFind() {
+  findBar.hidden = true;
+  findCount.textContent = "";
+  active?.term.focus();
+}
+
+/** 查找高亮配色。**必须传**：不传 decorations 时插件不会发 onDidChangeResults，
+ *  界面上就永远看不到「第几个/共几个」 */
+const FIND_DECORATIONS = {
+  matchBackground: "#4a4a1f",
+  matchOverviewRuler: "#4a4a1f",
+  activeMatchBackground: "#5b9bff",
+  activeMatchOverviewRuler: "#5b9bff",
+};
+
+function runFind(backwards) {
+  if (!active) return;
+  const query = findInput.value;
+  if (!query) {
+    findCount.textContent = "";
+    return;
+  }
+  // incremental：边打边找，不用按回车
+  const found = active.search.findNext(query, {
+    incremental: !backwards,
+    backwards,
+    decorations: FIND_DECORATIONS,
+  });
+  if (!found) findCount.textContent = "0";
+}
+
+findInput.addEventListener("input", () => runFind(false));
+findNext.addEventListener("click", () => runFind(false));
+findPrev.addEventListener("click", () => runFind(true));
+findClose.addEventListener("click", closeFind);
+
+/** 字号调整：所有会话一起改，改完重新 fit（行列数会变） */
+function setFontSize(next) {
+  fontSize = Math.min(28, Math.max(9, next));
+  for (const view of sessions.values()) {
+    view.term.options.fontSize = fontSize;
+    view.fit.fit();
+  }
+}
+
+// 捕获阶段处理并 stopPropagation：否则 Ctrl+F 会先被 xterm 当成 ^F 发给远端
+document.addEventListener(
+  "keydown",
+  (ev) => {
+    if (!ev.ctrlKey || ev.altKey || ev.metaKey) return;
+    if (ev.key === "f") {
+      ev.preventDefault();
+      ev.stopPropagation();
+      openFind();
+    } else if (ev.key === "=" || ev.key === "+") {
+      ev.preventDefault();
+      ev.stopPropagation();
+      setFontSize(fontSize + 1);
+    } else if (ev.key === "-") {
+      ev.preventDefault();
+      ev.stopPropagation();
+      setFontSize(fontSize - 1);
+    } else if (ev.key === "0") {
+      ev.preventDefault();
+      ev.stopPropagation();
+      setFontSize(13);
+    }
+  },
+  true,
+);
+
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && !findBar.hidden) {
+    ev.preventDefault();
+    closeFind();
+  }
+});
+
 // ── 窗口尺寸 ────────────────────────────────────────────────
 // 每个会话各自 fit：切换标签页时也要重新算，否则隐藏期间的 resize 会漏掉
 let resizeTimer = null;
@@ -737,6 +857,15 @@ window.__wt = {
   },
   get rows() {
     return active?.term.rows ?? 0;
+  },
+  get fontSize() {
+    return fontSize;
+  },
+  /** 在激活会话里查找（验收与脚本用），返回是否命中与当前计数文本 */
+  find(query) {
+    if (!active) return null;
+    const found = active.search.findNext(query, { decorations: FIND_DECORATIONS });
+    return { found, count: findCount.textContent };
   },
   /** 当前屏幕文本（含回滚区），供验收断言用 */
   screen() {

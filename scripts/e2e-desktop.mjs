@@ -460,6 +460,66 @@ try {
   );
   check("背压记账归零（ack 已回流）", true, `unacked=0 buffered=${settled.buffered}`);
 
+  // 9b. 终端查找（Ctrl+F）与字号（Ctrl+=）
+  const CTRL = 2; // CDP modifiers: Alt=1, Ctrl=2, Meta=4, Shift=8
+  const ctrlKey = (k, code, vk) => ({
+    key: k,
+    code,
+    windowsVirtualKeyCode: vk,
+    nativeVirtualKeyCode: vk,
+    modifiers: CTRL,
+  });
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", ...ctrlKey("f", "KeyF", 70) });
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...ctrlKey("f", "KeyF", 70) });
+  await waitFor(
+    async () => (await cdp.eval(`document.getElementById("find-bar").hidden`)) === false,
+    { timeout: 5000, label: "查找栏打开" },
+  );
+  check("Ctrl+F 打开查找栏", true);
+
+  // 查找框的触发是 input 事件：这里显式派发，避免依赖 insertText 是否合成事件
+  await cdp.eval(`(() => {
+    const el = document.getElementById("find-input");
+    el.focus();
+    el.value = ${JSON.stringify(MARKER)};
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    return true;
+  })()`);
+  const findResult = await waitFor(
+    async () => {
+      const r = await cdp.eval(`window.__wt.find(${JSON.stringify(MARKER)})`);
+      const t = await cdp.eval(`document.getElementById("find-count").textContent`);
+      const m = t.match(/^(\d+)\/(\d+)$/);
+      return r?.found && m && Number(m[2]) >= 1 ? { ...r, text: t } : null;
+    },
+    { timeout: 10000, label: "查找命中" },
+  );
+  check("查找能命中终端输出", findResult.found === true, findResult.text);
+
+  await cdp.send("Input.dispatchKeyEvent", {
+    type: "keyDown",
+    key: "Escape",
+    code: "Escape",
+    windowsVirtualKeyCode: 27,
+    nativeVirtualKeyCode: 27,
+  });
+  await waitFor(
+    async () => (await cdp.eval(`document.getElementById("find-bar").hidden`)) === true,
+    { timeout: 5000, label: "查找栏关闭" },
+  );
+
+  const fontBefore = await cdp.eval(`window.__wt.fontSize`);
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", ...ctrlKey("=", "Equal", 187) });
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...ctrlKey("=", "Equal", 187) });
+  const fontAfter = await waitFor(
+    async () => {
+      const s = await cdp.eval(`window.__wt.fontSize`);
+      return s > fontBefore ? s : null;
+    },
+    { timeout: 5000, label: "字号放大" },
+  );
+  check("Ctrl+= 放大字号", fontAfter === fontBefore + 1, `${fontBefore} → ${fontAfter}`);
+
   // 10. 尺寸变化 → 重新 fit → 后端收到 resize（TER-012）
   //     CDP 造不出真正的窗口拖拽，这里改侧栏宽度让终端变窄，再派发 resize 事件，
   //     走的是与真实拖拽完全相同的处理链路（window resize → fit() → term_resize）

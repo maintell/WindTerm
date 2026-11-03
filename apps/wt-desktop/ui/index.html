@@ -180,6 +180,36 @@
       .tab .x { color: #8a8a92; }
       .tab .x:hover { color: #e8e8ea; }
       #term { flex: 1; min-width: 0; min-height: 0; position: relative; }
+      #find-bar {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 6px;
+        border-bottom: 1px solid #2a2a30;
+        font-size: 12px;
+        flex: none;
+      }
+      #find-bar[hidden] { display: none; }
+      #find-bar input {
+        background: #2a2a30;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 4px;
+        padding: 2px 8px;
+        font: inherit;
+        width: 200px;
+      }
+      #find-bar button {
+        background: #2a2a30;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 4px;
+        padding: 1px 8px;
+        font: inherit;
+        cursor: pointer;
+      }
+      #find-bar button:hover { border-color: var(--accent); }
+      #find-count { color: var(--muted); min-width: 48px; }
       /* 每个会话一个绝对定位的视图；切走的只是隐藏，xterm 实例与滚动位置都留着 */
       .term-view { position: absolute; inset: 0; padding: 4px 0 0 6px; display: none; }
       .term-view.active { display: block; }
@@ -227,11 +257,19 @@
       </aside>
       <div id="right">
         <div id="tabs"></div>
+        <div id="find-bar" hidden>
+          <input id="find-input" placeholder="查找（Ctrl+F）" spellcheck="false" />
+          <span id="find-count"></span>
+          <button id="find-prev" title="上一个">↑</button>
+          <button id="find-next" title="下一个">↓</button>
+          <button id="find-close" title="关闭（Esc）">×</button>
+        </div>
         <div id="term"></div>
       </div>
     </div>
     <script src="vendor/xterm.js"></script>
     <script src="vendor/addon-fit.js"></script>
+    <script src="vendor/addon-search.js"></script>
     <script src="main.js"></script>
   </body>
 </html>
