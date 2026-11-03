@@ -117,6 +117,24 @@ pub struct SshConnection {
     observed: Arc<Mutex<Option<ObservedHostKey>>>,
 }
 
+/// 一条既能读也能写的承载流。
+///
+/// 直连时用不到（`establish` 自己建 TCP），跳板机、将来的代理都需要
+/// 「先有一条通道，再在上面跑 SSH 握手」这件事，所以统一成这个形状。
+pub trait TunnelStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> TunnelStream for T {}
+
+/// 认证方式。
+///
+/// 抽出来是为了让「直连」与「经跳板」共用同一段认证代码：跳板机与目标机的
+/// 认证方式可以不同（`SES-024` 行为规格第 4 条：凭据不继承），
+/// 但两边都得支持密码/密钥/agent 三种。
+pub enum Auth<'a> {
+    Password(&'a str),
+    Key(&'a PrivateKeySource),
+    Agent,
+}
+
 impl SshConnection {
     /// 建立传输层并完成主机密钥校验，但**不认证**。
     ///
@@ -158,23 +176,48 @@ impl SshConnection {
         })
         .await;
 
-        let handle = match connect_result {
-            Ok(Ok(h)) => h,
-            Ok(Err(e)) => return Err(map_connect_error(e, &host_id, &observed)),
-            Err(_) => {
-                return Err(WtError::new("SSH_CONNECT_TIMEOUT")
-                    .message(format!("连接 {} 超时（{} 秒）", addr, timeout.as_secs()))
-                    .detail("TCP 连接或密钥交换未在超时内完成")
-                    .hint("检查网络与防火墙", HintAction::None)
-                    .hint(
-                        "增大超时",
-                        HintAction::OpenSettings {
-                            page: "session.network".into(),
-                        },
-                    ));
-            }
-        };
+        let handle = resolve_established(connect_result, &host_id, &observed, &addr, timeout)?;
 
+        Ok((handle, host_id, observed))
+    }
+
+    /// 与 `establish` 相同，但跑在一条**已经打开的承载流**上（`SES-024` 跳板机）。
+    ///
+    /// 承载流由跳板机的 `direct-tcpip` 通道提供，因此这条连接对目标机来说
+    /// 就是一次普通的 TCP 连接——`ss` 上看到的是跳板机主动外连。
+    async fn establish_over<S>(
+        cfg: &SshConfig,
+        policy: HostKeyPolicy,
+        stream: S,
+    ) -> Result<
+        (
+            client::Handle<ClientHandler>,
+            HostKeyId,
+            Arc<Mutex<Option<ObservedHostKey>>>,
+        ),
+        WtError,
+    >
+    where
+        S: TunnelStream + 'static,
+    {
+        let host_id = cfg.endpoint();
+        let observed = Arc::new(Mutex::new(None));
+
+        let handler = ClientHandler {
+            host_id: host_id.clone(),
+            policy: Arc::new(Mutex::new(policy)),
+            observed: observed.clone(),
+        };
+        let config = Arc::new(client::Config::default());
+
+        let addr = format!("{}:{}", cfg.host, cfg.port);
+        let timeout = Duration::from_secs(cfg.connect_timeout_secs.max(1) as u64);
+        let connect_result = tokio::time::timeout(timeout, async {
+            client::connect_stream(config, stream, handler).await
+        })
+        .await;
+
+        let handle = resolve_established(connect_result, &host_id, &observed, &addr, timeout)?;
         Ok((handle, host_id, observed))
     }
 
@@ -186,35 +229,153 @@ impl SshConnection {
         password: &str,
         policy: HostKeyPolicy,
     ) -> Result<Self, WtError> {
+        Self::connect(cfg, &Auth::Password(password), policy).await
+    }
+
+    /// 直连并按给定方式认证。
+    pub async fn connect(
+        cfg: &SshConfig,
+        auth: &Auth<'_>,
+        policy: HostKeyPolicy,
+    ) -> Result<Self, WtError> {
         let (mut handle, host_id, observed) = Self::establish(cfg, policy).await?;
-        let addr = format!("{}:{}", cfg.host, cfg.port);
-
-        match handle.authenticate_password(&cfg.user, password).await {
-            Ok(russh::client::AuthResult::Success) => {}
-            Ok(_) => {
-                return Err(WtError::new(codes::SSH_AUTH_FAILED)
-                    .message("密码认证被服务端拒绝")
-                    .detail(format!("用户 {} 在 {} 上认证失败", cfg.user, addr))
-                    .hint("确认用户名与密码", HintAction::None)
-                    .hint(
-                        "编辑会话凭据",
-                        HintAction::OpenSettings {
-                            page: "session.auth".into(),
-                        },
-                    ));
-            }
-            Err(e) => {
-                return Err(WtError::new(codes::SSH_AUTH_FAILED)
-                    .message("认证过程出错")
-                    .detail(e.to_string()));
-            }
-        }
-
+        Self::authenticate(&mut handle, cfg, auth).await?;
         Ok(Self {
             handle,
             host_id,
             observed,
         })
+    }
+
+    /// **经一条已有承载流**建立连接（`SES-024` 跳板机单跳的数据面）。
+    ///
+    /// 承载流通常来自跳板机的 `direct-tcpip` 通道。对目标机来说这就是一次
+    /// 普通的 TCP 连接，因此除了「谁在连」之外没有任何差异。
+    pub async fn connect_over<S>(
+        stream: S,
+        cfg: &SshConfig,
+        auth: &Auth<'_>,
+        policy: HostKeyPolicy,
+    ) -> Result<Self, WtError>
+    where
+        S: TunnelStream + 'static,
+    {
+        let (mut handle, host_id, observed) = Self::establish_over(cfg, policy, stream).await?;
+        Self::authenticate(&mut handle, cfg, auth).await?;
+        Ok(Self {
+            handle,
+            host_id,
+            observed,
+        })
+    }
+
+    /// 三种认证方式的**唯一实现**。
+    ///
+    /// 直连与经跳板都必须走这里：认证失败的错误文案要是两套，
+    /// 用户看到同一个问题会有两种说法，排查时容易以为是两回事。
+    async fn authenticate(
+        handle: &mut client::Handle<ClientHandler>,
+        cfg: &SshConfig,
+        auth: &Auth<'_>,
+    ) -> Result<(), WtError> {
+        let addr = format!("{}:{}", cfg.host, cfg.port);
+        match auth {
+            Auth::Password(password) => {
+                match handle.authenticate_password(&cfg.user, *password).await {
+                    Ok(russh::client::AuthResult::Success) => {}
+                    Ok(_) => {
+                        return Err(WtError::new(codes::SSH_AUTH_FAILED)
+                            .message("密码认证被服务端拒绝")
+                            .detail(format!("用户 {} 在 {} 上认证失败", cfg.user, addr))
+                            .hint("确认用户名与密码", HintAction::None)
+                            .hint(
+                                "编辑会话凭据",
+                                HintAction::OpenSettings {
+                                    page: "session.auth".into(),
+                                },
+                            ));
+                    }
+                    Err(e) => {
+                        return Err(WtError::new(codes::SSH_AUTH_FAILED)
+                            .message("认证过程出错")
+                            .detail(e.to_string()));
+                    }
+                }
+            }
+            Auth::Key(key) => {
+                let parsed = keys::parse(key)?;
+                let fingerprint = parsed
+                    .fingerprint(russh::keys::HashAlg::Sha256)
+                    .to_string();
+                let auth_key = keys::to_auth_key(parsed);
+                match handle.authenticate_publickey(&cfg.user, auth_key).await {
+                    Ok(russh::client::AuthResult::Success) => {}
+                    Ok(_) => {
+                        return Err(WtError::new(codes::SSH_AUTH_FAILED)
+                            .message("服务端拒绝了这把密钥")
+                            .detail(format!(
+                                "用户 {} 在 {} 上使用密钥 {fingerprint} 认证失败",
+                                cfg.user, addr
+                            ))
+                            .hint("确认公钥已加入服务端 authorized_keys", HintAction::None)
+                            .hint(
+                                "换一把密钥",
+                                HintAction::OpenSettings {
+                                    page: "session.auth".into(),
+                                },
+                            ));
+                    }
+                    Err(e) => {
+                        return Err(WtError::new(codes::SSH_AUTH_FAILED)
+                            .message("公钥认证过程出错")
+                            .detail(e.to_string()));
+                    }
+                }
+            }
+            Auth::Agent => {
+                #[cfg(unix)]
+                let mut agent = russh::keys::agent::client::AgentClient::connect_env()
+                    .await
+                    .map_err(|e| agent_unavailable(&e.to_string()))?;
+                #[cfg(windows)]
+                let mut agent =
+                    russh::keys::agent::client::AgentClient::connect_named_pipe(
+                        r"\\.\pipe\openssh-ssh-agent",
+                    )
+                    .await
+                    .map_err(|e| agent_unavailable(&e.to_string()))?;
+
+                let identities = agent
+                    .request_identities()
+                    .await
+                    .map_err(|e| agent_unavailable(&format!("无法读取 agent 里的身份：{e}")))?;
+                if identities.is_empty() {
+                    return Err(WtError::new(codes::SSH_AGENT_UNAVAILABLE)
+                        .message("ssh-agent 里没有任何身份")
+                        .hint("先用 ssh-add 添加私钥", HintAction::None));
+                }
+
+                for id in &identities {
+                    let key = id.public_key().as_ref().clone();
+                    if let Ok(russh::client::AuthResult::Success) = handle
+                        .authenticate_publickey_with(&cfg.user, key, None, &mut agent)
+                        .await
+                    {
+                        return Ok(());
+                    }
+                    // 这把不被接受就换下一把——agent 里通常有多把
+                }
+
+                return Err(WtError::new(codes::SSH_AUTH_FAILED)
+                    .message("ssh-agent 里的身份都被服务端拒绝了")
+                    .detail(format!("尝试了 {} 把公钥", identities.len()))
+                    .hint(
+                        "确认 agent 里的公钥已加到远端的 authorized_keys",
+                        HintAction::None,
+                    ));
+            }
+        }
+        Ok(())
     }
 
     /// 用私钥建立连接。
@@ -226,44 +387,7 @@ impl SshConnection {
         key: &PrivateKeySource,
         policy: HostKeyPolicy,
     ) -> Result<Self, WtError> {
-        let parsed = keys::parse(key)?;
-        let fingerprint = parsed
-            .fingerprint(russh::keys::HashAlg::Sha256)
-            .to_string();
-        let auth_key = keys::to_auth_key(parsed);
-
-        let (mut handle, host_id, observed) = Self::establish(cfg, policy).await?;
-        let addr = format!("{}:{}", cfg.host, cfg.port);
-
-        match handle.authenticate_publickey(&cfg.user, auth_key).await {
-            Ok(russh::client::AuthResult::Success) => {}
-            Ok(_) => {
-                return Err(WtError::new(codes::SSH_AUTH_FAILED)
-                    .message("服务端拒绝了这把密钥")
-                    .detail(format!(
-                        "用户 {} 在 {} 上使用密钥 {fingerprint} 认证失败",
-                        cfg.user, addr
-                    ))
-                    .hint("确认公钥已加入服务端 authorized_keys", HintAction::None)
-                    .hint(
-                        "换一把密钥",
-                        HintAction::OpenSettings {
-                            page: "session.auth".into(),
-                        },
-                    ));
-            }
-            Err(e) => {
-                return Err(WtError::new(codes::SSH_AUTH_FAILED)
-                    .message("公钥认证过程出错")
-                    .detail(e.to_string()));
-            }
-        }
-
-        Ok(Self {
-            handle,
-            host_id,
-            observed,
-        })
+        Self::connect(cfg, &Auth::Key(key), policy).await
     }
     /// 用 ssh-agent 里的身份建立连接。
     ///
@@ -275,58 +399,8 @@ impl SshConnection {
     /// - Windows：OpenSSH Authentication Agent 的命名管道（Win10 1809 自带）。
     ///
     /// Pageant 暂不支持（需要额外依赖），见 README 的 G3。
-    pub async fn connect_agent(
-        cfg: &SshConfig,
-        policy: HostKeyPolicy,
-    ) -> Result<Self, WtError> {
-        let (mut handle, host_id, observed) = Self::establish(cfg, policy).await?;
-
-        #[cfg(unix)]
-        let mut agent = russh::keys::agent::client::AgentClient::connect_env()
-            .await
-            .map_err(|e| agent_unavailable(&e.to_string()))?;
-        #[cfg(windows)]
-        let mut agent = russh::keys::agent::client::AgentClient::connect_named_pipe(
-            r"\\.\pipe\openssh-ssh-agent",
-        )
-        .await
-        .map_err(|e| agent_unavailable(&e.to_string()))?;
-
-        let identities = agent
-            .request_identities()
-            .await
-            .map_err(|e| agent_unavailable(&format!("无法读取 agent 里的身份：{e}")))?;
-        if identities.is_empty() {
-            return Err(WtError::new(codes::SSH_AGENT_UNAVAILABLE)
-                .message("ssh-agent 里没有任何身份")
-                .hint("先用 ssh-add 添加私钥", HintAction::None));
-        }
-
-        for id in &identities {
-            let key = id.public_key().as_ref().clone();
-            match handle
-                .authenticate_publickey_with(&cfg.user, key, None, &mut agent)
-                .await
-            {
-                Ok(russh::client::AuthResult::Success) => {
-                    return Ok(Self {
-                        handle,
-                        host_id,
-                        observed,
-                    });
-                }
-                // 这把不被接受就换下一把——agent 里通常有多把
-                _ => continue,
-            }
-        }
-
-        Err(WtError::new(codes::SSH_AUTH_FAILED)
-            .message("ssh-agent 里的身份都被服务端拒绝了")
-            .detail(format!("尝试了 {} 把公钥", identities.len()))
-            .hint(
-                "确认 agent 里的公钥已加到远端的 authorized_keys",
-                HintAction::None,
-            ))
+    pub async fn connect_agent(cfg: &SshConfig, policy: HostKeyPolicy) -> Result<Self, WtError> {
+        Self::connect(cfg, &Auth::Agent, policy).await
     }
 
     pub fn host_id(&self) -> &HostKeyId {
@@ -468,6 +542,30 @@ impl SshConnection {
             .await;
     }
 
+    /// 打开 `direct-tcpip` 通道，**原样返回 russh 的错误**。
+    ///
+    /// 上层对失败的解释不一样：隧道关心「目标不可达」，跳板机关心
+    /// 「是不是 sshd 禁止了转发」（`SES-024` 异常表）。所以分类交给调用方，
+    /// 这里不做映射——被映射成字符串的错误就再也分不出来了。
+    pub(crate) async fn open_direct_tcpip_channel(
+        &self,
+        target_host: &str,
+        target_port: u16,
+        originator_address: &str,
+        originator_port: u16,
+    ) -> Result<russh::ChannelStream<russh::client::Msg>, russh::Error> {
+        let channel = self
+            .handle
+            .channel_open_direct_tcpip(
+                target_host,
+                u32::from(target_port),
+                originator_address,
+                u32::from(originator_port),
+            )
+            .await?;
+        Ok(channel.into_stream())
+    }
+
     /// 打开一个 `direct-tcpip` 通道（`NET-001` 本地转发的数据面）。
     ///
     /// `target_host` 由**服务端**解析——这正是转发的价值：本地解析不到、也连不上的
@@ -481,26 +579,23 @@ impl SshConnection {
         originator_address: &str,
         originator_port: u16,
     ) -> Result<russh::ChannelStream<russh::client::Msg>, WtError> {
-        let channel = self
-            .handle
-            .channel_open_direct_tcpip(
-                target_host,
-                u32::from(target_port),
-                originator_address,
-                u32::from(originator_port),
-            )
-            .await
-            .map_err(|e| {
-                WtError::new(codes::TUN_CHANNEL_FAILED)
-                    .message(format!("无法为 {target_host}:{target_port} 打开转发通道"))
-                    .detail(e.to_string())
-                    .hint(
-                        "目标主机名由**服务器侧**解析；确认服务器能访问该地址，\
-                         且 sshd 没有关闭 AllowTcpForwarding",
-                        HintAction::None,
-                    )
-            })?;
-        Ok(channel.into_stream())
+        self.open_direct_tcpip_channel(
+            target_host,
+            target_port,
+            originator_address,
+            originator_port,
+        )
+        .await
+        .map_err(|e| {
+            WtError::new(codes::TUN_CHANNEL_FAILED)
+                .message(format!("无法为 {target_host}:{target_port} 打开转发通道"))
+                .detail(e.to_string())
+                .hint(
+                    "目标主机名由**服务器侧**解析；确认服务器能访问该地址，\
+                     且 sshd 没有关闭 AllowTcpForwarding",
+                    HintAction::None,
+                )
+        })
     }
 
     /// 打开一个子系统通道（目前只有 `sftp` 用）。
@@ -612,6 +707,33 @@ impl ExecOutput {
 // ─────────────────────────────────────────────────────────────
 // 错误映射
 // ─────────────────────────────────────────────────────────────
+
+/// 统一的「建传输层」结果处理。
+///
+/// 直连（`client::connect`）与经跳板（`client::connect_stream`）的失败分类
+/// 必须一致，否则同一台机器「直连报 A、经跳板报 B」，排查时会被带偏。
+fn resolve_established(
+    result: Result<Result<client::Handle<ClientHandler>, russh::Error>, tokio::time::error::Elapsed>,
+    host_id: &HostKeyId,
+    observed: &Arc<Mutex<Option<ObservedHostKey>>>,
+    addr: &str,
+    timeout: Duration,
+) -> Result<client::Handle<ClientHandler>, WtError> {
+    match result {
+        Ok(Ok(h)) => Ok(h),
+        Ok(Err(e)) => Err(map_connect_error(e, host_id, observed)),
+        Err(_) => Err(WtError::new("SSH_CONNECT_TIMEOUT")
+            .message(format!("连接 {} 超时（{} 秒）", addr, timeout.as_secs()))
+            .detail("TCP 连接或密钥交换未在超时内完成")
+            .hint("检查网络与防火墙", HintAction::None)
+            .hint(
+                "增大超时",
+                HintAction::OpenSettings {
+                    page: "session.network".into(),
+                },
+            )),
+    }
+}
 
 fn map_connect_error(
     e: russh::Error,

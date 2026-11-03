@@ -87,6 +87,22 @@ UI 渲染为：
 
 ## 2. 跳板机
 
+### 2.0 实现状态（M1）
+
+已实现 `wt_ssh::connect_via`（`SES-024` 内核）。与本文设计的差异：
+
+| 设计里有 | 现在 | 影响 |
+|---|---|---|
+| `StreamProvider` 抽象 + 链式组合（§1） | 直接调 `open_direct_tcpip_channel` + `SshConnection::connect_over` | 单跳够用；多跳（`SES-025`）要么递归包，要么补上 provider 抽象 |
+| 递归多跳（最多 5 跳） | ❌ 只支持一跳 | `SES-025` 待做 |
+| 连接池复用（§2.1，`SES-024` AC-3） | ❌ 每条目标连接都重新登录跳板机 | 跳板机上会看到多条 SSH 连接；AC-3 未满足 |
+| 每跳错误定位（§2.3） | ✅ 错误统一加「第 N 跳（host:port）：」前缀，**保留原错误码** | 换码会让「认证失败」被归成网络问题，界面就分不清该改密码还是改网络 |
+| `AllowTcpForwarding no` 专项报错 | ✅ `SSH_FORWARD_DENIED`，消息直接点名原因 | — |
+| 界面 / CLI 接线、`jump.sessionId` | ❌ 未做 | 见 `README` 的 `G14` |
+
+认证：`SshConnection::connect` / `connect_over` 共用同一段 `authenticate`，
+三条路径（密码 / 密钥 / agent）只有一份实现，直连与经跳板的错误文案因此完全一致。
+
 ### 2.1 连接池
 
 ```rust

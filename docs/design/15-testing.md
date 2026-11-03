@@ -169,6 +169,28 @@ SSH 那几项需要一台「服务器」。本机没有 sshd，所以 `wt-deskto
 生产构建不开启该 feature，mock 代码不进二进制；验收另用 `WT_DATA_DIR` 指向临时目录，
 保证 `known_hosts` 是干净的，否则 TOFU 分支测不到。
 
+### 2.4.1 用两台 mock 服务端验跳板机（`SES-024`）
+
+跳板机不能靠单个 mock 验：它本身就是「两台 SSH 服务端之间多一条 TCP」。
+`crates/wt-ssh/tests/jump.rs` 起两台 `MockSshServer`：
+
+```text
+客户端 ──SSH──> mock A（跳板机） ──direct-tcpip（真实 TCP）──> mock B（目标）
+```
+
+跳板机上那条 `direct-tcpip` 由 mock 实现，它连的是 `127.0.0.1:B` —— 所以
+「第二跳跑在一条真实 TCP 上」是被证实的。用例覆盖：
+
+| 用例 | 断言 |
+|---|---|
+| 经跳板连上目标 | 第二跳上能 `exec` 并拿到回执；开完第二跳后跳板机自己仍可用 |
+| 目标机密码错误（AC-2） | 错误含「第 2 跳」与目标地址，**错误码仍是 `SSH_AUTH_FAILED`** |
+| 跳板机禁止转发 | `SSH_FORWARD_DENIED`，消息直接点名 `AllowTcpForwarding` |
+| 目标不可达 | 报第 1 跳（跳板机连不上目标）并带上目标地址 |
+
+最后一条是刻意的：失败发生在**跳板机**而不是目标，报错必须落在正确的跳上，
+否则多跳链路里用户会去查一台根本没问题的机器。
+
 ```js
 // scripts/e2e-desktop.mjs（节选）
 await clickElement("#open");                       // 可信鼠标点击

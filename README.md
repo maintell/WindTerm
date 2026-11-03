@@ -18,6 +18,7 @@
 | SFTP（列目录 / 下载 / 上传） | ✅ CLI + 界面 | `wt sftp ls/get/put`（认证参数与 `ssh exec` 一致）+ `wt-ssh::SftpClient`；用例覆盖报文级（内存管道）、真实 SSH 通道、CLI 真实执行路径。界面文件面板：列目录、进出目录、双击下载到本地（同名自动改名）、上传本地文件 |
 | 终端剪贴板（`TER-011` / `TER-013` / `TER-023`） | ✅ 可用 | 双击选整词（含 `user@host:/var/log` 这种串）、选中即复制、`Ctrl+Shift+C` / `Ctrl+Insert` 复制、`Ctrl+Shift+V` / `Shift+Insert` 粘贴、多行粘贴确认（取消后零字节）、bracketed paste 遵守 `?2004`；右键粘贴见 `G11` |
 | 端口转发（`NET-001` / `NET-004`） | ✅ 可用（仅 `-L`） | 本地监听 → SSH `direct-tcpip` → 远端目标；`listenPort=0` 回填系统端口、双向字节计数、半关闭不丢数据、监听 `0.0.0.0` 需显式确认、失败原因可见（红点 + 上次错误）。界面按 1 s 刷新统计。**`-R` / `-D` 未做**（见 `G13`） |
+| SSH 跳板机（`SES-024` 单跳） | 🟡 内核可用 | `wt_ssh::connect_via`：登录跳板机 → `direct-tcpip` 到目标 → 在通道上做**第二次 SSH 握手**（目标机看到的是跳板机在连，`ss` 上可见）；错误带「第 N 跳（host:port）」定位，`AllowTcpForwarding no` 有专项报错。**界面与 CLI 还没接线**，见 `G14` |
 | 其余协议（RDP / VNC） | ⬜ 未开始 | — |
 | UI 壳（Tauri 2 + xterm.js） | ✅ 可交互 | 端到端验收 **75 项**通过（`scripts/e2e-desktop.mjs`）：本地终端全链路 + 多标签 + 查找/字号 + 剪贴板（选词/复制/粘贴/多行确认/bracketed paste）+ 隧道（启动/穿透收发/统计/停止/局域网确认）+ 会话树（新建/删除/过滤/导入含 GBK）+ SSH 密码/密钥/**agent** 三种认证 + TOFU + 保险库（存/填/列/删）+ SFTP 文件面板（列目录/下载/上传）+ 错误路径 + 三条防「沉默失效」的自检（前端版本、内嵌资源一致性、页面任务队列活性） |
 
@@ -85,6 +86,7 @@ cargo run -p wt-cli -- session list
 | G11 | 右键 / 中键粘贴暂时不可用：WebView2 里 `navigator.clipboard.readText()` 要剪贴板读权限，当前构建拿不到（既不 resolve 也不 reject） | 键盘路径（`Ctrl+V` / `Ctrl+Shift+V` / `Shift+Insert`）完全可用；右键会明确提示「读剪贴板被拒绝，请用 Ctrl+Shift+V」，不会静默无反应 | 需要 Rust 侧读剪贴板：接 `tauri-plugin-clipboard-manager`，或自己用 `arboard`。**两者在 Linux 上都会引入 X11 客户端依赖**，与 ADR-0012 的「零 X11 依赖」取向相关，须先定调再动手 |
 | G12 | `TER-020` 快捷键体系还没做：键位写死在 `main.js`，不能重绑、不能导出 | 现有键位够用，但用户改不了，也不符合规格的「全部可重绑 + 冲突检测」 | 等设置体系（`SET-001`）落地后一起做键位表 |
 | G13 | 隧道只做了本地转发 `-L`：`-R`（`NET-002`）、`-D` SOCKS5（`NET-003`）未做；隧道配置不落库（关应用即消失），没有 `autoStart` / 重连期保持监听（`NET-005`、`design/10` §3.4），也没有每隧道连接上限 | 只能手工建、手工停；关掉应用后要重填 | 按 `NET-002` → `NET-003` → `NET-005` + 落库推进；先做落库（`TunnelSpec` 进 SQLite）再做重连 |
+| G14 | 跳板机只有内核，**界面与 CLI 还没接线**；`jump.sessionId` 没进数据模型（跳板机凭据按会话独立配置，需要会话编辑器与 schema 迁移）；只支持单跳 | 内核与测试都在，但用户现在只能通过代码调用 | 下一步：schema 加 `sessions.jump_session_id` + 会话编辑器里选「经哪个会话」+ `wt ssh exec --jump` |
 | G6 | 没有分屏、主题自定义 | 多会话已用标签页解决；查找与字号已可用（Ctrl+F / Ctrl+±） | 随 `TER-01x` / `SET-00x` 推进 |
 | G9 | `wt ssh shell` 的**交互路径**没有在真实 sshd 上验证过（本机无 sshd） | 参数解析、连接失败与「连接前不碰终端」已验证；raw 模式下的按键转发、窗口尺寸、远端退出后恢复终端只能靠人工试 | 拿到真实 sshd 后走一遍：`ls` 有颜色、方向键可用、`Ctrl+C` 中断、`Ctrl+D` 退出后本机终端正常 |
 | ~~G7~~ | ~~非 UTF-8 的 ini 会让中文名乱码~~ | ✅ 已修复：`wt_import::decode_ini` 先按 UTF-8 严格解、失败再按 GBK；导入结果里显示用了哪种编码 | — |

@@ -286,6 +286,14 @@ impl russh::server::Handler for MockHandler {
         reply: russh::server::ChannelOpenHandle,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
+        // 用来复现「跳板机禁止转发」（`SES-024` 异常表）：
+        // 真实 sshd 在 `AllowTcpForwarding no` 时正是这样拒绝的
+        if host_to_connect == "deny-forward" {
+            reply
+                .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
+                .await;
+            return Ok(());
+        }
         let addr = format!("{host_to_connect}:{port_to_connect}");
         match tokio::net::TcpStream::connect(&addr).await {
             Ok(mut tcp) => {

@@ -13,6 +13,7 @@
 pub mod algos;
 pub mod client;
 pub mod forward;
+pub mod jump;
 pub mod keys;
 pub mod ppk;
 pub mod sftp;
@@ -23,11 +24,12 @@ pub mod known_hosts;
 
 pub use algos::{diagnose, negotiate, AlgoCategory, Algos, CompatFlags, NegotiationFailure};
 pub use client::{
-    ChannelData, ExecOutput, HostKeyPolicy, HostKeyVerdict, ObservedHostKey, SshChannel,
-    SshConnection,
+    Auth, ChannelData, ExecOutput, HostKeyPolicy, HostKeyVerdict, ObservedHostKey, SshChannel,
+    SshConnection, TunnelStream,
 };
 pub use keys::{inspect as inspect_key, KeyInfo, PrivateKeySource};
 pub use forward::{exposes_to_lan, start_local, ForwardStats, LocalForward};
+pub use jump::connect_via;
 pub use sftp::{RemoteEntry, SftpClient};
 pub use term::{Keepalive, SshTermSession};
 pub use known_hosts::{
