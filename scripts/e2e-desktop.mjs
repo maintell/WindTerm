@@ -623,7 +623,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-18",
+    uiVersion === "wt-ui-19",
     `__wt.ui=${uiVersion}`,
   );
 

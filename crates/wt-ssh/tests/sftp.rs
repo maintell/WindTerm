@@ -5,7 +5,7 @@
 //! 内存文件系统。
 
 use wt_ssh::testing::MockSshServer;
-use wt_ssh::{HostKeyPolicy, SftpClient, SshConfig, SshConnection};
+use wt_ssh::{HostKeyPolicy, SftpClient, SftpWriter, SshConfig, SshConnection};
 
 fn cfg(port: u16) -> SshConfig {
     SshConfig {
@@ -112,37 +112,36 @@ async fn creates_renames_and_removes_over_real_channel() {
 }
 
 #[tokio::test]
-async fn chunked_upload_reports_real_progress() {
+async fn streaming_writer_takes_chunks_across_calls() {
     let server = MockSshServer::start().await;
     let conn = SshConnection::connect_password(&cfg(server.port), "secret", HostKeyPolicy::AcceptAll)
         .await
         .expect("连接应成功");
     let sftp = SftpClient::open(conn).await.expect("应能打开 sftp 子系统");
 
-    // 200 KB > 3 个 64 KB 块：进度必须是多次、单调递增的，最后落在总长度上
-    let data: Vec<u8> = (0..200 * 1024).map(|i| (i % 251) as u8).collect();
-    let mut seen = Vec::new();
-    sftp.write_file_chunked("/big.bin", &data, |written| seen.push(written))
+    // 模拟「前端每次发一块」：写句柄在多次调用之间存活
+    let mut writer = SftpWriter::create(sftp, "/stream.bin")
         .await
-        .expect("分块上传应成功");
+        .expect("创建写句柄");
+    let chunks: [&[u8]; 3] = [b"aaaa", b"bbbbbb", b"cc"];
+    let mut expect = 0u64;
+    for c in chunks {
+        expect += c.len() as u64;
+        let written = writer.write_chunk(c).await.expect("写块");
+        assert_eq!(written, expect, "累计字节数必须与已写量一致");
+    }
+    let total = writer.finish().await.expect("收尾");
+    assert_eq!(total, expect);
 
-    assert!(seen.len() >= 3, "200KB 应当至少回调 3 次，实际：{seen:?}");
-    assert!(
-        seen.windows(2).all(|w| w[0] < w[1]),
-        "进度必须单调递增：{seen:?}"
-    );
-    assert_eq!(*seen.last().unwrap(), data.len() as u64, "最后一块等于总长");
-
-    // 内容逐字节一致：分块写不能写坏数据
+    // 内容按写入顺序拼起来
+    let conn = SshConnection::connect_password(&cfg(server.port), "secret", HostKeyPolicy::AcceptAll)
+        .await
+        .expect("再连一次应成功");
+    let reader = SftpClient::open(conn).await.expect("打开 sftp");
     assert_eq!(
-        sftp.read_file("/big.bin").await.expect("读回"),
-        data,
-        "分块上传后内容必须与源一致"
-    );
-    // 服务端侧也确认一遍（读回走的是我们自己的客户端，双保险）
-    assert_eq!(
-        server.fs.lock().await.get("/big.bin").map(|v| v.len()),
-        Some(data.len())
+        reader.read_file("/stream.bin").await.expect("读回"),
+        b"aaaabbbbbbcc".to_vec(),
+        "分块写入的顺序必须保留"
     );
 }
 

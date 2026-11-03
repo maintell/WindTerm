@@ -92,44 +92,6 @@ impl SftpClient {
             .map_err(|e| sftp_error(&format!("无法写入 {path}"), e.to_string()))
     }
 
-    /// 按块写入，每块写完回调一次**累计字节数**（`FIL-019` 的进度来源）。
-    ///
-    /// 为什么不用一次性 `write`：传输进度必须来自真实写入节奏，
-    /// 「先传完再报 100%」是假进度；而且分块是将来做断点续传的前提。
-    ///
-    /// 回调是同步的：它只负责把数字丢给 UI，不该在这里 await。
-    pub async fn write_file_chunked<F>(
-        &self,
-        path: &str,
-        data: &[u8],
-        mut on_progress: F,
-    ) -> Result<(), WtError>
-    where
-        F: FnMut(u64),
-    {
-        use tokio::io::AsyncWriteExt;
-
-        const CHUNK: usize = 64 * 1024;
-        let mut file = self
-            .inner
-            .create(path)
-            .await
-            .map_err(|e| sftp_error(&format!("无法创建 {path}"), e.to_string()))?;
-
-        let mut written = 0u64;
-        for chunk in data.chunks(CHUNK) {
-            file.write_all(chunk)
-                .await
-                .map_err(|e| sftp_error(&format!("写入 {path} 时失败"), e.to_string()))?;
-            written += chunk.len() as u64;
-            on_progress(written);
-        }
-        file.close()
-            .await
-            .map_err(|e| sftp_error(&format!("关闭 {path} 时失败"), e.to_string()))?;
-        Ok(())
-    }
-
     /// 建目录。
     pub async fn create_dir(&self, path: &str) -> Result<(), WtError> {
         self.inner
@@ -175,6 +137,62 @@ impl SftpClient {
             .canonicalize(path)
             .await
             .map_err(|e| sftp_error(&format!("无法解析路径 {path}"), e.to_string()))
+    }
+}
+
+/// 一次分块上传的写句柄（`FIL-019`：真流式上传）。
+///
+/// 同时持有 `SftpClient`（连接守卫）：只留 `File` 的话，SSH 连接一旦 drop，
+/// 底层通道就没了，下一块写入会以一个莫名其妙的错误失败——
+/// 这与 `SftpClient` 自己持有 `owner` 是同一个理由。
+///
+/// 它让「前端按块读文件、每次一块发过来」成为可能：整块文件不再需要进内存。
+pub struct SftpWriter {
+    file: russh_sftp::client::fs::File,
+    written: u64,
+    /// 只作所有权守卫，不被读取
+    #[allow(dead_code)]
+    owner: SftpClient,
+}
+
+impl SftpWriter {
+    /// 在远端创建（覆盖）文件，准备按块写入。
+    pub async fn create(client: SftpClient, path: &str) -> Result<Self, WtError> {
+        let file = client
+            .inner
+            .create(path)
+            .await
+            .map_err(|e| sftp_error(&format!("无法创建 {path}"), e.to_string()))?;
+        Ok(Self {
+            file,
+            written: 0,
+            owner: client,
+        })
+    }
+
+    /// 写一块，返回**累计**字节数（前端据此显示进度）。
+    pub async fn write_chunk(&mut self, data: &[u8]) -> Result<u64, WtError> {
+        use tokio::io::AsyncWriteExt;
+        self.file
+            .write_all(data)
+            .await
+            .map_err(|e| sftp_error("分块写入失败", e.to_string()))?;
+        self.written += data.len() as u64;
+        Ok(self.written)
+    }
+
+    pub fn written(&self) -> u64 {
+        self.written
+    }
+
+    /// 收尾：`close` 会等远端确认，再放掉连接。
+    pub async fn finish(self) -> Result<u64, WtError> {
+        let written = self.written;
+        self.file
+            .close()
+            .await
+            .map_err(|e| sftp_error("关闭上传文件失败", e.to_string()))?;
+        Ok(written)
     }
 }
 

@@ -48,6 +48,11 @@ struct AppState {
     /// 库里的隧道配置。启动时读一次，增删改后同步更新——
     /// 不要在 1 s 一次的统计轮询里开 SQLite。
     tunnel_specs: std::sync::Mutex<Vec<wt_core::TunnelSpec>>,
+    /// 进行中的分块上传（`FIL-019`）。
+    ///
+    /// 存在 state 里是为了**跨命令**持有 SFTP 写句柄：前端每次只发一块，
+    /// 整文件不再进内存。`SftpWriter` 自己持有连接，所以条目本身就是守卫。
+    uploads: std::sync::Mutex<HashMap<String, wt_ssh::SftpWriter>>,
 }
 
 /// 一条运行中的隧道。`-L`/`-D` 在本地监听、`-R` 在服务端监听——
@@ -1155,31 +1160,98 @@ async fn sftp_download(
     })
 }
 
-/// 上传：按 64 KB 分块写，并把**累计字节数**通过 `Channel` 推给前端。
+/// 上传序号（只在本进程内有意义）。
+static UPLOAD_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// 开始一次分块上传：建连 + 打开写句柄，返回 id。
 ///
-/// 进度必须来自真实写入节奏——「传完再报 100%」是假进度，用户看不出卡住还是快好了。
-/// 分块同时是将来做断点续传的前提（`FIL-019` 的下一半）。
+/// 为什么要分成 begin/chunk/end 三步：整文件 base64 一次性发过来会让
+/// 「大文件上传」把整个文件塞进内存。分块后每块只有 64 KB，
+/// 而且写句柄跨命令存活——这是省内存与将来做断点续传的前提。
 #[tauri::command]
-async fn sftp_upload(
+async fn sftp_upload_begin(
+    state: State<'_, AppState>,
     req: SshOpenReq,
     path: String,
-    content: String,
     jump: Option<JumpReq>,
-    // `Channel` 不是 serde 类型，只能是必填参数（`Option<Channel>` 编译不过）
-    progress: tauri::ipc::Channel<u64>,
-) -> Result<usize, String> {
+) -> Result<String, String> {
+    let _scope = TraceScope::enter("sftp_upload_begin");
+    let sftp = open_sftp(req, jump).await?;
+    let writer = wt_ssh::SftpWriter::create(sftp, &path)
+        .await
+        .map_err(|e| e.to_string())?;
+    let id = format!(
+        "u{}",
+        UPLOAD_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    state
+        .uploads
+        .lock()
+        .map_err(|_| "[INTERNAL] 上传表状态异常".to_string())?
+        .insert(id.clone(), writer);
+    Ok(id)
+}
+
+/// 写一块（base64），返回**累计**字节数。
+#[tauri::command]
+async fn sftp_upload_chunk(
+    state: State<'_, AppState>,
+    id: String,
+    content: String,
+) -> Result<u64, String> {
     let data = B64
         .decode(content)
-        .map_err(|e| format!("上传内容解码失败：{e}"))?;
-    let len = data.len();
-    let sftp = open_sftp(req, jump).await?;
-    sftp.write_file_chunked(&path, &data, |written| {
-        // 前端关掉面板时通道会断，这里不能因此让上传失败
-        let _ = progress.send(written);
-    })
-    .await
-    .map_err(|e| e.to_string())?;
-    Ok(len)
+        .map_err(|e| format!("分块解码失败：{e}"))?;
+    // 取出再写、写回再放：`MutexGuard` 不能跨 await
+    let mut writer = {
+        state
+            .uploads
+            .lock()
+            .map_err(|_| "[INTERNAL] 上传表状态异常".to_string())?
+            .remove(&id)
+            .ok_or_else(|| format!("[SFTP_UPLOAD_UNKNOWN] 没有 id 为 {id} 的上传（可能已结束）"))?
+    };
+    let result = writer.write_chunk(&data).await;
+    // 失败也要放回去：让调用方还能 end/abort，而不是把句柄丢在半空
+    state
+        .uploads
+        .lock()
+        .map_err(|_| "[INTERNAL] 上传表状态异常".to_string())?
+        .insert(id, writer);
+    result.map_err(|e| e.to_string())
+}
+
+/// 收尾：刷完缓冲并关闭远端文件，返回总字节数。
+#[tauri::command]
+async fn sftp_upload_end(state: State<'_, AppState>, id: String) -> Result<u64, String> {
+    let writer = {
+        state
+            .uploads
+            .lock()
+            .map_err(|_| "[INTERNAL] 上传表状态异常".to_string())?
+            .remove(&id)
+            .ok_or_else(|| format!("[SFTP_UPLOAD_UNKNOWN] 没有 id 为 {id} 的上传"))?
+    };
+    writer.finish().await.map_err(|e| e.to_string())
+}
+
+/// 放弃这次上传：丢掉写句柄（连接随之释放）。
+///
+/// 远端会留下半截文件——真实客户端在中断时也是这样，这里不假装能回滚。
+#[tauri::command]
+async fn sftp_upload_abort(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let taken = {
+        state
+            .uploads
+            .lock()
+            .map_err(|_| "[INTERNAL] 上传表状态异常".to_string())?
+            .remove(&id)
+    };
+    if taken.is_none() {
+        return Err(format!("[SFTP_UPLOAD_UNKNOWN] 没有 id 为 {id} 的上传"));
+    }
+    trace(&format!("[sftp_upload_abort] 已放弃 {id}"));
+    Ok(())
 }
 
 // ── 隧道（NET-001 / NET-004）────────────────────────────────
@@ -1885,6 +1957,7 @@ fn main() {
             vault: std::sync::Mutex::new(VaultState::locked()),
             tunnels: std::sync::Mutex::new(HashMap::new()),
             tunnel_specs: std::sync::Mutex::new(load_tunnel_specs()),
+            uploads: std::sync::Mutex::new(HashMap::new()),
         })
         .setup(|app| {
             create_main_window(app)?;
@@ -1907,7 +1980,10 @@ fn main() {
             e2e_mock_port,
             sftp_list,
             sftp_download,
-            sftp_upload,
+            sftp_upload_begin,
+            sftp_upload_chunk,
+            sftp_upload_end,
+            sftp_upload_abort,
             sftp_mkdir,
             sftp_rename,
             sftp_remove,

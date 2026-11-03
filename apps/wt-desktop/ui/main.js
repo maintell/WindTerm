@@ -1355,37 +1355,49 @@ function toBase64(bytes) {
 /** 最近一次上传的进度快照（验收与脚本读它，避免去解析提示文本） */
 let lastUpload = null;
 
-/** 上传本地文件到当前远端目录，成功后刷新列表。 */
+/** 每次发给后端的分块大小：64 KB（base64 后约 87 KB，IPC 开销可接受） */
+const UPLOAD_CHUNK = 64 * 1024;
+
+/**
+ * 上传本地文件到当前远端目录。
+ *
+ * **按块读、按块发**：整文件不再进内存——这是与「一次性 base64」的关键区别，
+ * 也是将来做断点续传的前提（续传只需要知道已经写到哪个 offset）。
+ */
 async function uploadFiles(picked) {
   if (!picked.length) return;
   let done = 0;
   for (const file of picked) {
     setFilesMsg(`上传中… ${file.name}`);
+    lastUpload = { name: file.name, total: file.size, last: 0, events: 0 };
+    let id = null;
     try {
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      const total = bytes.length;
-      // 进度来自后端的**真实写入节奏**（每 64 KB 一次），不是前端自己算的假进度
-      const ch = new window.__TAURI__.core.Channel();
-      lastUpload = { name: file.name, total, last: 0, events: 0 };
-      ch.onmessage = (written) => {
+      const path = joinPath(sftpPath, file.name);
+      id = await withDeadline(
+        invoke("sftp_upload_begin", { req: sftpReq(), path, jump: jumpReq() }),
+        20000,
+        "开始上传",
+      );
+      let offset = 0;
+      while (offset < file.size) {
+        const slice = file.slice(offset, Math.min(offset + UPLOAD_CHUNK, file.size));
+        const bytes = new Uint8Array(await slice.arrayBuffer());
+        const written = await withDeadline(
+          invoke("sftp_upload_chunk", { id, content: toBase64(bytes) }),
+          60000,
+          "上传分块",
+        );
         lastUpload.last = written;
         lastUpload.events += 1;
-        const pct = total ? Math.round((written / total) * 100) : 100;
+        const pct = file.size ? Math.round((written / file.size) * 100) : 100;
         setFilesMsg(`上传中… ${file.name} ${pct}%`);
-      };
-      await withDeadline(
-        invoke("sftp_upload", {
-          req: sftpReq(),
-          path: joinPath(sftpPath, file.name),
-          content: toBase64(bytes),
-          jump: jumpReq(),
-          progress: ch,
-        }),
-        120000,
-        "上传",
-      );
+        offset = written;
+      }
+      await withDeadline(invoke("sftp_upload_end", { id }), 20000, "结束上传");
+      id = null;
       done += 1;
     } catch (e) {
+      if (id) await invoke("sftp_upload_abort", { id }).catch(() => {});
       setFilesMsg(`上传 ${file.name} 失败：${e}`);
       return;
     }
@@ -1881,7 +1893,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-18",
+  ui: "wt-ui-19",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";
