@@ -5887,16 +5887,19 @@ dependencies = [
 name = "wt-desktop"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "serde",
  "tauri",
  "tauri-build",
  "wt-common",
  "wt-core",
+ "wt-crypto",
  "wt-import",
  "wt-ipc",
  "wt-ssh",
  "wt-store",
  "wt-term",
+ "zeroize",
 ]
 
 [[package]]

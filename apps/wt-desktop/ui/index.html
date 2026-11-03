@@ -48,8 +48,20 @@
       #bar input:focus { outline: 1px solid var(--accent); }
       #bar button:disabled { opacity: 0.45; cursor: default; border-color: #3a3a44; }
       #status { margin-left: auto; }
+      #remember-toggle,
       #key-toggle { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+      #remember-toggle input,
       #key-toggle input { width: auto; }
+      #vault-row {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        width: 100%;
+        font-size: 12px;
+      }
+      #vault-row[hidden] { display: none; }
+      #vault-row #master-pass { width: 150px; }
+      #vault-row #vault-state { color: var(--muted); }
       #key-row {
         display: flex;
         gap: 6px;
@@ -118,6 +130,7 @@
       <input id="port" placeholder="端口" value="22" inputmode="numeric" />
       <input id="user" placeholder="用户名" spellcheck="false" />
       <input id="password" type="password" placeholder="密码" />
+      <label id="remember-toggle"><input type="checkbox" id="remember" />记住密码</label>
       <label id="key-toggle"><input type="checkbox" id="use-key" />用密钥</label>
       <button id="ssh">连接 SSH</button>
       <button id="open">新建本地终端</button>
@@ -127,6 +140,12 @@
         <button id="pick-key">选择密钥…</button>
         <span id="key-name">未选择</span>
         <input id="key-pass" type="password" placeholder="密钥口令（可空）" />
+      </div>
+      <div id="vault-row" hidden>
+        <input id="master-pass" type="password" placeholder="主密码" />
+        <button id="vault-open">创建</button>
+        <button id="vault-lock" disabled>锁定</button>
+        <span id="vault-state">保险库未创建</span>
       </div>
       <input id="key-file" type="file" hidden />
     </div>

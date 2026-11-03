@@ -76,6 +76,14 @@ id_type!(FolderId, "folder");
 id_type!(SessionId, "session");
 id_type!(TunnelId, "tunnel");
 
+/// 生成一个新的 UUID v7 字符串。
+///
+/// 用于不属于任何具体实体的地方（例如保险库条目 ID），
+/// 免得为了一个唯一标识去污染 `SessionId` 这类类型。
+pub fn new_uuid() -> String {
+    Uuid::now_v7().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,6 +116,14 @@ mod tests {
     fn ids_are_unique_in_bulk() {
         let set: HashSet<SessionId> = (0..1000).map(|_| SessionId::new()).collect();
         assert_eq!(set.len(), 1000);
+    }
+
+    #[test]
+    fn new_uuid_is_unique_and_parseable() {
+        let a = new_uuid();
+        let b = new_uuid();
+        assert_ne!(a, b, "每次都应生成不同的 ID");
+        assert!(Uuid::parse_str(&a).is_ok(), "应是合法 UUID：{a}");
     }
 
     #[test]

@@ -13,12 +13,34 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine as _;
 use tauri::State;
 use wt_ipc::{SessionHandle, SessionRegistry, SessionStats};
 use wt_term::pty::PtyConfig;
 
+/// 保险库的运行时状态。
+struct VaultState {
+    /// 已解锁的保险库；`None` 表示锁定或还没创建
+    vault: Option<wt_crypto::Vault>,
+    /// 解锁期间保留主密码：`Vault::seal` 每次都要重新派生密钥（Argon2id），
+    /// 不保留的话用户每存一个密码就得重输一次主密码。
+    /// 用 `Zeroizing` 保证丢弃时清零。
+    password: Option<zeroize::Zeroizing<String>>,
+}
+
+impl VaultState {
+    fn locked() -> Self {
+        Self {
+            vault: None,
+            password: None,
+        }
+    }
+}
+
 struct AppState {
     registry: SessionRegistry,
+    vault: std::sync::Mutex<VaultState>,
 }
 
 /// 前端拉取单次上限：64 KB（`design/02` §5.2）。
@@ -204,6 +226,142 @@ fn import_mobaxterm(bytes: Vec<u8>) -> Result<ImportDto, String> {
     })
 }
 
+// ── 保险库 ──────────────────────────────────────────────────
+
+fn vault_path() -> std::path::PathBuf {
+    data_dir().join("vault.wtvlt")
+}
+
+#[derive(serde::Serialize)]
+struct VaultStatusDto {
+    exists: bool,
+    unlocked: bool,
+    entries: usize,
+}
+
+fn status_of(state: &VaultState) -> VaultStatusDto {
+    VaultStatusDto {
+        exists: vault_path().exists(),
+        unlocked: state.vault.is_some(),
+        entries: state.vault.as_ref().map(|v| v.entries().len()).unwrap_or(0),
+    }
+}
+
+fn locked_error() -> String {
+    "[VAULT_LOCKED] 保险库已锁定，请先解锁".to_string()
+}
+
+#[tauri::command]
+fn vault_status(state: State<'_, AppState>) -> VaultStatusDto {
+    status_of(&state.vault.lock().unwrap())
+}
+
+/// 首次创建保险库并解锁。
+#[tauri::command]
+fn vault_create(state: State<'_, AppState>, password: String) -> Result<VaultStatusDto, String> {
+    if vault_path().exists() {
+        return Err("[VAULT_EXISTS] 保险库已存在，请直接解锁".into());
+    }
+    // 弱口令直接拒绝：保险库里装的是服务器密码，不是本地笔记
+    wt_crypto::check_strength(&password).map_err(|e| e.to_string())?;
+
+    let mut vault = wt_crypto::Vault::create(&password).map_err(|e| e.to_string())?;
+    let bytes = vault.seal(&password).map_err(|e| e.to_string())?;
+    std::fs::write(vault_path(), bytes).map_err(|e| format!("写入保险库失败：{e}"))?;
+
+    let mut st = state.vault.lock().unwrap();
+    st.vault = Some(vault);
+    st.password = Some(zeroize::Zeroizing::new(password));
+    Ok(status_of(&st))
+}
+
+#[tauri::command]
+fn vault_unlock(state: State<'_, AppState>, password: String) -> Result<VaultStatusDto, String> {
+    let bytes = std::fs::read(vault_path()).map_err(|e| format!("读取保险库失败：{e}"))?;
+    let vault = wt_crypto::Vault::unlock(&bytes, &password).map_err(|e| e.to_string())?;
+
+    let mut st = state.vault.lock().unwrap();
+    st.vault = Some(vault);
+    st.password = Some(zeroize::Zeroizing::new(password));
+    Ok(status_of(&st))
+}
+
+#[tauri::command]
+fn vault_lock(state: State<'_, AppState>) -> VaultStatusDto {
+    let mut st = state.vault.lock().unwrap();
+    st.vault = None;
+    st.password = None;
+    status_of(&st)
+}
+
+/// 保存某个会话的密码。同一会话只保留一条，重复保存是覆盖而不是堆积。
+#[tauri::command]
+fn credential_save(
+    state: State<'_, AppState>,
+    session_id: String,
+    name: String,
+    password: String,
+) -> Result<VaultStatusDto, String> {
+    let mut st = state.vault.lock().unwrap();
+    // 先取主密码再可变借用 vault，避免同一个 MutexGuard 上两次借用
+    let master = st.password.clone().ok_or_else(locked_error)?;
+    let Some(vault) = st.vault.as_mut() else {
+        return Err(locked_error());
+    };
+
+    let stale: Vec<String> = vault
+        .entries()
+        .iter()
+        .filter(|e| matches!(e, wt_crypto::Entry::Password { session_id: Some(s), .. } if s == &session_id))
+        .map(|e| e.id().to_string())
+        .collect();
+    for id in stale {
+        vault.remove(&id).map_err(|e| e.to_string())?;
+    }
+
+    vault
+        .add(wt_crypto::Entry::Password {
+            id: wt_core::id::new_uuid(),
+            name,
+            secret: B64.encode(password.as_bytes()),
+            session_id: Some(session_id),
+        })
+        .map_err(|e| e.to_string())?;
+
+    let bytes = vault.seal(&master).map_err(|e| e.to_string())?;
+    std::fs::write(vault_path(), bytes).map_err(|e| format!("写入保险库失败：{e}"))?;
+    Ok(status_of(&st))
+}
+
+/// 取某个会话保存的密码。没存过返回 `None`（不是错误）。
+#[tauri::command]
+fn credential_get(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Option<String>, String> {
+    let st = state.vault.lock().unwrap();
+    let Some(vault) = st.vault.as_ref() else {
+        return Err(locked_error());
+    };
+    let found = vault.entries().iter().find_map(|e| match e {
+        wt_crypto::Entry::Password {
+            secret,
+            session_id: Some(s),
+            ..
+        } if s == &session_id => Some(secret.clone()),
+        _ => None,
+    });
+    match found {
+        Some(encoded) => {
+            let raw = B64
+                .decode(encoded)
+                .map_err(|e| format!("凭据解码失败：{e}"))?;
+            Ok(Some(String::from_utf8_lossy(&raw).to_string()))
+        }
+        None => Ok(None),
+    }
+}
+
 // ── SSH ─────────────────────────────────────────────────────
 
 /// 应用数据目录。
@@ -273,6 +431,25 @@ async fn try_connect(
     }
 }
 
+/// `ssh_open` 的入参。收成一个结构体而不是 9 个位置参数——
+/// 参数一多就容易传错位，而且 clippy 也会报 `too_many_arguments`。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SshOpenReq {
+    host: String,
+    #[serde(default)]
+    port: Option<u16>,
+    user: String,
+    #[serde(default)]
+    password: Option<String>,
+    #[serde(default)]
+    key_pem: Option<String>,
+    #[serde(default)]
+    key_passphrase: Option<String>,
+    cols: u16,
+    rows: u16,
+}
+
 /// 建立 SSH 交互式终端。
 ///
 /// 主机密钥策略是 OpenSSH 的 `accept-new`：第一次见到某台主机就记住指纹，
@@ -280,17 +457,17 @@ async fn try_connect(
 ///
 /// 认证支持密码与私钥两条路：很多服务器关掉了密码认证，只给密钥。
 #[tauri::command]
-async fn ssh_open(
-    state: State<'_, AppState>,
-    host: String,
-    port: Option<u16>,
-    user: String,
-    password: Option<String>,
-    key_pem: Option<String>,
-    key_passphrase: Option<String>,
-    cols: u16,
-    rows: u16,
-) -> Result<SshOpenDto, String> {
+async fn ssh_open(state: State<'_, AppState>, req: SshOpenReq) -> Result<SshOpenDto, String> {
+    let SshOpenReq {
+        host,
+        port,
+        user,
+        password,
+        key_pem,
+        key_passphrase,
+        cols,
+        rows,
+    } = req;
     let cfg = wt_ssh::SshConfig {
         host: host.trim().to_string(),
         port: port.unwrap_or(22),
@@ -385,6 +562,7 @@ fn main() {
     tauri::Builder::default()
         .manage(AppState {
             registry: SessionRegistry::new(),
+            vault: std::sync::Mutex::new(VaultState::locked()),
         })
         .setup(|app| {
             create_main_window(app)?;
@@ -402,7 +580,13 @@ fn main() {
             ssh_open,
             sessions_load,
             import_mobaxterm,
-            mock_generate_key
+            mock_generate_key,
+            vault_status,
+            vault_create,
+            vault_unlock,
+            vault_lock,
+            credential_save,
+            credential_get
         ])
         .run(tauri::generate_context!())
         .expect("启动 WindTerm 失败");

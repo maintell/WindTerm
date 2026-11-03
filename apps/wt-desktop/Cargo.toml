@@ -16,8 +16,11 @@ wt-import = { path = "../../crates/wt-import" }
 wt-term = { path = "../../crates/wt-term" }
 wt-ipc = { path = "../../crates/wt-ipc" }
 wt-ssh = { path = "../../crates/wt-ssh" }
+wt-crypto = { path = "../../crates/wt-crypto" }
 tauri = { version = "2", features = [] }
 serde = { workspace = true }
+base64 = { workspace = true }
+zeroize = { workspace = true }
 
 [features]
 # 端到端验收用：在应用内起一个进程内 SSH 服务端，让界面真的去连一台「服务器」。

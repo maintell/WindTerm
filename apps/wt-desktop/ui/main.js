@@ -44,6 +44,17 @@ const keyPassInput = document.getElementById("key-pass");
 /** 已选中的私钥内容（PEM/OpenSSH 文本），null 表示没选 */
 let keyPem = null;
 
+const rememberBox = document.getElementById("remember");
+const vaultRow = document.getElementById("vault-row");
+const masterPassInput = document.getElementById("master-pass");
+const vaultOpenBtn = document.getElementById("vault-open");
+const vaultLockBtn = document.getElementById("vault-lock");
+const vaultStateEl = document.getElementById("vault-state");
+
+let vaultUnlocked = false;
+/** 会话树里当前选中的会话（保存密码要按它记） */
+let selectedSession = null;
+
 const term = new Terminal({
   fontFamily: '"JetBrains Mono", Consolas, "Cascadia Mono", monospace',
   fontSize: 13,
@@ -166,21 +177,24 @@ async function openSsh() {
   sshBtn.disabled = true;
   try {
     const r = await invoke("ssh_open", {
-      host,
-      port,
-      user,
-      // 密钥模式下不传密码：传了会被当成备选，容易掩盖「密钥没被接受」这种问题
-      password: useKeyBox.checked ? null : passInput.value,
-      keyPem: useKeyBox.checked ? keyPem : null,
-      keyPassphrase: useKeyBox.checked ? keyPassInput.value || null : null,
-      cols: term.cols,
-      rows: term.rows,
+      req: {
+        host,
+        port,
+        user,
+        // 密钥模式下不传密码：传了会被当成备选，容易掩盖「密钥没被接受」这种问题
+        password: useKeyBox.checked ? null : passInput.value,
+        keyPem: useKeyBox.checked ? keyPem : null,
+        keyPassphrase: useKeyBox.checked ? keyPassInput.value || null : null,
+        cols: term.cols,
+        rows: term.rows,
+      },
     });
     handle = r.handle;
     afterOpen(
       `已连接 ${user}@${host}${r.host_key_added ? "（已记录主机密钥）" : ""}`,
     );
     if (r.fingerprint) term.write(`\x1b[2m主机密钥 ${r.fingerprint}\x1b[0m\r\n`);
+    await savePasswordIfAsked();
   } catch (e) {
     // 失败原因写进终端：状态栏放不下 hints，而且用户需要能复制下来
     term.write(`\r\n\x1b[31m${String(e)}\x1b[0m\r\n`);
@@ -217,17 +231,32 @@ function treeEmpty(text) {
   treeBody.appendChild(p);
 }
 
-/** 点会话 → 把连接参数填进表单。密码不存库，所以仍要用户自己填。 */
-function selectSession(s) {
+/** 点会话 → 把连接参数填进表单。密码不存库时仍需用户自己填。 */
+async function selectSession(s) {
   if (s.kind !== "ssh") {
     setStatus(`${s.name} 是 ${s.kind} 会话，暂不支持`);
     return;
   }
+  selectedSession = s;
   if (s.host) hostInput.value = s.host;
   if (s.port) portInput.value = String(s.port);
   if (s.username) userInput.value = s.username;
   setStatus(`已选中 ${s.name}，填密码后连接`);
   passInput.focus();
+
+  // 保险库解锁时顺手把存过的密码填上，省掉每次手输
+  if (vaultUnlocked) {
+    try {
+      const saved = await invoke("credential_get", { sessionId: s.id });
+      if (saved) {
+        passInput.value = saved;
+        setStatus(`已从保险库填入 ${s.name} 的密码`);
+        return;
+      }
+    } catch {
+      /* 取不到就当没存过，不打扰用户 */
+    }
+  }
 }
 
 function renderTree(dto) {
@@ -375,6 +404,12 @@ for (const el of [hostInput, portInput, userInput, passInput, keyPassInput]) {
 useKeyBox.addEventListener("change", () => {
   keyRow.hidden = !useKeyBox.checked;
   passInput.hidden = useKeyBox.checked;
+  // 密钥模式下没有密码可存：与其让「记住密码」静默失效，不如直接禁用并收起
+  rememberBox.disabled = useKeyBox.checked;
+  if (useKeyBox.checked) {
+    rememberBox.checked = false;
+    vaultRow.hidden = true;
+  }
   (useKeyBox.checked ? pickKeyBtn : passInput).focus();
 });
 
@@ -395,6 +430,73 @@ keyFileInput.addEventListener("change", async () => {
     keyFileInput.value = "";
   }
 });
+
+// ── 保险库（保存密码）──────────────────────────────────────
+async function refreshVault() {
+  try {
+    const s = await invoke("vault_status");
+    vaultUnlocked = s.unlocked;
+    vaultOpenBtn.textContent = s.exists ? "解锁" : "创建";
+    vaultLockBtn.disabled = !s.unlocked;
+    vaultStateEl.textContent = s.unlocked
+      ? `已解锁（${s.entries} 条）`
+      : s.exists
+        ? "保险库已锁定"
+        : "保险库未创建";
+  } catch (e) {
+    vaultStateEl.textContent = `保险库状态未知：${e}`;
+  }
+}
+
+rememberBox.addEventListener("change", () => {
+  vaultRow.hidden = !rememberBox.checked;
+  if (rememberBox.checked) {
+    refreshVault();
+    masterPassInput.focus();
+  }
+});
+
+vaultOpenBtn.addEventListener("click", async () => {
+  const pw = masterPassInput.value;
+  if (!pw) {
+    setStatus("请输入主密码");
+    masterPassInput.focus();
+    return;
+  }
+  try {
+    // 有文件就解锁，没有就创建：用户不需要先理解「保险库」是什么
+    const exists = (await invoke("vault_status")).exists;
+    await invoke(exists ? "vault_unlock" : "vault_create", { password: pw });
+    masterPassInput.value = "";
+    await refreshVault();
+    setStatus(exists ? "保险库已解锁" : "保险库已创建");
+  } catch (e) {
+    setStatus(`保险库操作失败：${e}`);
+  }
+});
+
+vaultLockBtn.addEventListener("click", async () => {
+  await invoke("vault_lock");
+  await refreshVault();
+  setStatus("保险库已锁定");
+});
+
+/** 连接成功后按需保存密码。保存失败不影响已经连上的会话。 */
+async function savePasswordIfAsked() {
+  if (!rememberBox.checked || useKeyBox.checked || !selectedSession) return;
+  const pw = passInput.value;
+  if (!pw) return;
+  try {
+    await invoke("credential_save", {
+      sessionId: selectedSession.id,
+      name: selectedSession.name,
+      password: pw,
+    });
+    await refreshVault();
+  } catch (e) {
+    term.write(`\r\n\x1b[33m密码未保存：${e}\x1b[0m\r\n`);
+  }
+}
 
 setInterval(() => void ackPending(), ACK_INTERVAL);
 

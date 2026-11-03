@@ -748,7 +748,103 @@ try {
     keyStatus,
   );
 
-  // 18. 连不上的错误路径：必须给出稳定错误码，不能静默失败
+  // 18. 保险库：把密码存起来，下次选中会话自动填
+  await clickElement("#close");
+  await waitFor(
+    async () => (await cdp.eval(`document.getElementById("status").textContent`)) === "已关闭",
+    { timeout: 10000, label: "关闭密钥会话" },
+  );
+
+  // 先退出密钥模式：密钥模式下没有密码可存，「记住密码」会被禁用
+  await clickElement("#use-key");
+  const keyModeOff = await waitFor(
+    async () => {
+      const disabled = await cdp.eval(`document.getElementById("remember").disabled`);
+      return disabled === false ? true : null;
+    },
+    { timeout: 5000, label: "退出密钥模式" },
+  );
+  check("密钥模式下「记住密码」被禁用，退出后恢复", keyModeOff === true);
+
+  await clickElement("#remember");
+  const vaultVisible = await waitFor(
+    async () => {
+      const hidden = await cdp.eval(`document.getElementById("vault-row").hidden`);
+      return hidden === false ? true : null;
+    },
+    { timeout: 5000, label: "保险库输入行" },
+  );
+  check("勾选「记住密码」后出现保险库输入", vaultVisible === true);
+
+  const MASTER = "WindTerm-E2E-Passw0rd!";
+  await fillInput("#master-pass", MASTER);
+  await clickElement("#vault-open");
+  const vaultState = await waitFor(
+    async () => {
+      const t = await cdp.eval(`document.getElementById("vault-state").textContent`);
+      return t.includes("已解锁") ? t : null;
+    },
+    { timeout: 20000, label: "创建保险库" },
+  );
+  check("创建保险库并解锁", vaultState.includes("已解锁"), vaultState);
+
+  // 选中会话 → 填密码 → 连接成功 → 密码应被写入保险库
+  await clickSessionNode("mock-ssh");
+  await fillInput("#password", "secret");
+  await clickElement("#ssh");
+  await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      return s.startsWith("已连接") ? s : null;
+    },
+    { timeout: 30000, label: "保险库会话连接" },
+  );
+  const vaultAfterSave = await waitFor(
+    async () => {
+      const t = await cdp.eval(`document.getElementById("vault-state").textContent`);
+      return t.includes("1 条") ? t : null;
+    },
+    { timeout: 15000, label: "密码写入保险库" },
+  );
+  check("连接成功后密码写入保险库", true, vaultAfterSave);
+
+  const vaultFile = join(DATA_DIR, "vault.wtvlt");
+  const vaultBytes = existsSync(vaultFile) ? readFileSync(vaultFile) : Buffer.alloc(0);
+  check(
+    "保险库文件落盘且是加密容器",
+    vaultBytes.length > 100 && vaultBytes.subarray(0, 6).toString("latin1") === "WTVLT\u0000",
+    `${vaultBytes.length} 字节`,
+  );
+
+  // 关掉、清空密码框、重新选中会话：密码应从保险库自动填入
+  await clickElement("#close");
+  await waitFor(
+    async () => (await cdp.eval(`document.getElementById("status").textContent`)) === "已关闭",
+    { timeout: 10000, label: "关闭保险库会话" },
+  );
+  await fillInput("#password", "");
+  await clickSessionNode("mock-ssh");
+  const refilled = await waitFor(
+    async () => {
+      const v = await cdp.eval(`document.getElementById("password").value`);
+      return v === "secret" ? v : null;
+    },
+    { timeout: 10000, label: "保险库自动填密码" },
+  );
+  check("重新选中会话时从保险库自动填入密码", refilled === "secret");
+
+  // 用自动填入的密码直接连（证明存下来的密码真的能用）
+  await clickElement("#ssh");
+  const reusedStatus = await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      return s.startsWith("已连接") ? s : null;
+    },
+    { timeout: 30000, label: "用保险库密码连接" },
+  );
+  check("用保险库里的密码能直接连上", reusedStatus.includes("tester@127.0.0.1"), reusedStatus);
+
+  // 19. 连不上的错误路径：必须给出稳定错误码，不能静默失败
   await clickElement("#close");
   await waitFor(
     async () => (await cdp.eval(`document.getElementById("status").textContent`)) === "已关闭",

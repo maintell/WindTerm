@@ -16,7 +16,7 @@
 | IPC 数据面（`wt-ipc`） | ✅ 完成 | 会话注册表 + 拉取式二进制读取 + 未确认字节背压 + 事件节流；7 个测试 |
 | MobaXterm 迁移（`SES-020`） | ✅ 可用 | `wt session import/list`：树结构还原、Rlogin 跳过并说明、重复导入按 name+host+port 与会话/文件夹去重 |
 | 其余协议（SFTP / RDP / VNC / 隧道） | ⬜ 未开始 | — |
-| UI 壳（Tauri 2 + xterm.js） | ✅ 可交互 | 端到端验收 31 项通过（`scripts/e2e-desktop.mjs`）：本地终端全链路 + 会话树 + 界面导入（含 GBK）+ SSH 密码/密钥双认证 + TOFU + 回显 + 重连 + 错误路径 |
+| UI 壳（Tauri 2 + xterm.js） | ✅ 可交互 | 端到端验收 38 项通过（`scripts/e2e-desktop.mjs`）：本地终端全链路 + 会话树 + 界面导入（含 GBK）+ SSH 密码/密钥双认证 + TOFU + 保险库存密码与自动填入 + 错误路径 |
 
 实现按 [`docs/spec/14-roadmap-acceptance.md`](docs/spec/14-roadmap-acceptance.md) 的里程碑推进。
 
@@ -55,7 +55,7 @@ cargo run -p wt-cli -- session list
 | ~~G2~~ | ~~SSH 正向路径无自动化测试~~ | ✅ 已补齐：进程内 mock 服务端，覆盖握手/认证/exec/PTY/TOFU | — |
 | G3 | agent 转发、keepalive 的断线检测（`max_missed`）、PuTTY `.ppk` 未实现 | 无法用 ssh-agent；心跳只保活不探测半开连接；PPK 需先转换 | 下一迭代 |
 | ~~G4~~ | ~~本地 PTY 关闭挂起~~ | ✅ 已修复：根因是未应答 ConPTY 的 `ESC[6n` 光标查询，补上应答后子进程输出与关闭均正常 | — |
-| G5 | 密码不保存（导入的会话也不带密码），非 SSH 会话点不动 | 每次连接要手输密码；RDP/VNC 会话只能看不能连 | 密码进保险库（`SEC-*`）+ 对应协议栈 |
+| G5 | 非 SSH 会话点不动；保险库没有条目管理界面（只能按会话保存/自动填入） | RDP/VNC 会话只能看不能连；换密码要重连一次才会覆盖 | 对应协议栈 + 保险库管理页（`SEC-*`） |
 | G6 | 界面没有标签页、分屏、搜索、字体与主题设置 | 单会话可用，多会话要开多个窗口 | 随 `TER-01x` / `SET-00x` 推进 |
 | ~~G7~~ | ~~非 UTF-8 的 ini 会让中文名乱码~~ | ✅ 已修复：`wt_import::decode_ini` 先按 UTF-8 严格解、失败再按 GBK；导入结果里显示用了哪种编码 | — |
 
