@@ -123,7 +123,7 @@ def test_ssh_connect(server, wt):
 | 调试参数必须由代码传，不能用 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` | `wry` 每次都会 `set_additional_browser_arguments`，会覆盖该环境变量 |
 | 连上 CDP 后立刻 `Emulation.setFocusEmulationEnabled` | 窗口没拿到前台焦点时，WebView2 会偶发吞掉可信鼠标/键盘事件——观察到过一次「点了按钮没反应」的假失败 |
 
-当前覆盖 28 项断言：
+当前覆盖 31 项断言：
 
 - 本地终端：页面加载与 Tauri 桥接、启动自检、点击建会话、句柄可取、首屏输出渲染、
   焦点在终端、键盘输入、命令输出、统计字段非零值、前后端行列一致、ack 回流归零、
@@ -131,8 +131,12 @@ def test_ssh_connect(server, wt):
 - 会话树与导入：`wt session import` 导入后刷新可见、界面「导入」按钮选文件即落库并刷新树、
   同一份文件再导一次被判为重复而不是新增、GBK 编码的 ini 中文名可读（不变成乱码）、
   点会话自动填好主机/端口/用户名、焦点落到密码框（密码不存库，必须手填）；
-- SSH：连接成功、首次连接记录主机密钥（TOFU accept-new）、服务端横幅与逐键回显、
+- SSH 密码认证：连接成功、首次连接记录主机密钥（TOFU accept-new）、服务端横幅与逐键回显、
   重连不再重复记录、`known_hosts` 落盘、连不上时给出 `SSH_CONNECT_FAILED` 而非静默失败；
+- SSH 密钥认证：仓库里不放测试私钥（见 `wt-ssh::testing` 的注释），验收时由应用的
+  `mock_generate_key` 现生成一把一次性密钥（仅 `e2e-mock` feature 编译进来，
+  生产构建该命令只返回错误），再经 `<input type=file>` + `DOM.setFileInputFiles` 喂给界面；
+  断言选中后显示文件名、无密码也能连上并收到服务端横幅；
 - 全程断言页面无未捕获异常。
 
 SSH 那几项需要一台「服务器」。本机没有 sshd，所以 `wt-desktop` 带 `e2e-mock` feature 编译时

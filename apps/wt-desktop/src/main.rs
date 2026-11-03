@@ -252,18 +252,42 @@ struct SshOpenDto {
     host_key_added: bool,
 }
 
+/// 认证方式：密码，或一把私钥（可带口令）。
+enum AuthInput {
+    Password(String),
+    Key(wt_ssh::PrivateKeySource),
+}
+
+fn known_policy(known: &wt_ssh::KnownHosts) -> wt_ssh::HostKeyPolicy {
+    wt_ssh::HostKeyPolicy::Known(Box::new(known.clone()))
+}
+
+async fn try_connect(
+    cfg: &wt_ssh::SshConfig,
+    auth: &AuthInput,
+    policy: wt_ssh::HostKeyPolicy,
+) -> Result<wt_ssh::SshConnection, wt_common::WtError> {
+    match auth {
+        AuthInput::Password(p) => wt_ssh::SshConnection::connect_password(cfg, p, policy).await,
+        AuthInput::Key(k) => wt_ssh::SshConnection::connect_publickey(cfg, k, policy).await,
+    }
+}
+
 /// 建立 SSH 交互式终端。
 ///
 /// 主机密钥策略是 OpenSSH 的 `accept-new`：第一次见到某台主机就记住指纹，
 /// 之后指纹变化一律拒绝。用户不需要理解 TOFU，但中间人换证书会被挡住。
 ///
+/// 认证支持密码与私钥两条路：很多服务器关掉了密码认证，只给密钥。
 #[tauri::command]
 async fn ssh_open(
     state: State<'_, AppState>,
     host: String,
     port: Option<u16>,
     user: String,
-    password: String,
+    password: Option<String>,
+    key_pem: Option<String>,
+    key_passphrase: Option<String>,
     cols: u16,
     rows: u16,
 ) -> Result<SshOpenDto, String> {
@@ -280,16 +304,17 @@ async fn ssh_open(
         return Err("[SSH_BAD_ARGUMENT] 用户名不能为空".into());
     }
 
+    let auth = match key_pem {
+        Some(pem) if !pem.trim().is_empty() => {
+            AuthInput::Key(wt_ssh::PrivateKeySource::new(pem.into_bytes(), key_passphrase))
+        }
+        _ => AuthInput::Password(password.unwrap_or_default()),
+    };
+
     let mut known = load_known_hosts();
     let mut host_key_added = false;
 
-    let conn = match wt_ssh::SshConnection::connect_password(
-        &cfg,
-        &password,
-        wt_ssh::HostKeyPolicy::Known(Box::new(known.clone())),
-    )
-    .await
-    {
+    let conn = match try_connect(&cfg, &auth, known_policy(&known)).await {
         Ok(c) => c,
         Err(e) if e.code == wt_common::codes::SSH_HOSTKEY_UNKNOWN => {
             let observed = wt_ssh::SshConnection::probe_host_key(&cfg)
@@ -298,13 +323,9 @@ async fn ssh_open(
             known.add(&cfg.endpoint(), &observed.key_type, &observed.blob, false);
             save_known_hosts(&known)?;
             host_key_added = true;
-            wt_ssh::SshConnection::connect_password(
-                &cfg,
-                &password,
-                wt_ssh::HostKeyPolicy::Known(Box::new(known.clone())),
-            )
-            .await
-            .map_err(|e| e.to_string())?
+            try_connect(&cfg, &auth, known_policy(&known))
+                .await
+                .map_err(|e| e.to_string())?
         }
         Err(e) => return Err(e.to_string()),
     };
@@ -330,6 +351,24 @@ async fn ssh_open(
         fingerprint,
         host_key_added,
     })
+}
+
+/// 端到端验收专用：生成一把一次性的 OpenSSH 私钥。
+///
+/// 仓库里不放测试私钥（哪怕只用于 localhost，见 `wt-ssh::testing` 的注释），
+/// 所以验收时现生成、用完即弃。生产构建（没有 `e2e-mock`）只返回错误，
+/// 不会生成任何密钥。
+#[tauri::command]
+fn mock_generate_key() -> Result<String, String> {
+    #[cfg(feature = "e2e-mock")]
+    {
+        let pem = wt_ssh::testing::MockSshServer::fresh_openssh_key(None);
+        Ok(String::from_utf8_lossy(&pem).to_string())
+    }
+    #[cfg(not(feature = "e2e-mock"))]
+    {
+        Err("[E2E_ONLY] 生产构建不提供该命令".into())
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -362,7 +401,8 @@ fn main() {
             term_close,
             ssh_open,
             sessions_load,
-            import_mobaxterm
+            import_mobaxterm,
+            mock_generate_key
         ])
         .run(tauri::generate_context!())
         .expect("启动 WindTerm 失败");

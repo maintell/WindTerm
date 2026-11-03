@@ -315,6 +315,17 @@ async function fillInput(selector, text) {
   else await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Delete", windowsVirtualKeyCode: 46, nativeVirtualKeyCode: 46 });
 }
 
+/** 取元素的 DOM nodeId（`DOM.setFileInputFiles` 要它，而 <input type=file> 只能这样喂文件） */
+async function nodeIdOf(selector) {
+  const { root: domRoot } = await cdp.send("DOM.getDocument", { depth: 0 });
+  const { nodeId } = await cdp.send("DOM.querySelector", {
+    nodeId: domRoot.nodeId,
+    selector,
+  });
+  if (!nodeId) throw new Error(`找不到元素 ${selector}`);
+  return nodeId;
+}
+
 // ── 主流程 ──────────────────────────────────────────────────
 let cdp = null;
 
@@ -538,12 +549,8 @@ try {
       "",
     ].join("\r\n"),
   );
-  const { root: domRoot } = await cdp.send("DOM.getDocument", { depth: 0 });
-  const { nodeId } = await cdp.send("DOM.querySelector", {
-    nodeId: domRoot.nodeId,
-    selector: "#import-file",
-  });
-  await cdp.send("DOM.setFileInputFiles", { nodeId, files: [ini2] });
+  const importFileNode = await nodeIdOf("#import-file");
+  await cdp.send("DOM.setFileInputFiles", { nodeId: importFileNode, files: [ini2] });
   const afterUiImport = await waitFor(
     async () => {
       const names = await cdp.eval(`window.__wt.sessions()`);
@@ -559,7 +566,7 @@ try {
   );
 
   // 12c. 再导一次同一份文件：应全部判重，树里不出现第二份
-  await cdp.send("DOM.setFileInputFiles", { nodeId, files: [ini2] });
+  await cdp.send("DOM.setFileInputFiles", { nodeId: importFileNode, files: [ini2] });
   const dupMsg = await waitFor(
     async () => {
       const t = await cdp.eval(`document.getElementById("tree-msg").textContent`);
@@ -592,7 +599,7 @@ try {
       ),
     ]),
   );
-  await cdp.send("DOM.setFileInputFiles", { nodeId, files: [gbkIni] });
+  await cdp.send("DOM.setFileInputFiles", { nodeId: importFileNode, files: [gbkIni] });
   const gbkNames = await waitFor(
     async () => {
       const names = await cdp.eval(`window.__wt.sessions()`);
@@ -692,7 +699,56 @@ try {
     `${khPath}（${khText.split("\n").filter(Boolean).length} 条）`,
   );
 
-  // 17. 连不上的错误路径：必须给出稳定错误码，不能静默失败
+  // 17. 密钥认证：仓库里不放测试私钥，让应用现生成一把一次性的
+  const pem = await cdp.eval(`window.__TAURI__.core.invoke("mock_generate_key")`);
+  check(
+    "能生成一次性测试私钥",
+    typeof pem === "string" && pem.includes("OPENSSH PRIVATE KEY"),
+    `${String(pem).length} 字节`,
+  );
+  const keyPath = join(DATA_DIR, "id_test");
+  writeFileSync(keyPath, pem);
+  await clickElement("#use-key");
+  await cdp.send("DOM.setFileInputFiles", {
+    nodeId: await nodeIdOf("#key-file"),
+    files: [keyPath],
+  });
+  const keyPicked = await waitFor(
+    async () => {
+      const name = await cdp.eval(`document.getElementById("key-name").textContent`);
+      return name === "id_test" ? name : null;
+    },
+    { timeout: 10000, label: "选择密钥文件" },
+  );
+  check("选中密钥后显示文件名", true, keyPicked);
+
+  await clickElement("#ssh");
+  const keyStatus = await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      if (s.startsWith("已连接")) return s;
+      if (s === "连接失败") {
+        const scr = await cdp.eval(`window.__wt.screen()`);
+        throw new Error(`密钥连接失败：${scr.split(/\r?\n/).filter(Boolean).slice(-3).join(" | ")}`);
+      }
+      return null;
+    },
+    { timeout: 30000, label: "密钥认证连接" },
+  );
+  const keyOut = await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.screen()`);
+      return t.includes("WELCOME") ? t : null;
+    },
+    { timeout: 15000, label: "密钥会话输出" },
+  );
+  check(
+    "密钥认证可用（无密码也能连）",
+    keyStatus.includes("tester@127.0.0.1") && keyOut.includes("WELCOME"),
+    keyStatus,
+  );
+
+  // 18. 连不上的错误路径：必须给出稳定错误码，不能静默失败
   await clickElement("#close");
   await waitFor(
     async () => (await cdp.eval(`document.getElementById("status").textContent`)) === "已关闭",

@@ -34,6 +34,15 @@ const hostInput = document.getElementById("host");
 const portInput = document.getElementById("port");
 const userInput = document.getElementById("user");
 const passInput = document.getElementById("password");
+const useKeyBox = document.getElementById("use-key");
+const keyRow = document.getElementById("key-row");
+const pickKeyBtn = document.getElementById("pick-key");
+const keyFileInput = document.getElementById("key-file");
+const keyName = document.getElementById("key-name");
+const keyPassInput = document.getElementById("key-pass");
+
+/** 已选中的私钥内容（PEM/OpenSSH 文本），null 表示没选 */
+let keyPem = null;
 
 const term = new Terminal({
   fontFamily: '"JetBrains Mono", Consolas, "Cascadia Mono", monospace',
@@ -145,6 +154,11 @@ async function openSsh() {
     (host ? userInput : hostInput).focus();
     return;
   }
+  if (useKeyBox.checked && !keyPem) {
+    setStatus("请先选择私钥文件");
+    pickKeyBtn.focus();
+    return;
+  }
 
   fit.fit();
   term.reset();
@@ -155,7 +169,10 @@ async function openSsh() {
       host,
       port,
       user,
-      password: passInput.value,
+      // 密钥模式下不传密码：传了会被当成备选，容易掩盖「密钥没被接受」这种问题
+      password: useKeyBox.checked ? null : passInput.value,
+      keyPem: useKeyBox.checked ? keyPem : null,
+      keyPassphrase: useKeyBox.checked ? keyPassInput.value || null : null,
       cols: term.cols,
       rows: term.rows,
     });
@@ -345,7 +362,7 @@ sshBtn.addEventListener("click", openSsh);
 closeBtn.addEventListener("click", closeTerm);
 
 // 填完密码直接回车就能连（用户最自然的动作）
-for (const el of [hostInput, portInput, userInput, passInput]) {
+for (const el of [hostInput, portInput, userInput, passInput, keyPassInput]) {
   el.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter") {
       ev.preventDefault();
@@ -353,6 +370,31 @@ for (const el of [hostInput, portInput, userInput, passInput]) {
     }
   });
 }
+
+// ── 密钥认证 ────────────────────────────────────────────────
+useKeyBox.addEventListener("change", () => {
+  keyRow.hidden = !useKeyBox.checked;
+  passInput.hidden = useKeyBox.checked;
+  (useKeyBox.checked ? pickKeyBtn : passInput).focus();
+});
+
+pickKeyBtn.addEventListener("click", () => keyFileInput.click());
+
+keyFileInput.addEventListener("change", async () => {
+  const file = keyFileInput.files?.[0];
+  if (!file) return;
+  try {
+    // 私钥是 ASCII/PEM 文本；只在内存里留一份，不落盘、不回显内容
+    keyPem = await file.text();
+    keyName.textContent = file.name;
+    keyName.title = file.name;
+  } catch (e) {
+    keyPem = null;
+    keyName.textContent = `读取失败：${e}`;
+  } finally {
+    keyFileInput.value = "";
+  }
+});
 
 setInterval(() => void ackPending(), ACK_INTERVAL);
 

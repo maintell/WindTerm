@@ -48,6 +48,18 @@
       #bar input:focus { outline: 1px solid var(--accent); }
       #bar button:disabled { opacity: 0.45; cursor: default; border-color: #3a3a44; }
       #status { margin-left: auto; }
+      #key-toggle { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+      #key-toggle input { width: auto; }
+      #key-row {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        width: 100%;
+        font-size: 12px;
+      }
+      #key-row[hidden] { display: none; }
+      #key-row #key-name { color: var(--muted); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #key-row #key-pass { width: 150px; }
       #main { flex: 1; display: flex; min-height: 0; }
       #tree {
         width: 190px;
@@ -106,10 +118,17 @@
       <input id="port" placeholder="端口" value="22" inputmode="numeric" />
       <input id="user" placeholder="用户名" spellcheck="false" />
       <input id="password" type="password" placeholder="密码" />
+      <label id="key-toggle"><input type="checkbox" id="use-key" />用密钥</label>
       <button id="ssh">连接 SSH</button>
       <button id="open">新建本地终端</button>
       <button id="close" disabled>关闭</button>
       <span id="status">未连接</span>
+      <div id="key-row" hidden>
+        <button id="pick-key">选择密钥…</button>
+        <span id="key-name">未选择</span>
+        <input id="key-pass" type="password" placeholder="密钥口令（可空）" />
+      </div>
+      <input id="key-file" type="file" hidden />
     </div>
     <div id="main">
       <aside id="tree">
