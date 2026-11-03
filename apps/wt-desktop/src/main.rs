@@ -147,6 +147,60 @@ fn sessions_load() -> Result<SessionsDto, String> {
     })
 }
 
+#[derive(serde::Serialize)]
+struct SkippedDto {
+    name: String,
+    reason: String,
+}
+
+#[derive(serde::Serialize)]
+struct ImportDto {
+    folders: usize,
+    sessions: usize,
+    reused_folders: usize,
+    duplicates: Vec<String>,
+    warnings: Vec<String>,
+    skipped: Vec<SkippedDto>,
+    /// 文件里出现了无法解码的字节（U+FFFD），名称可能乱码
+    lossy: bool,
+}
+
+/// 从 MobaXterm 的 ini 文本导入会话。
+///
+/// 收**文本**而不是路径：界面里的 `<input type=file>` 拿不到真实路径，
+/// 也不该为了拿路径去引入文件对话框插件。文件内容不出本机。
+#[tauri::command]
+fn import_mobaxterm(text: String) -> Result<ImportDto, String> {
+    let plan = wt_import::parse_mobaxterm_ini(&text).map_err(|e| e.to_string())?;
+
+    let db = sessions_db_path();
+    let mut store = wt_store::Store::open(&db).map_err(|e| e.to_string())?;
+    // 与 CLI 共用同一套去重语义，避免「命令行导一遍、界面导一遍」长出两棵树
+    let existing = store.load_snapshot().map_err(|e| e.to_string())?;
+    let deduped = wt_store::dedup_against(&existing, &plan.folders, &plan.sessions);
+    let report = store
+        .import(&deduped.folders, &deduped.sessions)
+        .map_err(|e| e.to_string())?;
+
+    Ok(ImportDto {
+        folders: report.folders,
+        sessions: report.sessions,
+        reused_folders: deduped.reused_folders,
+        duplicates: deduped.duplicates,
+        warnings: plan.warnings,
+        skipped: plan
+            .skipped
+            .into_iter()
+            .map(|s| SkippedDto {
+                name: s.name,
+                reason: s.reason,
+            })
+            .collect(),
+        // 静默替换成 � 是最容易蒙混过去的降级，这里必须让用户看见
+        lossy: text.contains('\u{fffd}'),
+    })
+}
+
 // ── SSH ─────────────────────────────────────────────────────
 
 /// 应用数据目录。
@@ -304,7 +358,8 @@ fn main() {
             term_stats,
             term_close,
             ssh_open,
-            sessions_load
+            sessions_load,
+            import_mobaxterm
         ])
         .run(tauri::generate_context!())
         .expect("启动 WindTerm 失败");

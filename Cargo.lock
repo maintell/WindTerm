@@ -5860,6 +5860,7 @@ dependencies = [
  "tauri-build",
  "wt-common",
  "wt-core",
+ "wt-import",
  "wt-ipc",
  "wt-ssh",
  "wt-store",

@@ -60,6 +60,7 @@
       #tree-head {
         display: flex;
         justify-content: flex-end;
+        gap: 6px;
         padding: 4px 6px;
         border-bottom: 1px solid #2a2a30;
       }
@@ -85,6 +86,15 @@
       .node.session { cursor: pointer; }
       .node.session:hover { background: #24242a; }
       #tree-empty { color: var(--muted); font-size: 12px; padding: 6px 8px; margin: 0; white-space: pre-wrap; }
+      #tree-msg {
+        margin: 0;
+        padding: 6px 8px;
+        font-size: 12px;
+        color: var(--muted);
+        border-bottom: 1px solid #2a2a30;
+        white-space: pre-wrap;
+      }
+      #tree-msg[hidden] { display: none; }
       /* xterm 需要容器有确定尺寸：flex:1 撑开，min-height/min-width:0 防止被内容顶住
          （没有 min-width:0 时，终端元素自身的宽度会成为下限，侧栏一变宽终端就不肯收窄） */
       #term { flex: 1; min-width: 0; min-height: 0; padding: 4px 0 0 6px; }
@@ -103,8 +113,13 @@
     </div>
     <div id="main">
       <aside id="tree">
-        <div id="tree-head"><button id="refresh" title="重新读取会话库">刷新</button></div>
+        <div id="tree-head">
+          <button id="import" title="从 MobaXterm.ini 导入会话">导入</button>
+          <button id="refresh" title="重新读取会话库">刷新</button>
+        </div>
+        <p id="tree-msg" hidden></p>
         <div id="tree-body"><p id="tree-empty">正在读取会话库…</p></div>
+        <input id="import-file" type="file" accept=".ini,text/plain" hidden />
       </aside>
       <div id="term"></div>
     </div>

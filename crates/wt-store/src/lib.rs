@@ -36,6 +36,94 @@ pub struct ImportReport {
     pub sessions: usize,
 }
 
+/// 去重后的导入内容。
+#[derive(Debug, Default, Clone)]
+pub struct Deduped {
+    pub folders: Vec<Folder>,
+    pub sessions: Vec<Session>,
+    /// 复用了多少个已存在的文件夹
+    pub reused_folders: usize,
+    /// 因已存在而跳过的会话名
+    pub duplicates: Vec<String>,
+}
+
+/// 把「待导入内容」与「库里已有内容」对齐，去掉重复的会话与文件夹。
+///
+/// 判据刻意选用户能感知的「同一个东西」：
+/// - 会话：`(名称, 主机, 端口)`；
+/// - 文件夹：`(父目录, 名称)`。
+///
+/// 文件夹必须一起去重：否则重复导入会跳过会话、却把目录树翻倍。
+/// 复用的文件夹会把新会话的 `folder_id` 重映射到已有文件夹上。
+///
+/// 这是纯函数，CLI 与界面共用同一套语义——两边各写一份必然跑偏。
+pub fn dedup_against(existing: &Snapshot, folders: &[Folder], sessions: &[Session]) -> Deduped {
+    use std::collections::{HashMap, HashSet};
+
+    let seen: HashSet<(String, Option<String>, Option<u16>)> = existing
+        .sessions
+        .iter()
+        .map(|s| (s.name.clone(), s.host.clone(), s.port))
+        .collect();
+
+    let mut existing_folders: HashMap<(Option<String>, String), FolderId> = HashMap::new();
+    for f in &existing.folders {
+        existing_folders.insert(
+            (
+                f.parent_id.as_ref().map(|p| p.as_str().to_string()),
+                f.name.clone(),
+            ),
+            f.id.clone(),
+        );
+    }
+
+    let mut folder_remap: HashMap<String, FolderId> = HashMap::new();
+    let mut out = Deduped::default();
+
+    // 调用方保证 folders 是「父先于子」，单趟即可完成映射
+    for f in folders {
+        let mapped_parent = f.parent_id.as_ref().map(|p| {
+            folder_remap
+                .get(p.as_str())
+                .cloned()
+                .unwrap_or_else(|| p.clone())
+        });
+        let key = (
+            mapped_parent.as_ref().map(|p| p.as_str().to_string()),
+            f.name.clone(),
+        );
+
+        match existing_folders.get(&key) {
+            Some(id) => {
+                folder_remap.insert(f.id.as_str().to_string(), id.clone());
+                out.reused_folders += 1;
+            }
+            None => {
+                let mut nf = f.clone();
+                nf.parent_id = mapped_parent;
+                folder_remap.insert(f.id.as_str().to_string(), nf.id.clone());
+                out.folders.push(nf);
+            }
+        }
+    }
+
+    for s in sessions {
+        if seen.contains(&(s.name.clone(), s.host.clone(), s.port)) {
+            out.duplicates.push(s.name.clone());
+            continue;
+        }
+        let mut s = s.clone();
+        if let Some(fid) = &s.folder_id {
+            if let Some(mapped) = folder_remap.get(fid.as_str()) {
+                s.folder_id = Some(mapped.clone());
+            }
+        }
+        out.sessions.push(s);
+    }
+
+    out
+}
+
 pub struct Store {
     conn: Connection,
 }
@@ -669,6 +757,60 @@ mod tests {
         assert_eq!(snap.sessions.len(), 1, "不能变成两行");
         assert_eq!(snap.sessions[0].name, "web-01-renamed");
         assert_eq!(snap.sessions[0].rev, 2);
+    }
+
+    #[test]
+    fn dedup_reuses_folders_and_skips_duplicate_sessions() {
+        // 已有：根文件夹 Prod、其下会话 web-01
+        let existing = Snapshot {
+            folders: vec![folder("f-prod", None, "Prod")],
+            sessions: vec![session("s1", Some("f-prod"), "web-01")],
+            warnings: Vec::new(),
+        };
+
+        // 再导一次同一份内容（新 ID），另外多一个同目录下的新会话
+        let incoming_folders = vec![folder("f-prod-2", None, "Prod")];
+        let incoming_sessions = vec![
+            session("s1-2", Some("f-prod-2"), "web-01"),
+            session("s2", Some("f-prod-2"), "web-02"),
+        ];
+
+        let d = dedup_against(&existing, &incoming_folders, &incoming_sessions);
+        assert_eq!(d.reused_folders, 1, "同名同父的文件夹应复用");
+        assert!(d.folders.is_empty(), "不应新增文件夹");
+        assert_eq!(d.duplicates, vec!["web-01".to_string()]);
+        assert_eq!(d.sessions.len(), 1);
+        // 新会话必须挂到**已有**文件夹上，而不是那个没被创建的新 ID
+        assert_eq!(
+            d.sessions[0].folder_id.as_ref().map(|f| f.as_str()),
+            Some("f-prod")
+        );
+    }
+
+    #[test]
+    fn dedup_keeps_nested_folders_under_their_remapped_parent() {
+        let existing = Snapshot {
+            folders: vec![folder("f-a", None, "A")],
+            sessions: Vec::new(),
+            warnings: Vec::new(),
+        };
+        // 导入内容：A（已存在）→ B（新）→ 会话挂在 B 下
+        let incoming_folders = vec![
+            folder("f-a2", None, "A"),
+            folder("f-b", Some("f-a2"), "B"),
+        ];
+        let incoming_sessions = vec![session("s", Some("f-b"), "web-09")];
+
+        let d = dedup_against(&existing, &incoming_folders, &incoming_sessions);
+        assert_eq!(d.reused_folders, 1);
+        assert_eq!(d.folders.len(), 1, "只应新增 B");
+        assert_eq!(d.folders[0].name, "B");
+        // B 的父必须指向已有 A
+        assert_eq!(
+            d.folders[0].parent_id.as_ref().map(|p| p.as_str()),
+            Some("f-a")
+        );
+        assert_eq!(d.sessions.len(), 1);
     }
 
     #[test]

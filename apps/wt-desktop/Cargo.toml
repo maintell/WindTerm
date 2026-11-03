@@ -12,6 +12,7 @@ tauri-build = { version = "2", features = [] }
 wt-common = { path = "../../crates/wt-common" }
 wt-core = { path = "../../crates/wt-core" }
 wt-store = { path = "../../crates/wt-store" }
+wt-import = { path = "../../crates/wt-import" }
 wt-term = { path = "../../crates/wt-term" }
 wt-ipc = { path = "../../crates/wt-ipc" }
 wt-ssh = { path = "../../crates/wt-ssh" }

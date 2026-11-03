@@ -519,6 +519,59 @@ try {
   );
   check("会话树显示导入的会话", true, listed.join("、"));
 
+  // 12b. 界面里的「导入」按钮：选文件 → 解析 → 落库 → 自动刷新树
+  //      用第二个 ini（会话名不同），既验证 UI 导入，又不和上面 CLI 导入的那条打架
+  const ini2 = join(DATA_DIR, "MobaXterm-ui.ini");
+  writeFileSync(
+    ini2,
+    [
+      "[Bookmarks]",
+      "SubRep=Lab\\",
+      "BookmarkName=ui-imported",
+      "Host=127.0.0.1",
+      `Port=${sshPort}`,
+      "UserName=tester",
+      "Protocol=0",
+      "",
+    ].join("\r\n"),
+  );
+  const { root: domRoot } = await cdp.send("DOM.getDocument", { depth: 0 });
+  const { nodeId } = await cdp.send("DOM.querySelector", {
+    nodeId: domRoot.nodeId,
+    selector: "#import-file",
+  });
+  await cdp.send("DOM.setFileInputFiles", { nodeId, files: [ini2] });
+  const afterUiImport = await waitFor(
+    async () => {
+      const names = await cdp.eval(`window.__wt.sessions()`);
+      return names.includes("ui-imported") ? names : null;
+    },
+    { timeout: 15000, label: "界面导入" },
+  );
+  const msg = await cdp.eval(`document.getElementById("tree-msg").textContent`);
+  check(
+    "界面「导入」按钮可用（选文件即落库并刷新树）",
+    afterUiImport.includes("ui-imported") && msg.includes("导入完成"),
+    msg.split("\n")[0],
+  );
+
+  // 12c. 再导一次同一份文件：应全部判重，树里不出现第二份
+  await cdp.send("DOM.setFileInputFiles", { nodeId, files: [ini2] });
+  const dupMsg = await waitFor(
+    async () => {
+      const t = await cdp.eval(`document.getElementById("tree-msg").textContent`);
+      return t.includes("已跳过") ? t : null;
+    },
+    { timeout: 15000, label: "重复导入判重" },
+  );
+  const namesAfterDup = await cdp.eval(`window.__wt.sessions()`);
+  check(
+    "重复导入被判定为重复而不是新增",
+    namesAfterDup.filter((n) => n === "ui-imported").length === 1 &&
+      dupMsg.includes("ui-imported"),
+    dupMsg.split("\n").slice(0, 2).join(" / "),
+  );
+
   // 13. 点会话 → 连接参数自动填好（密码不存库，仍要手填）
   await clickSessionNode("mock-ssh");
   const filled = await cdp.eval(`({

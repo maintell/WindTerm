@@ -307,72 +307,14 @@ pub fn import_mobaxterm(
     let mut store = wt_store::Store::open(db).map_err(|e| e.to_string())?;
 
     // 去重：同一个 ini 被导入两次不应产生两套会话。
-    // 判据用 (名称, 主机, 端口)——这是用户能感知的「同一个会话」。
+    // 判据与重映射逻辑在 `wt_store::dedup_against`，界面导入走的是同一份实现。
     let existing = store.load_snapshot().map_err(|e| e.to_string())?;
-    let seen: std::collections::HashSet<(String, Option<String>, Option<u16>)> = existing
-        .sessions
-        .iter()
-        .map(|s| (s.name.clone(), s.host.clone(), s.port))
-        .collect();
-
-    // 文件夹同样要去重：按 (父目录, 名称) 复用已有文件夹，
-    // 否则重复导入会堆出同名目录树（会话被跳过，目录却翻倍）。
-    let mut existing_folders: std::collections::HashMap<(Option<String>, String), wt_core::FolderId> =
-        std::collections::HashMap::new();
-    for f in &existing.folders {
-        existing_folders.insert(
-            (f.parent_id.as_ref().map(|p| p.as_str().to_string()), f.name.clone()),
-            f.id.clone(),
-        );
-    }
-
-    let mut folder_remap: std::collections::HashMap<String, wt_core::FolderId> =
-        std::collections::HashMap::new();
-    let mut new_folders = Vec::new();
-    let mut reused_folders = 0usize;
-
-    // plan.folders 由导入器按「父先于子」生成，单趟即可完成映射
-    for f in &plan.folders {
-        let mapped_parent = f
-            .parent_id
-            .as_ref()
-            .map(|p| {
-                folder_remap
-                    .get(p.as_str())
-                    .cloned()
-                    .unwrap_or_else(|| p.clone())
-            });
-        let key = (mapped_parent.as_ref().map(|p| p.as_str().to_string()), f.name.clone());
-
-        if let Some(existing_id) = existing_folders.get(&key) {
-            folder_remap.insert(f.id.as_str().to_string(), existing_id.clone());
-            reused_folders += 1;
-        } else {
-            let mut nf = f.clone();
-            nf.parent_id = mapped_parent;
-            folder_remap.insert(f.id.as_str().to_string(), nf.id.clone());
-            new_folders.push(nf);
-        }
-    }
-
-    let mut kept = Vec::new();
-    let mut duplicates = Vec::new();
-    for mut s in plan.sessions {
-        let key = (s.name.clone(), s.host.clone(), s.port);
-        if seen.contains(&key) {
-            duplicates.push(s.name.clone());
-            continue;
-        }
-        if let Some(fid) = &s.folder_id {
-            if let Some(mapped) = folder_remap.get(fid.as_str()) {
-                s.folder_id = Some(mapped.clone());
-            }
-        }
-        kept.push(s);
-    }
+    let deduped = wt_store::dedup_against(&existing, &plan.folders, &plan.sessions);
+    let reused_folders = deduped.reused_folders;
+    let duplicates = deduped.duplicates;
 
     let report = store
-        .import(&new_folders, &kept)
+        .import(&deduped.folders, &deduped.sessions)
         .map_err(|e| e.to_string())?;
 
 

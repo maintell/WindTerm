@@ -273,6 +273,44 @@ async function loadTree() {
 
 refreshBtn.addEventListener("click", loadTree);
 
+// ── 导入 ────────────────────────────────────────────────────
+const importBtn = document.getElementById("import");
+const importFile = document.getElementById("import-file");
+const treeMsg = document.getElementById("tree-msg");
+
+function showImportMsg(lines) {
+  treeMsg.textContent = lines.join("\n");
+  treeMsg.hidden = lines.length === 0;
+}
+
+importBtn.addEventListener("click", () => importFile.click());
+
+importFile.addEventListener("change", async () => {
+  const file = importFile.files?.[0];
+  if (!file) return;
+  importBtn.disabled = true;
+  try {
+    // 收文本不收路径：`<input type=file>` 拿不到真实路径，也不该为它引入对话框插件
+    const text = await file.text();
+    const r = await invoke("import_mobaxterm", { text });
+    const lines = [`导入完成：文件夹 ${r.folders} 个、会话 ${r.sessions} 个`];
+    if (r.reused_folders) lines.push(`复用已有文件夹 ${r.reused_folders} 个`);
+    if (r.duplicates.length) {
+      lines.push(`已跳过 ${r.duplicates.length} 个已存在会话：${r.duplicates.join("、")}`);
+    }
+    for (const w of r.warnings) lines.push(`提示：${w}`);
+    for (const s of r.skipped) lines.push(`跳过：${s.name} —— ${s.reason}`);
+    if (r.lossy) lines.push("文件里有非 UTF-8 字节，部分名称可能显示为乱码");
+    showImportMsg(lines);
+    await loadTree();
+  } catch (e) {
+    showImportMsg([`导入失败：${e}`]);
+  } finally {
+    importBtn.disabled = false;
+    importFile.value = "";
+  }
+});
+
 // ── 输入 ────────────────────────────────────────────────────
 /** xterm 交来的输入事件计数，用于诊断「首字符丢失」这类问题 */
 let dataEvents = 0;
