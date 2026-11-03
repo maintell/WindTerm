@@ -1282,6 +1282,45 @@ filesMkdir.addEventListener("click", () => void makeDir());
 filesRename.addEventListener("click", () => void renameEntry());
 filesRemove.addEventListener("click", () => void onRemoveClick());
 
+// ── 拖拽上传（FIL-004）────────────────────────────────────
+//
+// 只做「拖进来上传」。**拖出去下载**在 WebView2 里需要额外插件
+// （HTML5 的 `DownloadURL` 只支持 http/data URL），当前构建不做——
+// 见 README 的 G10，别在这里假装支持。
+const filesDrop = document.getElementById("files");
+let dragDepth = 0;
+
+filesDrop.addEventListener("dragenter", (ev) => {
+  if (!ev.dataTransfer?.types.includes("Files")) return;
+  ev.preventDefault();
+  dragDepth += 1;
+  filesList.classList.add("dropping");
+});
+
+filesDrop.addEventListener("dragover", (ev) => {
+  // 不 preventDefault 的话浏览器的默认行为是「打开这个文件」，会把整个窗口导航走
+  if (!ev.dataTransfer?.types.includes("Files")) return;
+  ev.preventDefault();
+  ev.dataTransfer.dropEffect = "copy";
+});
+
+filesDrop.addEventListener("dragleave", () => {
+  // 用计数抵消子元素之间的 enter/leave：直接 remove 会在鼠标划过行时闪
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) filesList.classList.remove("dropping");
+});
+
+filesDrop.addEventListener("drop", (ev) => {
+  if (!ev.dataTransfer?.types.includes("Files")) return;
+  ev.preventDefault();
+  dragDepth = 0;
+  filesList.classList.remove("dropping");
+  const dropped = [...(ev.dataTransfer?.files ?? [])];
+  if (!dropped.length) return;
+  setFilesMsg(`准备上传 ${dropped.length} 个文件…`);
+  void uploadFiles(dropped);
+});
+
 /** 下载远端文件到本地下载目录（路径由后端决定并回报）。 */
 async function downloadFile(path) {
   setFilesMsg("下载中…");
@@ -1828,7 +1867,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-16",
+  ui: "wt-ui-17",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";

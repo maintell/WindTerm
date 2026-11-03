@@ -623,7 +623,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-16",
+    uiVersion === "wt-ui-17",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -1651,6 +1651,39 @@ try {
     throw new Error(`删除后列表=${f.rows.join("、")} msg=${f.msg}`);
   });
   check("删除后目录从列表消失", removed !== null, removed.rows.join("、"));
+
+  // 16d-3. 拖拽上传（FIL-004）：从资源管理器拖文件进来 = 往面板里 drop。
+  //         事件是合成的（CDP 造不出真实的 OS 拖拽），但 File 对象与上传链路是真的。
+  const highlighted = await cdp.eval(`(() => {
+    const dt = new DataTransfer();
+    dt.items.add(new File(["x"], "x.txt"));
+    const target = document.getElementById("files-list");
+    target.dispatchEvent(new DragEvent("dragenter", { dataTransfer: dt, bubbles: true }));
+    const on = target.classList.contains("dropping");
+    target.dispatchEvent(new DragEvent("dragleave", { dataTransfer: dt, bubbles: true }));
+    return on;
+  })()`);
+  check("拖拽进入时高亮上传区域", highlighted === true);
+
+  await cdp.eval(`(() => {
+    const dt = new DataTransfer();
+    dt.items.add(new File(["dropped-content"], "dropped.txt", { type: "text/plain" }));
+    const target = document.getElementById("files-list");
+    target.dispatchEvent(new DragEvent("dragenter", { dataTransfer: dt, bubbles: true }));
+    target.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true }));
+    return true;
+  })()`);
+  const dropped = await waitFor(
+    async () => {
+      const f = await cdp.eval(`window.__wt.files`);
+      return f.rows.includes("dropped.txt") ? f : null;
+    },
+    { timeout: 20000, label: "拖拽上传" },
+  ).catch(async () => {
+    const f = await cdp.eval(`window.__wt.files`);
+    throw new Error(`拖拽后列表=${f.rows.join("、")} msg=${f.msg}`);
+  });
+  check("拖拽文件进面板会触发上传", dropped !== null, dropped.rows.join("、"));
 
   await clickElement("#files-toggle");
 

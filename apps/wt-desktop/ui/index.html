@@ -163,6 +163,8 @@
       }
       #files button:hover { border-color: var(--accent); }
       #files-list { flex: 1; overflow: auto; }
+      /* 拖拽进入时给个明确的目标提示，否则用户不知道能往哪放 */
+      #files-list.dropping { outline: 2px dashed var(--accent); outline-offset: -2px; }
       #files-list .row { display: flex; gap: 8px; padding: 1px 8px; white-space: nowrap; }
       #files-list .row.name { cursor: pointer; }
       #files-list .row:hover { background: #24242a; }
