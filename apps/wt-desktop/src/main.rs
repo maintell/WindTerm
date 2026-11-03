@@ -697,6 +697,46 @@ async fn ssh_open(state: State<'_, AppState>, req: SshOpenReq) -> Result<SshOpen
     })
 }
 
+/// mock 的 SFTP 文件系统，供 `mock_seed_file` 预置文件。
+#[cfg(feature = "e2e-mock")]
+static MOCK_FS: std::sync::OnceLock<wt_ssh::testing::MockFs> = std::sync::OnceLock::new();
+#[cfg(feature = "e2e-mock")]
+static MOCK_PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+
+/// 诊断用：mock 服务端的端口（前端拿不到 stdout，用一个命令问）
+#[tauri::command]
+fn e2e_mock_port() -> u16 {
+    #[cfg(feature = "e2e-mock")]
+    {
+        MOCK_PORT.get().copied().unwrap_or(0)
+    }
+    #[cfg(not(feature = "e2e-mock"))]
+    {
+        0
+    }
+}
+
+/// 端到端验收专用：往 mock 的 SFTP 文件系统里预置一个文件（内容 base64）。
+#[tauri::command]
+async fn mock_seed_file(path: String, content: String) -> Result<(), String> {
+    #[cfg(feature = "e2e-mock")]
+    {
+        let fs = MOCK_FS
+            .get()
+            .ok_or_else(|| "[E2E_ONLY] mock 服务端未启动".to_string())?;
+        let data = B64
+            .decode(content)
+            .map_err(|e| format!("内容解码失败：{e}"))?;
+        fs.lock().await.insert(path, data);
+        Ok(())
+    }
+    #[cfg(not(feature = "e2e-mock"))]
+    {
+        let _ = (path, content);
+        Err("[E2E_ONLY] 生产构建不提供该命令".into())
+    }
+}
+
 /// 端到端验收专用：生成一把一次性的 OpenSSH 私钥。
 ///
 /// 仓库里不放测试私钥（哪怕只用于 localhost，见 `wt-ssh::testing` 的注释），
@@ -713,6 +753,185 @@ fn mock_generate_key() -> Result<String, String> {
     {
         Err("[E2E_ONLY] 生产构建不提供该命令".into())
     }
+}
+
+/// 端到端诊断用：把 SFTP 那条路径拆成几个阶段，定位卡在哪一步。
+///
+/// `stage`：1 = 只建 SSH 连接；2 = 建连 + 开 sftp 子系统（含 `SftpSession::new`）；
+/// 3 = 再加一次 `list_dir("/")`。
+///
+/// # 它证明了什么
+///
+/// 「界面点击 → 建连接 → 开子系统 → 列目录」这条完整路径**是通的**。
+/// 所以 G8 那段历史里「点击触发的 SFTP 挂起」不是 SFTP 的问题，而是
+/// 当时给命令套的那层超时包装（`tokio::time::timeout` / `recv_timeout`）
+/// 在 Tauri 命令里不推进。
+///
+/// 保留它作为回归护栏：如果哪天又有人在 SFTP 命令外面包超时包装，这个命令会先红。
+#[tauri::command]
+async fn e2e_sftp_stage(port: u16, stage: u8) -> Result<String, String> {
+    let cfg = wt_ssh::SshConfig {
+        host: "127.0.0.1".into(),
+        port,
+        user: "tester".into(),
+        ..Default::default()
+    };
+    let conn =
+        wt_ssh::SshConnection::connect_password(&cfg, "secret", wt_ssh::HostKeyPolicy::AcceptAll)
+            .await
+            .map_err(|e| format!("stage1 失败: {e}"))?;
+    if stage <= 1 {
+        return Ok("1:connected".into());
+    }
+
+    let sftp = wt_ssh::SftpClient::open(conn)
+        .await
+        .map_err(|e| format!("stage2 失败: {e}"))?;
+    if stage <= 2 {
+        return Ok("2:sftp-ready".into());
+    }
+
+    let entries = sftp
+        .list_dir("/")
+        .await
+        .map_err(|e| format!("stage3 失败: {e}"))?;
+    Ok(format!("3:listed {}", entries.len()))
+}
+
+// ── SFTP ────────────────────────────────────────────────────
+//
+// **不要给这些命令套超时包装。**
+//
+// 踩过：用 `tokio::time::timeout` 或 `std::sync::mpsc::recv_timeout` 包住 SFTP 操作，
+// 命令就再也不返回（Rust 侧跑完了、前端收不到）。而同样的操作**不包**就正常——
+// `e2e_sftp_stage` 用点击触发跑通建连/开子系统/列目录三步，就是这个结论的证据。
+//
+// 每次操作独立建连：文件面板的操作是低频的（列个目录、传个文件），
+// 多一次握手百来毫秒，换掉「跨命令持有通道流」那一整类问题。
+
+#[derive(serde::Serialize)]
+struct RemoteEntryDto {
+    name: String,
+    is_dir: bool,
+    size: u64,
+}
+
+#[derive(serde::Serialize)]
+struct SftpListDto {
+    path: String,
+    entries: Vec<RemoteEntryDto>,
+}
+
+/// 按请求建连并打开 sftp，用完随 `SftpClient` 一起释放。
+async fn open_sftp(req: SshOpenReq) -> Result<wt_ssh::SftpClient, String> {
+    let cfg = wt_ssh::SshConfig {
+        host: req.host.trim().to_string(),
+        port: req.port.unwrap_or(22),
+        user: req.user.trim().to_string(),
+        ..Default::default()
+    };
+    if cfg.host.is_empty() {
+        return Err("[SSH_BAD_ARGUMENT] 主机不能为空".into());
+    }
+    if cfg.user.is_empty() {
+        return Err("[SSH_BAD_ARGUMENT] 用户名不能为空".into());
+    }
+
+    let auth = match req.key_pem {
+        Some(pem) if !pem.trim().is_empty() => {
+            AuthInput::Key(wt_ssh::PrivateKeySource::new(pem.into_bytes(), req.key_passphrase))
+        }
+        _ => AuthInput::Password(req.password.unwrap_or_default()),
+    };
+
+    let mut known = load_known_hosts();
+    let conn = match try_connect(&cfg, &auth, known_policy(&known)).await {
+        Ok(c) => c,
+        Err(e) if e.code == wt_common::codes::SSH_HOSTKEY_UNKNOWN => {
+            let observed = wt_ssh::SshConnection::probe_host_key(&cfg)
+                .await
+                .map_err(|e| e.to_string())?;
+            known.add(&cfg.endpoint(), &observed.key_type, &observed.blob, false);
+            save_known_hosts(&known)?;
+            try_connect(&cfg, &auth, known_policy(&known))
+                .await
+                .map_err(|e| e.to_string())?
+        }
+        Err(e) => return Err(e.to_string()),
+    };
+
+    wt_ssh::SftpClient::open(conn)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 诊断用：与 `sftp_list` 完全相同的操作，但**不碰 known_hosts**（AcceptAll）、
+/// 参数用基本类型。
+///
+/// 用来区分「SFTP 路径不行」和「`open_sftp` 里那段 known_hosts 处理不行」。
+#[tauri::command]
+async fn e2e_sftp_list_simple(port: u16, path: String) -> Result<usize, String> {
+    let cfg = wt_ssh::SshConfig {
+        host: "127.0.0.1".into(),
+        port,
+        user: "tester".into(),
+        ..Default::default()
+    };
+    let conn =
+        wt_ssh::SshConnection::connect_password(&cfg, "secret", wt_ssh::HostKeyPolicy::AcceptAll)
+            .await
+            .map_err(|e| e.to_string())?;
+    let sftp = wt_ssh::SftpClient::open(conn)
+        .await
+        .map_err(|e| e.to_string())?;
+    let entries = sftp.list_dir(&path).await.map_err(|e| e.to_string())?;
+    Ok(entries.len())
+}
+
+#[tauri::command]
+async fn sftp_list(req: SshOpenReq, path: String) -> Result<SftpListDto, String> {
+    let sftp = open_sftp(req).await?;
+    let entries = sftp.list_dir(&path).await.map_err(|e| e.to_string())?;    Ok(SftpListDto {
+        path,
+        entries: entries
+            .into_iter()
+            .map(|e| RemoteEntryDto {
+                name: e.name,
+                is_dir: e.is_dir,
+                size: e.size,
+            })
+            .collect(),
+    })
+}
+
+#[derive(serde::Serialize)]
+struct DownloadDto {
+    bytes: usize,
+    /// 文件内容（base64）：页面没有任意写盘权限，只能由前端触发保存
+    content: String,
+}
+
+#[tauri::command]
+async fn sftp_download(req: SshOpenReq, path: String) -> Result<DownloadDto, String> {
+    let sftp = open_sftp(req).await?;
+    let data = sftp.read_file(&path).await.map_err(|e| e.to_string())?;
+    Ok(DownloadDto {
+        bytes: data.len(),
+        content: B64.encode(&data),
+    })
+}
+
+#[tauri::command]
+async fn sftp_upload(req: SshOpenReq, path: String, content: String) -> Result<usize, String> {
+    let data = B64
+        .decode(content)
+        .map_err(|e| format!("上传内容解码失败：{e}"))?;
+    let sftp = open_sftp(req).await?;
+    let len = data.len();
+    sftp.write_file(&path, &data)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(len)
 }
 
 #[derive(serde::Serialize)]
@@ -748,6 +967,13 @@ fn main() {
             sessions_load,
             import_mobaxterm,
             mock_generate_key,
+            mock_seed_file,
+            e2e_mock_port,
+            e2e_sftp_stage,
+            e2e_sftp_list_simple,
+            sftp_list,
+            sftp_download,
+            sftp_upload,
             vault_status,
             vault_create,
             vault_unlock,
@@ -809,6 +1035,8 @@ fn start_mock_ssh_if_requested() {
     }
     tauri::async_runtime::spawn(async {
         let server = wt_ssh::testing::MockSshServer::start().await;
+        let _ = MOCK_FS.set(server.fs.clone());
+        let _ = MOCK_PORT.set(server.port);
         println!("WT_MOCK_SSH_PORT={}", server.port);
     });
 }

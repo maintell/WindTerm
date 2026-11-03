@@ -63,7 +63,7 @@ cargo run -p wt-cli -- session list
 | ~~G4~~ | ~~本地 PTY 关闭挂起~~ | ✅ 已修复：根因是未应答 ConPTY 的 `ESC[6n` 光标查询，补上应答后子进程输出与关闭均正常 | — |
 | G5 | 非 SSH 会话点不动；保险库只能按会话存密码，没有「主密码提示/恢复」机制 | RDP/VNC 会话只能看不能连；主密码忘了保险库就打不开 | 对应协议栈 + 保险库恢复流程（`SEC-*`） |
 | G8 | 界面里没有 SFTP 文件面板（CLI 可用） | 文件传输要开终端敲命令，不能像 MobaXterm 那样拖文件 | 排查记录见下 |
-| G8 排查记录 | 试过三轮，均回退 | **已排除**：① 库与 CLI（4 个真实路径用例 0.08s）；② 跨命令持有 russh 通道流；③ `canonicalize` 这个 RPC；④ 连接参数（打出来核对过）；⑤ async vs sync 命令（两种都挂）；⑥ `block_on`（改 `spawn` + 超时等待，同样挂）。**关键对照**：同一条 `sftp_list` 从 CDP 直接 `invoke` 能返回（`path=/ 项数=1`），从界面按钮点击触发就挂；而同样由点击触发的 `local_open` / `ssh_open`（都建真实连接）正常，一个不做 I/O 的 sync 探针命令也正常 | 下一个方向：把 `sftp_list` 逐段替换成「建连 → 返回固定值」的阶梯，二分出是 SSH 建连、子系统打开、还是报文往返这三步中的哪一步在 UI 事件上下文里不返回 |
+| G8 排查记录 | 试过三轮，均回退 | **已排除**：库与 CLI（4 个用例 0.08s）、跨命令持有通道流、`canonicalize`、连接参数、async vs sync 命令、`block_on` 与 `spawn+超时`（给命令套超时包装本身会让它不返回）。**三个探针确立的事实**：① 点击触发 `e2e_sftp_stage` 跑通「建连 → 开子系统 → 列目录」三步（`1:connected / 2:sftp-ready / 3:listed 0`）；② 点击触发 `e2e_sftp_list_simple`（AcceptAll + 基本类型参数）返回 `0`；③ 点击触发 `sftp_list`（经 `open_sftp`）挂起 | **范围已缩到 `open_sftp` 这一个函数**：它与探针 ② 的差别只有两点——读写 `known_hosts`，以及「返回 `SftpClient`（持有连接）」这个形状。下一步在这两点上二分 |
 | G6 | 没有分屏、主题自定义 | 多会话已用标签页解决；查找与字号已可用（Ctrl+F / Ctrl+±） | 随 `TER-01x` / `SET-00x` 推进 |
 | ~~G7~~ | ~~非 UTF-8 的 ini 会让中文名乱码~~ | ✅ 已修复：`wt_import::decode_ini` 先按 UTF-8 严格解、失败再按 GBK；导入结果里显示用了哪种编码 | — |
 
