@@ -15,6 +15,7 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, connect as netConnect } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -331,6 +332,56 @@ async function doubleClickAt(box) {
 }
 
 /**
+ * 起一台本地 echo 服务，充当隧道的「远端目标」。
+ *
+ * 用 Node 的 TCP 而不是内存对象：`NET-001` 要验的正是「本地 socket ↔ SSH 通道」，
+ * 对端是个真 socket 才能验到半关闭与字节计数。
+ */
+function startEchoTarget() {
+  return new Promise((resolve) => {
+    const server = createServer((sock) => sock.pipe(sock));
+    server.listen(0, "127.0.0.1", () => resolve({ server, port: server.address().port }));
+  });
+}
+
+/** 通过隧道收发一次，返回读回的文本。 */
+function tunnelExchange(port, payload) {
+  return new Promise((resolve, reject) => {
+    const sock = netConnect({ host: "127.0.0.1", port });
+    let got = "";
+    sock.setTimeout(8000, () => {
+      sock.destroy();
+      reject(new Error("隧道读写超时"));
+    });
+    sock.on("connect", () => sock.write(payload));
+    sock.on("data", (d) => {
+      got += d.toString();
+      if (got.length >= payload.length) {
+        sock.end();
+        resolve(got);
+      }
+    });
+    sock.on("error", reject);
+  });
+}
+
+/** 端口还能不能连上（验证「停止后真的不再监听」）。 */
+function portOpen(port) {
+  return new Promise((resolve) => {
+    const sock = netConnect({ host: "127.0.0.1", port });
+    sock.setTimeout(1500, () => {
+      sock.destroy();
+      resolve(false);
+    });
+    sock.on("connect", () => {
+      sock.destroy();
+      resolve(true);
+    });
+    sock.on("error", () => resolve(false));
+  });
+}
+
+/**
  * 双击文件面板里的一行（按名字找）。
  *
  * 必须发两次按下/抬起并把第二次的 `clickCount` 设为 2：Chromium 是靠这个字段
@@ -472,7 +523,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-5",
+    uiVersion === "wt-ui-7",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -669,11 +720,24 @@ try {
     copyStatus,
   );
 
-  // Ctrl+Shift+V：单行不弹确认；末尾带 \r 让它粘贴后直接执行
+  // Ctrl+Shift+V：单行不弹确认；末尾带 \r 让它粘贴后直接执行。
+  // 合成按键偶发被吞（WebView2 的已知行为），所以最多补发 3 次，
+  // 判据是 `pasteCount` 涨了——这比「屏幕上有没有出现」更早、更确定。
   await cdp.eval(`navigator.clipboard.writeText("echo pasted-ok\\r")`);
   const logBefore = await cdp.eval(`window.__wt.inputLog.length`);
-  await pressChord(2 | 8, "V", "KeyV", 86);
-  const pasted = await waitFor(
+  const pasteBefore = await cdp.eval(`window.__wt.pasteCount`);
+  let pasted = false;
+  for (let i = 0; i < 3 && !pasted; i += 1) {
+    await pressChord(2 | 8, "V", "KeyV", 86);
+    pasted = await waitFor(
+      async () => {
+        const n = await cdp.eval(`window.__wt.pasteCount`);
+        return n > pasteBefore ? true : null;
+      },
+      { timeout: 3000, label: "粘贴动作生效" },
+    ).catch(() => null);
+  }
+  const executed = await waitFor(
     async () => {
       const screen = await cdp.eval(`window.__wt.screen()`);
       // 出现两次：一次是粘贴进来的命令行，一次是执行结果
@@ -681,7 +745,7 @@ try {
     },
     { timeout: 15000, label: "粘贴内容被执行" },
   ).catch(() => null);
-  check("Ctrl+Shift+V 把剪贴板送进终端", pasted === true);
+  check("Ctrl+Shift+V 把剪贴板送进终端", executed === true, `pasteCount 涨到 ${pasted}`);
 
   // 粘贴不能把 ^V 当控制字符漏给远端：那会让 shell 收到一个 0x16
   const leaked = await cdp.eval(`window.__wt.inputLog.slice(${logBefore})`);
@@ -1257,6 +1321,88 @@ try {
 
   await clickElement("#files-toggle");
 
+  // 16e. 隧道（NET-001 / NET-004）：启动 → 经隧道收发 → 统计 → 停止
+  const echo = await startEchoTarget();
+  await clickElement("#tunnels-toggle");
+  await cdp.eval(`(() => {
+    document.getElementById("tunnel-listen").value = "0";
+    document.getElementById("tunnel-target").value = ${JSON.stringify(`127.0.0.1:${echo.port}`)};
+    document.getElementById("tunnel-lan").checked = false;
+    return true;
+  })()`);
+  await clickElement("#tunnel-add");
+  const started = await waitFor(
+    async () => {
+      const list = await cdp.eval(`window.__wt.tunnels`);
+      return list.length === 1 ? list[0] : null;
+    },
+    { timeout: 30000, label: "隧道启动" },
+  ).catch(async (e) => {
+    const dbg = await cdp.eval(`({
+      msg: window.__wt.tunnelMsg,
+      hidden: document.getElementById("tunnels").hidden,
+      host: document.getElementById("host").value,
+      user: document.getElementById("user").value,
+      listen: document.getElementById("tunnel-listen").value,
+      target: document.getElementById("tunnel-target").value,
+      list: window.__wt.tunnels.length,
+    })`);
+    throw new Error(`${e.message}；${JSON.stringify(dbg)}`);
+  });
+  // AC-2：listenPort=0 必须回填真实端口，而不是把 0 原样显示出来
+  const listenPort = Number(String(started.listen).split(":").pop());
+  check(
+    "隧道启动并回填系统分配的端口（AC-2）",
+    listenPort > 0 && started.kind === "L" && started.target === `127.0.0.1:${echo.port}`,
+    `${started.kind} ${started.listen} → ${started.target}`,
+  );
+
+  // AC-1：经隧道传的字节必须原样回来
+  const echoed = await tunnelExchange(listenPort, "tunnel-ok").catch((e) => `失败：${e.message}`);
+  check("经隧道穿过的字节原样返回（AC-1）", echoed === "tunnel-ok", JSON.stringify(echoed));
+
+  // AC-5：连接数与字节数要跟上
+  const tunStats = await waitFor(
+    async () => {
+      const list = await cdp.eval(`window.__wt.tunnels`);
+      const t = list[0];
+      return t && t.total >= 1 && t.up_bytes >= 9 ? t : null;
+    },
+    { timeout: 10000, label: "隧道统计更新" },
+  ).catch(() => null);
+  check(
+    "隧道统计反映真实连接与字节（AC-5）",
+    tunStats !== null,
+    tunStats
+      ? `连接 ${tunStats.total} · ↑${tunStats.up_bytes} ↓${tunStats.down_bytes}`
+      : "统计未更新",
+  );
+
+  // 停止后必须真的不再监听，否则留下一个幽灵端口
+  await clickElement("#tunnel-list .tunnel button");
+  const stopped = await waitFor(
+    async () => ((await cdp.eval(`window.__wt.tunnels`)).length === 0 ? true : null),
+    { timeout: 15000, label: "隧道停止" },
+  ).catch(() => null);
+  check("停止后隧道从列表消失", stopped === true);
+  check("停止后端口不再监听", (await portOpen(listenPort)) === false, `端口 ${listenPort}`);
+
+  // 局域网监听不确认就必须被挡住（NET-001 行为规格第 1 条）
+  const lanGuard = await cdp.eval(`window.__TAURI__.core.invoke("tunnel_start", {
+    arg: { host: "127.0.0.1", port: ${sshPort}, user: "tester", password: "secret",
+           keyPem: null, keyPassphrase: null, useAgent: false, cols: 80, rows: 24,
+           listenHost: "0.0.0.0", listenPort: 0,
+           targetHost: "127.0.0.1", targetPort: ${echo.port}, allowLan: false },
+  }).then(() => "没有拦住", (e) => String(e))`);
+  check(
+    "监听 0.0.0.0 未确认时被挡住",
+    /TUN_LAN_CONFIRM_REQUIRED/.test(lanGuard),
+    lanGuard,
+  );
+
+  await clickElement("#tunnels-toggle");
+  echo.server.close();
+
   // 17. 密钥认证：仓库里不放测试私钥，让应用现生成一把一次性的
   const pem = await cdp.eval(`window.__TAURI__.core.invoke("mock_generate_key")`);  check(
     "能生成一次性测试私钥",
@@ -1431,6 +1577,23 @@ try {
   check("用保险库里的密码能直接连上", reusedStatus.includes("tester@127.0.0.1"), reusedStatus);
 
   // 19. 保险库条目面板：能看到存了什么，也能删掉
+  // 点之前先记一次状态：面板的开关是「可见则关」，如果它本来就被别处打开过，
+  // 这一下会把它关掉，断言就会以「列表为空」的形式失败——先留证据再断言。
+  const vaultPre = await cdp.eval(`(() => {
+    const p = document.getElementById("vault-panel");
+    const btn = document.getElementById("vault-toggle");
+    const r = btn.getBoundingClientRect();
+    const cx = r.x + r.width / 2;
+    const cy = r.y + r.height / 2;
+    const hit = document.elementFromPoint(cx, cy);
+    return {
+      hidden: p.hidden,
+      display: getComputedStyle(p).display,
+      entries: p.querySelectorAll(".entry").length,
+      rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) },
+      hit: hit ? hit.id || hit.className || hit.tagName : "视口外",
+    };
+  })()`);
   await clickElement("#vault-toggle");
   const listedEntries = await waitFor(
     async () => {
@@ -1440,7 +1603,14 @@ try {
       return names.includes("mock-ssh") ? names : null;
     },
     { timeout: 10000, label: "保险库条目列表" },
-  );
+  ).catch(async (e) => {
+    const dbg = await cdp.eval(`({
+      hidden: document.getElementById("vault-panel").hidden,
+      entries: document.querySelectorAll("#vault-panel .entry").length,
+      text: document.getElementById("vault-panel").textContent.replace(/\\s+/g, " ").slice(0, 160),
+    })`);
+    throw new Error(`${e.message}；点前=${JSON.stringify(vaultPre)} 点后=${JSON.stringify(dbg)}`);
+  });
   check("保险库面板能看到存了哪些密码", true, listedEntries.join("、"));
 
   const deleteBtnBox = await cdp.eval(`(() => {

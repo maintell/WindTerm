@@ -256,6 +256,11 @@ pub mod codes {
     pub const SSH_HOSTKEY_UNKNOWN: &str = "SSH_HOSTKEY_UNKNOWN";
     pub const SSH_NO_COMMON_KEX: &str = "SSH_NO_COMMON_KEX";
     pub const SSH_FORWARD_DENIED: &str = "SSH_FORWARD_DENIED";
+
+    /// 隧道监听端口绑定失败（被占用、权限不足、地址不可用）
+    pub const TUN_BIND_FAILED: &str = "TUN_BIND_FAILED";
+    /// `direct-tcpip` 通道打不开（sshd 禁止转发，或目标在服务器侧不可达）
+    pub const TUN_CHANNEL_FAILED: &str = "TUN_CHANNEL_FAILED";
 }
 
 #[cfg(test)]

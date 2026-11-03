@@ -19,8 +19,7 @@ use std::time::Duration;
 
 use russh::keys::ssh_key::rand_core::{TryCryptoRng, TryRng};
 use russh::server::{Auth, Msg, Server as _, Session};
-use russh::{Channel, ChannelId};
-use russh_sftp::protocol::{Attrs, Data, File, FileAttributes, Handle, Name, Status, StatusCode};
+use russh::{Channel, ChannelId};use russh_sftp::protocol::{Attrs, Data, File, FileAttributes, Handle, Name, Status, StatusCode};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -271,6 +270,43 @@ impl russh::server::Handler for MockHandler {
         self.channels.lock().await.insert(channel.id(), channel);
         reply.accept().await;
         Ok(())
+    }
+
+    /// `NET-001` 的数据面：连到调用方指定的 `host:port`，再把通道与 TCP 对接。
+    ///
+    /// 这里刻意连**真实 TCP** 而不是内存管道：上层要验的正是
+    /// 「本地 socket ↔ SSH 通道」这段搬运，用内存对端就测不到半关闭与字节计数。
+    async fn channel_open_direct_tcpip(
+        &mut self,
+        channel: Channel<Msg>,
+        host_to_connect: &str,
+        port_to_connect: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: russh::server::ChannelOpenHandle,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        let addr = format!("{host_to_connect}:{port_to_connect}");
+        match tokio::net::TcpStream::connect(&addr).await {
+            Ok(mut tcp) => {
+                // 这条通道已经交给转发处理器：不登记的话，`data()` 里的 shell
+                // 回显还会往同一条通道补一句 `echo:...`，把转发流量污染成乱码。
+                self.subsystems.lock().await.insert(channel.id());
+                reply.accept().await;
+                let mut stream = channel.into_stream();
+                tokio::spawn(async move {
+                    // 与生产代码一样用 copy_bidirectional：半关闭语义才一致
+                    let _ = tokio::io::copy_bidirectional(&mut tcp, &mut stream).await;
+                });
+                Ok(())
+            }
+            Err(_) => {
+                // 目标不可达就按协议拒绝，客户端会收到明确失败，
+                // 而不是「通道开了但一个字节都没有」这种查不出原因的现象
+                reply.reject(russh::ChannelOpenFailure::ConnectFailed).await;
+                Ok(())
+            }
+        }
     }
 
     /// `subsystem_request("echo")`：把收到的字节原样回写。

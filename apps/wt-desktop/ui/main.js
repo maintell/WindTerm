@@ -686,7 +686,7 @@ vaultToggleBtn.addEventListener("click", async () => {
     vaultPanel.hidden = true;
     return;
   }
-  vaultPanel.hidden = false;
+  openSidePanel(vaultPanel);
   await renderVaultPanel();
 });
 
@@ -1135,8 +1135,191 @@ document.getElementById("files-toggle").addEventListener("click", async () => {
     setStatus("文件面板需要先填主机与用户名");
     return;
   }
-  filesPanel.hidden = false;
+  openSidePanel(filesPanel);
   await loadDir("/");
+});
+
+// ── 隧道（NET-001 / NET-004）───────────────────────────────
+//
+// 承载连接用的是上面那张表单里的主机/用户名/密码——与 SSH、SFTP 同一套参数，
+// 用户不用为隧道再填一遍。每条隧道一条独立连接（见后端注释）。
+const tunnelsPanel = document.getElementById("tunnels");
+const tunnelList = document.getElementById("tunnel-list");
+const tunnelMsgEl = document.getElementById("tunnel-msg");
+const tunnelListen = document.getElementById("tunnel-listen");
+const tunnelTarget = document.getElementById("tunnel-target");
+const tunnelLan = document.getElementById("tunnel-lan");
+const tunnelAdd = document.getElementById("tunnel-add");
+
+/** 最近一次取到的隧道状态（验收与脚本读它，避免去解析 DOM 文本） */
+let lastTunnels = [];
+let tunnelTimer = null;
+
+function setTunnelMsg(text) {
+  tunnelMsgEl.textContent = text;
+}
+
+function formatBytes(n) {
+  if (n < 1024) return `${n} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  return `${v.toFixed(1)} ${units[i]}`;
+}
+
+function renderTunnels(rows) {
+  lastTunnels = rows;
+  tunnelList.textContent = "";
+  if (!rows.length) {
+    const empty = document.createElement("div");
+    empty.className = "tunnel";
+    // 空状态要说清「这东西解决什么问题」，否则用户不知道要不要建
+    empty.textContent =
+      "还没有隧道。隧道把远端端口映射到本地，用来连只允许从服务器访问的服务（数据库、Redis 等）。";
+    tunnelList.appendChild(empty);
+    return;
+  }
+  for (const t of rows) {
+    const box = document.createElement("div");
+    box.className = "tunnel";
+
+    const line1 = document.createElement("div");
+    line1.className = "line1";
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    dot.textContent = "●";
+    dot.title = "运行中";
+    // 有上次错误就变红：承载连接断了以后监听还在，但每个连接都会失败，
+    // 这时候继续显示绿灯等于骗人
+    if (t.last_error) {
+      dot.style.color = "#e5534b";
+      dot.title = `最近一次转发失败：${t.last_error}`;
+    }
+    const route = document.createElement("span");
+    route.textContent = `${t.kind} ${t.listen} → ${t.target}`;
+    const stop = document.createElement("button");
+    stop.textContent = "停止";
+    stop.title = `停止 ${t.listen}`;
+    stop.dataset.id = t.id;
+    stop.addEventListener("click", () => void stopTunnel(t.id));
+    line1.append(dot, route, stop);
+
+    const line2 = document.createElement("div");
+    line2.className = "line2";
+    const parts = [
+      `${t.active} 连接`,
+      `累计 ${t.total}`,
+      `↑${formatBytes(t.up_bytes)} ↓${formatBytes(t.down_bytes)}`,
+      `via ${t.via}`,
+    ];
+    if (t.last_error) parts.push(`上次错误：${t.last_error}`);
+    line2.textContent = parts.join(" · ");
+    line2.title = t.last_error ?? "";
+
+    box.append(line1, line2);
+    tunnelList.appendChild(box);
+  }
+}
+
+async function refreshTunnels() {
+  try {
+    renderTunnels(await invoke("tunnel_stats"));
+  } catch (e) {
+    setTunnelMsg(`读取隧道状态失败：${e}`);
+  }
+}
+
+async function stopTunnel(id) {
+  try {
+    await invoke("tunnel_stop", { id });
+    setTunnelMsg("已停止");
+  } catch (e) {
+    setTunnelMsg(`停止失败：${e}`);
+  }
+  await refreshTunnels();
+}
+
+async function startTunnel() {
+  if (!hostInput.value.trim() || !userInput.value.trim()) {
+    setTunnelMsg("隧道要用上面的主机与用户名建承载连接，先把这两项填上");
+    return;
+  }
+  const raw = tunnelTarget.value.trim();
+  const sep = raw.lastIndexOf(":");
+  if (sep <= 0 || sep === raw.length - 1) {
+    setTunnelMsg("目标要写成 主机:端口，比如 db:3306");
+    return;
+  }
+  const targetHost = raw.slice(0, sep);
+  const targetPort = Number.parseInt(raw.slice(sep + 1), 10);
+  if (!Number.isInteger(targetPort) || targetPort <= 0 || targetPort > 65535) {
+    setTunnelMsg("目标端口要在 1–65535 之间");
+    return;
+  }
+  const listenPort = Number.parseInt(tunnelListen.value, 10);
+  const allowLan = tunnelLan.checked;
+
+  setTunnelMsg("启动中…");
+  try {
+    const t = await withDeadline(
+      invoke("tunnel_start", {
+        arg: {
+          ...sftpReq(),
+          // 勾了「允许局域网」才监听 0.0.0.0，并把这个意图显式传给后端确认
+          listenHost: allowLan ? "0.0.0.0" : "127.0.0.1",
+          listenPort: Number.isInteger(listenPort) ? listenPort : 0,
+          targetHost,
+          targetPort,
+          allowLan,
+        },
+      }),
+      30000,
+      "启动隧道",
+    );
+    setTunnelMsg(`已启动 ${t.kind} ${t.listen} → ${t.target}`);
+    await refreshTunnels();
+  } catch (e) {
+    setTunnelMsg(`启动失败：${e}`);
+  }
+}
+
+function syncTunnelTimer() {
+  if (tunnelTimer !== null) {
+    clearInterval(tunnelTimer);
+    tunnelTimer = null;
+  }
+  // NET-004 要求统计 ≤ 2 s 刷新；1 s 让字节数看起来是「在动」的
+  if (!tunnelsPanel.hidden) {
+    tunnelTimer = setInterval(() => void refreshTunnels(), 1000);
+  }
+}
+
+/**
+ * 侧栏同一时间只开一个面板（保险库 / 文件 / 隧道）。
+ *
+ * 三个面板各占一块高度，全开着会把后开的那个挤出可视区——表现就是
+ * 「点了保险库没反应」。窄侧栏里也不该并排塞三个列表。
+ */
+function openSidePanel(target) {
+  for (const p of [vaultPanel, filesPanel, tunnelsPanel]) {
+    p.hidden = p !== target;
+  }
+  syncTunnelTimer();
+}
+
+tunnelAdd.addEventListener("click", () => void startTunnel());
+document.getElementById("tunnels-toggle").addEventListener("click", async () => {
+  if (!tunnelsPanel.hidden) {
+    tunnelsPanel.hidden = true;
+    syncTunnelTimer();
+    return;
+  }
+  openSidePanel(tunnelsPanel);
+  await refreshTunnels();
 });
 
 // ── 窗口尺寸 ────────────────────────────────────────────────
@@ -1288,7 +1471,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-5",
+  ui: "wt-ui-7",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";
@@ -1333,6 +1516,14 @@ window.__wt = {
   /** 多行粘贴确认框是否打开 */
   get pasteDialogOpen() {
     return pasteDialog.open;
+  },
+  /** 最近一次取到的隧道状态（验收与脚本用） */
+  get tunnels() {
+    return lastTunnels.slice();
+  },
+  /** 隧道面板底部的提示文本 */
+  get tunnelMsg() {
+    return tunnelMsgEl.textContent;
   },
   /** 远端是否要求 bracketed paste（DECSET ?2004） */
   get bracketedPaste() {

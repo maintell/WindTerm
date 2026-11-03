@@ -12,6 +12,7 @@
 
 pub mod algos;
 pub mod client;
+pub mod forward;
 pub mod keys;
 pub mod ppk;
 pub mod sftp;
@@ -26,6 +27,7 @@ pub use client::{
     SshConnection,
 };
 pub use keys::{inspect as inspect_key, KeyInfo, PrivateKeySource};
+pub use forward::{exposes_to_lan, start_local, ForwardStats, LocalForward};
 pub use sftp::{RemoteEntry, SftpClient};
 pub use term::{Keepalive, SshTermSession};
 pub use known_hosts::{

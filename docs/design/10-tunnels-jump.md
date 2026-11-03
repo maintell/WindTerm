@@ -148,6 +148,19 @@ pub async fn connect_chain(hops: &[Hop], target: (String, u16)) -> Result<Stream
 
 ## 3. 隧道引擎
 
+### 3.0 实现状态（M1）
+
+已实现 `wt_ssh::forward`，与本文设计的差异要显式记着：
+
+| 设计里有 | 现在 | 影响 |
+|---|---|---|
+| `TunnelRunner` + `TunnelSpec` + `CancellationToken` | `LocalForward`（`watch::Sender<bool>` 做停止信号） | 少一个 `tokio-util` 依赖；停止语义一致 |
+| `stats.last_error` | ✅ 有（`ForwardStats::last_error`，成功转发后清空） | 界面能把「运行中」降级成红点 + 原因（`NET-004` AC-3 的一半） |
+| `MAX_PER_TUNNEL` 每隧道连接上限 | ❌ 无上限 | 被恶意端打满连接时没有保护，见 `G13` |
+| `listener` 在重连期间保持（§3.4） | ❌ 未做 | 承载连接断开后监听仍在但每个连接都失败；靠 `last_error` 让用户看得见 |
+| `-R`（§3.5）、`-D` SOCKS5（§3.6） | ❌ 未做 | `NET-002` / `NET-003` 待做 |
+| 隧道配置落库 | ❌ 只在内存 | 关掉应用后隧道消失，没有 `autoStart` |
+
 ### 3.1 结构
 
 ```rust

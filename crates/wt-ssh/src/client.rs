@@ -468,6 +468,41 @@ impl SshConnection {
             .await;
     }
 
+    /// 打开一个 `direct-tcpip` 通道（`NET-001` 本地转发的数据面）。
+    ///
+    /// `target_host` 由**服务端**解析——这正是转发的价值：本地解析不到、也连不上的
+    /// 地址，在服务器侧往往是通的。所以这里传过去的是主机名而不是解析后的 IP。
+    ///
+    /// 返回的流既是读也是写，直接与本地 socket 双向对接（见 `crate::forward`）。
+    pub(crate) async fn open_direct_tcpip(
+        &self,
+        target_host: &str,
+        target_port: u16,
+        originator_address: &str,
+        originator_port: u16,
+    ) -> Result<russh::ChannelStream<russh::client::Msg>, WtError> {
+        let channel = self
+            .handle
+            .channel_open_direct_tcpip(
+                target_host,
+                u32::from(target_port),
+                originator_address,
+                u32::from(originator_port),
+            )
+            .await
+            .map_err(|e| {
+                WtError::new(codes::TUN_CHANNEL_FAILED)
+                    .message(format!("无法为 {target_host}:{target_port} 打开转发通道"))
+                    .detail(e.to_string())
+                    .hint(
+                        "目标主机名由**服务器侧**解析；确认服务器能访问该地址，\
+                         且 sshd 没有关闭 AllowTcpForwarding",
+                        HintAction::None,
+                    )
+            })?;
+        Ok(channel.into_stream())
+    }
+
     /// 打开一个子系统通道（目前只有 `sftp` 用）。
     ///
     /// 返回的是 `AsyncRead + AsyncWrite` 的流，交给上层协议实现（`crate::sftp`）。

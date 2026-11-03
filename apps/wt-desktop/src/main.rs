@@ -15,6 +15,7 @@
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
+use std::collections::HashMap;
 use tauri::State;
 use wt_ipc::{SessionHandle, SessionRegistry, SessionStats};
 use wt_term::pty::PtyConfig;
@@ -41,6 +42,23 @@ impl VaultState {
 struct AppState {
     registry: SessionRegistry,
     vault: std::sync::Mutex<VaultState>,
+    /// 运行中的隧道（`NET-004`）。`LocalForward` 不是 `Clone`，停止时要从表里
+    /// 取出来调用 `stop()`——所以存值而不是存引用。
+    tunnels: std::sync::Mutex<HashMap<String, (TunnelMeta, wt_ssh::LocalForward)>>,
+}
+
+/// 一条隧道的展示信息。运行期状态（字节数、连接数）在 `stats` 里实时取。
+#[derive(Clone)]
+struct TunnelMeta {
+    id: String,
+    /// `L` / `R` / `D`，目前只实现 `L`
+    kind: char,
+    listen_host: String,
+    listen_port: u16,
+    target_host: String,
+    target_port: u16,
+    /// 承载它的 SSH 目标，界面上按这个分组（`NET-004` 行为第 3 条）
+    via: String,
 }
 
 /// 前端拉取单次上限：64 KB（`design/02` §5.2）。
@@ -572,6 +590,34 @@ struct SshOpenDto {
     host_key_added: bool,
 }
 
+/// 用 accept-new 建立连接：密钥未知就记下来再连一次，变了就拒。
+///
+/// 三处调用（`ssh_open`、`open_sftp`、`tunnel_start`）必须**行为完全一致**：
+/// 只要有一处不同，「同一次点击里 SSH 能连、文件面板却连不上」这种问题就会
+/// 出现，而且没人能解释为什么。返回的 `bool` 表示本次是否新增了主机密钥
+/// （界面据此提示用户已经记录指纹）。
+async fn connect_accept_new(
+    cfg: &wt_ssh::SshConfig,
+    auth: &AuthInput,
+) -> Result<(wt_ssh::SshConnection, bool), String> {
+    let mut known = load_known_hosts();
+    match try_connect(cfg, auth, known_policy(&known)).await {
+        Ok(c) => Ok((c, false)),
+        Err(e) if e.code == wt_common::codes::SSH_HOSTKEY_UNKNOWN => {
+            let observed = wt_ssh::SshConnection::probe_host_key(cfg)
+                .await
+                .map_err(|e| e.to_string())?;
+            known.add(&cfg.endpoint(), &observed.key_type, &observed.blob, false);
+            save_known_hosts(&known)?;
+            let conn = try_connect(cfg, auth, known_policy(&known))
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok((conn, true))
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// 认证方式：密码、一把私钥（可带口令），或 ssh-agent 里的身份。
 enum AuthInput {
     Password(String),
@@ -660,24 +706,7 @@ async fn ssh_open(state: State<'_, AppState>, req: SshOpenReq) -> Result<SshOpen
         return Err("[SSH_BAD_ARGUMENT] 用户名不能为空".into());
     }
 
-    let mut known = load_known_hosts();
-    let mut host_key_added = false;
-
-    let conn = match try_connect(&cfg, &auth, known_policy(&known)).await {
-        Ok(c) => c,
-        Err(e) if e.code == wt_common::codes::SSH_HOSTKEY_UNKNOWN => {
-            let observed = wt_ssh::SshConnection::probe_host_key(&cfg)
-                .await
-                .map_err(|e| e.to_string())?;
-            known.add(&cfg.endpoint(), &observed.key_type, &observed.blob, false);
-            save_known_hosts(&known)?;
-            host_key_added = true;
-            try_connect(&cfg, &auth, known_policy(&known))
-                .await
-                .map_err(|e| e.to_string())?
-        }
-        Err(e) => return Err(e.to_string()),
-    };
+    let (conn, host_key_added) = connect_accept_new(&cfg, &auth).await?;
 
     let fingerprint = conn.server_fingerprint().unwrap_or_default();
     // 空闲连接会被 NAT/防火墙静默断开，按会话配置发心跳（默认 30 秒）；
@@ -819,28 +848,9 @@ async fn open_sftp(req: SshOpenReq) -> Result<wt_ssh::SftpClient, String> {
     let auth = auth_of(&req);
     trace("[open_sftp] 认证方式已定");
 
-    // 主机密钥走与 `ssh_open` 完全一样的 accept-new：
-    // 先用 known_hosts 连；密钥未知就记下来再连一次；变了就拒。
-    // 这里曾经为了绕开一段误判（以为 `HostKeyPolicy::Known` 会让命令挂起）
-    // 而改成「先 probe 拿指纹、再自己判、再用 AcceptAll 连」——多一次密钥交换，
-    // 还多了一份要和 `KnownHosts` 保持同步的重复逻辑。G8 的真实原因与此无关，已还原。
-    let mut known = load_known_hosts();
-    let conn = match try_connect(&cfg, &auth, known_policy(&known)).await {
-        Ok(c) => c,
-        Err(e) if e.code == wt_common::codes::SSH_HOSTKEY_UNKNOWN => {
-            trace("[open_sftp] 主机密钥未知 → probe 后接受（accept-new）");
-            let observed = wt_ssh::SshConnection::probe_host_key(&cfg)
-                .await
-                .map_err(|e| e.to_string())?;
-            known.add(&cfg.endpoint(), &observed.key_type, &observed.blob, false);
-            save_known_hosts(&known)?;
-            try_connect(&cfg, &auth, known_policy(&known))
-                .await
-                .map_err(|e| e.to_string())?
-        }
-        Err(e) => return Err(e.to_string()),
-    };
-    trace("[open_sftp] ← try_connect 返回");
+    // 主机密钥与 `ssh_open` 走完全相同的 accept-new 路径（见 `connect_accept_new`）
+    let (conn, _added) = connect_accept_new(&cfg, &auth).await?;
+    trace("[open_sftp] ← 连接就绪");
 
     let client = wt_ssh::SftpClient::open(conn)
         .await
@@ -981,6 +991,170 @@ async fn sftp_upload(req: SshOpenReq, path: String, content: String) -> Result<u
     Ok(len)
 }
 
+// ── 隧道（NET-001 / NET-004）────────────────────────────────
+//
+// 每条隧道一条独立的 SSH 承载连接。看起来浪费，但换来两件事：
+// ① 隧道生命周期与会话生命周期解耦——关掉终端标签不会顺手掐断正在传数据的隧道；
+// ② 停止/重启隧道不用碰会话注册表那一整套状态。
+// `NET-004` 的「按承载会话分组」在界面上按 `via`（user@host）分组即可。
+
+#[derive(serde::Serialize)]
+struct TunnelDto {
+    id: String,
+    /// `L` / `R` / `D`。目前只实现 `L`，其余两种在界面上不出现
+    kind: String,
+    /// 实际监听地址（`listen_port = 0` 时是系统分配的端口）
+    listen: String,
+    target: String,
+    /// 承载它的 SSH 目标，界面按这个分组
+    via: String,
+    active: usize,
+    total: usize,
+    up_bytes: u64,
+    down_bytes: u64,
+    /// 最近一次转发失败的原因；成功转发后清空。界面据此把「运行中」降级成红色
+    last_error: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TunnelStartArg {
+    /// 与 `ssh_open` / `open_sftp` 同一套连接参数（flatten 进本结构体）
+    #[serde(flatten)]
+    req: SshOpenReq,
+    #[serde(default)]
+    listen_host: Option<String>,
+    listen_port: u16,
+    target_host: String,
+    target_port: u16,
+    /// 监听 `0.0.0.0` 等对外地址必须显式确认（`NET-001` 行为规格第 1 条）
+    #[serde(default)]
+    allow_lan: bool,
+}
+
+/// 隧道 id 序号。只在本进程内有意义（隧道不落库，见 G10 之后的持久化计划），
+/// 用递增序号而不是随机串：出问题时人能一眼对上界面上的列表。
+static TUNNEL_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn tunnel_dto(meta: &TunnelMeta, fwd: &wt_ssh::LocalForward) -> TunnelDto {
+    let s = fwd.stats();
+    TunnelDto {
+        id: meta.id.clone(),
+        kind: meta.kind.to_string(),
+        listen: format!("{}:{}", meta.listen_host, meta.listen_port),
+        target: format!("{}:{}", meta.target_host, meta.target_port),
+        via: meta.via.clone(),
+        active: s.active,
+        total: s.total,
+        up_bytes: s.up_bytes,
+        down_bytes: s.down_bytes,
+        last_error: s.last_error,
+    }
+}
+
+#[tauri::command]
+async fn tunnel_start(
+    state: State<'_, AppState>,
+    arg: TunnelStartArg,
+) -> Result<TunnelDto, String> {
+    let _scope = TraceScope::enter("tunnel_start");
+    let listen_host = arg
+        .listen_host
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("127.0.0.1")
+        .to_string();
+    let target_host = arg.target_host.trim().to_string();
+    if target_host.is_empty() {
+        return Err("[TUN_BAD_ARGUMENT] 目标主机不能为空".into());
+    }
+    if wt_ssh::exposes_to_lan(&listen_host) && !arg.allow_lan {
+        return Err(format!(
+            "[TUN_LAN_CONFIRM_REQUIRED] 监听 {listen_host} 会让局域网内任何人都能访问 \
+             {target_host}:{}；确认后勾选「允许局域网访问」再启动",
+            arg.target_port
+        ));
+    }
+
+    let cfg = wt_ssh::SshConfig {
+        host: arg.req.host.trim().to_string(),
+        port: arg.req.port.unwrap_or(22),
+        user: arg.req.user.trim().to_string(),
+        ..Default::default()
+    };
+    if cfg.host.is_empty() {
+        return Err("[SSH_BAD_ARGUMENT] 主机不能为空".into());
+    }
+    if cfg.user.is_empty() {
+        return Err("[SSH_BAD_ARGUMENT] 用户名不能为空".into());
+    }
+
+    let auth = auth_of(&arg.req);
+    let (conn, _added) = connect_accept_new(&cfg, &auth).await?;
+    trace("[tunnel_start] 承载连接就绪");
+
+    let via = format!("{}@{}", cfg.user, cfg.host);
+    let fwd = wt_ssh::start_local(
+        std::sync::Arc::new(conn),
+        &listen_host,
+        arg.listen_port,
+        &target_host,
+        arg.target_port,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let listen_port = fwd.listen_addr().port();
+    trace(&format!("[tunnel_start] 已监听 {listen_host}:{listen_port}"));
+    let meta = TunnelMeta {
+        id: format!("f{}", TUNNEL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)),
+        kind: 'L',
+        listen_host,
+        listen_port,
+        target_host,
+        target_port: arg.target_port,
+        via,
+    };
+    let dto = tunnel_dto(&meta, &fwd);
+    state
+        .tunnels
+        .lock()
+        .map_err(|_| "[INTERNAL] 隧道表状态异常".to_string())?
+        .insert(meta.id.clone(), (meta, fwd));
+    Ok(dto)
+}
+
+/// 实时统计（`NET-004` 要求 ≤ 2 s 刷新，界面按 1 s 轮询）。
+#[tauri::command]
+fn tunnel_stats(state: State<'_, AppState>) -> Result<Vec<TunnelDto>, String> {
+    let map = state
+        .tunnels
+        .lock()
+        .map_err(|_| "[INTERNAL] 隧道表状态异常".to_string())?;
+    Ok(map.values().map(|(meta, fwd)| tunnel_dto(meta, fwd)).collect())
+}
+
+#[tauri::command]
+async fn tunnel_stop(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+    // 先摘出来再 await：`std::sync::MutexGuard` 不能跨 await 持有
+    let taken = {
+        state
+            .tunnels
+            .lock()
+            .map_err(|_| "[INTERNAL] 隧道表状态异常".to_string())?
+            .remove(&id)
+    };
+    match taken {
+        Some((_, fwd)) => {
+            fwd.stop().await;
+            trace(&format!("[tunnel_stop] 已停止 {id}"));
+            Ok(true)
+        }
+        None => Err(format!("[TUN_UNKNOWN] 没有 id 为 {id} 的隧道（可能已经停止）")),
+    }
+}
+
 #[derive(serde::Serialize)]
 struct StatsDto {
     buffered: usize,
@@ -1056,6 +1230,7 @@ fn main() {
         .manage(AppState {
             registry: SessionRegistry::new(),
             vault: std::sync::Mutex::new(VaultState::locked()),
+            tunnels: std::sync::Mutex::new(HashMap::new()),
         })
         .setup(|app| {
             create_main_window(app)?;
@@ -1079,6 +1254,9 @@ fn main() {
             sftp_list,
             sftp_download,
             sftp_upload,
+            tunnel_start,
+            tunnel_stats,
+            tunnel_stop,
             vault_status,
             vault_create,
             vault_unlock,

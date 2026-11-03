@@ -85,6 +85,10 @@
       }
       #tree-head {
         display: flex;
+        /* 放不下就换行。`justify-content: flex-end` + 不换行时，超宽的那几个
+           按钮会溢出到**左边**（x 变负数），点上去等于点在视口外——
+           调试起来像「按钮坏了」，其实是布局越界。 */
+        flex-wrap: wrap;
         justify-content: flex-end;
         gap: 6px;
         padding: 4px 6px;
@@ -275,6 +279,68 @@
         cursor: pointer;
       }
       #paste-ok { border-color: var(--accent); color: var(--accent); }
+      #tunnels {
+        display: flex;
+        flex-direction: column;
+        border-top: 1px solid #2a2a30;
+        max-height: 45%;
+      }
+      #tunnels[hidden] { display: none; }
+      #tunnel-form {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 4px;
+        padding: 6px;
+        border-bottom: 1px solid #2a2a30;
+        font-size: 12px;
+      }
+      #tunnel-form input:not([type="checkbox"]) {
+        background: #2a2a30;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 4px;
+        padding: 2px 6px;
+        font: inherit;
+        width: 104px;
+      }
+      #tunnel-lan-row {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        color: var(--muted);
+      }
+      #tunnel-lan-row[hidden] { display: none; }
+      #tunnel-add {
+        background: #2a2a30;
+        color: var(--fg);
+        border: 1px solid var(--accent);
+        border-radius: 4px;
+        padding: 2px 10px;
+        font: inherit;
+        cursor: pointer;
+      }
+      #tunnel-list { flex: 1; overflow: auto; font-size: 12px; }
+      #tunnel-list .tunnel { padding: 4px 8px; border-bottom: 1px solid #1f1f24; }
+      #tunnel-list .line1 { display: flex; align-items: baseline; gap: 6px; }
+      #tunnel-list .dot { font-size: 10px; color: #4caf50; }
+      #tunnel-list .line2 { color: var(--muted); }
+      #tunnel-list .tunnel button {
+        margin-left: auto;
+        background: none;
+        border: 1px solid #3a3a44;
+        color: var(--muted);
+        border-radius: 3px;
+        padding: 0 6px;
+        font: inherit;
+        cursor: pointer;
+      }
+      #tunnel-foot {
+        border-top: 1px solid #2a2a30;
+        padding: 3px 8px;
+        font-size: 12px;
+        color: var(--muted);
+      }
       #find-bar input {
         background: #2a2a30;
         color: var(--fg);
@@ -333,6 +399,7 @@
         <div id="tree-head">
           <button id="vault-toggle" title="查看保险库里保存的密码">保险库</button>
           <button id="files-toggle" title="打开 SFTP 文件面板">文件</button>
+        <button id="tunnels-toggle" title="端口转发（把远端端口映射到本地）">隧道</button>
           <button id="delete-session" disabled title="删除选中的会话">删除</button>
           <button id="import" title="从 MobaXterm.ini 导入会话">导入</button>
           <button id="refresh" title="重新读取会话库">刷新</button>
@@ -353,6 +420,18 @@
           <div id="files-list"></div>
           <div id="files-foot"><span id="files-msg"></span></div>
           <input id="files-upload" type="file" multiple hidden />
+        </div>
+        <div id="tunnels" hidden>
+          <div id="tunnel-form">
+            <input id="tunnel-listen" placeholder="本地端口，0 为随机" inputmode="numeric" />
+            <input id="tunnel-target" placeholder="目标主机:端口" spellcheck="false" />
+            <label id="tunnel-lan-row"
+              ><input type="checkbox" id="tunnel-lan" />允许局域网访问</label
+            >
+            <button id="tunnel-add">启动</button>
+          </div>
+          <div id="tunnel-list"></div>
+          <div id="tunnel-foot"><span id="tunnel-msg"></span></div>
         </div>
         <input id="import-file" type="file" accept=".ini,text/plain" hidden />
       </aside>
