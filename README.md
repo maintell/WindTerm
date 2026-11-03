@@ -12,7 +12,7 @@
 | 本地终端（ConPTY + TermSession） | ✅ 完成 | `wt-term` 40 个测试；真实 shell 启停、输入回显、resize、背压 ack、反复开关 |
 | SSH 协议层（算法/主机密钥/连接/通道/双认证/TOFU/终端会话） | ✅ 完成 | `wt-ssh` 57 个测试，含进程内 mock 服务端的正向路径与终端回显验收 |
 | 统一终端抽象 | ✅ 完成 | `TerminalSession` trait：本地 PTY 与 SSH 通道同一套 read/ack 背压模型 |
-| `wt` CLI | ✅ 可用 | `version` / `doctor` / `local exec` / `ssh exec`（密码与密钥认证、known_hosts 校验）；ANSI 默认剥离、退出码透传 |
+| `wt` CLI | ✅ 可用 | `version` / `doctor` / `local exec` / `ssh exec` / `sftp`（密码、私钥、**ssh-agent** 三种认证 + known_hosts 校验）；ANSI 默认剥离、退出码透传 |
 | IPC 数据面（`wt-ipc`） | ✅ 完成 | 会话注册表 + 拉取式二进制读取 + 未确认字节背压 + 事件节流；7 个测试 |
 | MobaXterm 迁移（`SES-020`） | ✅ 可用 | `wt session import/list`：树结构还原、Rlogin 跳过并说明、重复导入按 name+host+port 与会话/文件夹去重 |
 | SFTP（列目录 / 下载 / 上传） | ✅ CLI 可用 | `wt sftp ls/get/put`（认证参数与 `ssh exec` 一致）+ `wt-ssh::SftpClient`；9 个用例：报文级（内存管道）+ 真实 SSH 通道 + CLI 真实执行路径。**界面入口还没做**（试过，Tauri 命令层挂起，已回退） |
@@ -30,6 +30,10 @@ cargo run -p wt-cli -- doctor
 cargo run -p wt-cli -- local exec -- cmd /c "echo hello"     # Windows
 cargo run -p wt-cli -- local exec -- sh -c "echo hello"      # Unix
 cargo run -p wt-cli -- ssh exec --host H --user U --password P --insecure-host-key -- uptime
+
+# 用 ssh-agent（私钥不出 agent）：Windows 先启动「OpenSSH Authentication Agent」服务，
+# 或 Windows 上用 Pageant；Unix 让 SSH_AUTH_SOCK 指向 agent socket
+cargo run -p wt-cli -- ssh exec --host H --user U --agent -- uptime
 
 # 文件传输（认证参数与 ssh exec 一致，也支持 --key）
 cargo run -p wt-cli -- sftp ls  --host H --user U --password P --path /var/log
@@ -59,7 +63,7 @@ cargo run -p wt-cli -- session list
 |---|---|---|---|
 | G1 | `Algos` / `CompatFlags` 未映射到 `russh::Preferred` | 连老服务器时无法开启弱算法（`SES-001` AC-2） | 需手写 `kex::Name` 等枚举映射表 |
 | ~~G2~~ | ~~SSH 正向路径无自动化测试~~ | ✅ 已补齐：进程内 mock 服务端，覆盖握手/认证/exec/PTY/TOFU | — |
-| G3 | ssh-agent 转发未实现；`.ppk` 只支持未加密的 ed25519 | 无法用 ssh-agent 免密；RSA 或带口令的 `.ppk` 仍需 puttygen 转一次 | agent 下一迭代；`.ppk` 的其余类型视需求补 |
+| G3 | `.ppk` 只支持未加密的 ed25519；agent 只接**本机** agent（不支持转发到远端） | RSA 或带口令的 `.ppk` 需 puttygen 转一次；远端主机想复用本机 agent 时不行 | `.ppk` 其余类型视需求补；agent 转发属 `SES-001` AC-8，独立一轮 |
 | ~~G4~~ | ~~本地 PTY 关闭挂起~~ | ✅ 已修复：根因是未应答 ConPTY 的 `ESC[6n` 光标查询，补上应答后子进程输出与关闭均正常 | — |
 | G5 | 非 SSH 会话点不动；保险库只能按会话存密码，没有「主密码提示/恢复」机制 | RDP/VNC 会话只能看不能连；主密码忘了保险库就打不开 | 对应协议栈 + 保险库恢复流程（`SEC-*`） |
 | G8 | 界面里没有 SFTP 文件面板（CLI 可用） | 文件传输要开终端敲命令，不能像 MobaXterm 那样拖文件 | 排查记录见下 |

@@ -265,6 +265,70 @@ impl SshConnection {
             observed,
         })
     }
+    /// 用 ssh-agent 里的身份建立连接。
+    ///
+    /// 逐个尝试 agent 持有的公钥，第一个被服务端接受的即为本次使用的身份。
+    /// 私钥始终留在 agent 里——我们只发公钥、由 agent 签名，这正是用 agent 的意义。
+    ///
+    /// agent 的位置按平台取：
+    /// - Unix：`SSH_AUTH_SOCK`；
+    /// - Windows：OpenSSH Authentication Agent 的命名管道（Win10 1809 自带）。
+    ///
+    /// Pageant 暂不支持（需要额外依赖），见 README 的 G3。
+    pub async fn connect_agent(
+        cfg: &SshConfig,
+        policy: HostKeyPolicy,
+    ) -> Result<Self, WtError> {
+        let (mut handle, host_id, observed) = Self::establish(cfg, policy).await?;
+
+        #[cfg(unix)]
+        let mut agent = russh::keys::agent::client::AgentClient::connect_env()
+            .await
+            .map_err(|e| agent_unavailable(&e.to_string()))?;
+        #[cfg(windows)]
+        let mut agent = russh::keys::agent::client::AgentClient::connect_named_pipe(
+            r"\\.\pipe\openssh-ssh-agent",
+        )
+        .await
+        .map_err(|e| agent_unavailable(&e.to_string()))?;
+
+        let identities = agent
+            .request_identities()
+            .await
+            .map_err(|e| agent_unavailable(&format!("无法读取 agent 里的身份：{e}")))?;
+        if identities.is_empty() {
+            return Err(WtError::new(codes::SSH_AGENT_UNAVAILABLE)
+                .message("ssh-agent 里没有任何身份")
+                .hint("先用 ssh-add 添加私钥", HintAction::None));
+        }
+
+        for id in &identities {
+            let key = id.public_key().as_ref().clone();
+            match handle
+                .authenticate_publickey_with(&cfg.user, key, None, &mut agent)
+                .await
+            {
+                Ok(russh::client::AuthResult::Success) => {
+                    return Ok(Self {
+                        handle,
+                        host_id,
+                        observed,
+                    });
+                }
+                // 这把不被接受就换下一把——agent 里通常有多把
+                _ => continue,
+            }
+        }
+
+        Err(WtError::new(codes::SSH_AUTH_FAILED)
+            .message("ssh-agent 里的身份都被服务端拒绝了")
+            .detail(format!("尝试了 {} 把公钥", identities.len()))
+            .hint(
+                "确认 agent 里的公钥已加到远端的 authorized_keys",
+                HintAction::None,
+            ))
+    }
+
     pub fn host_id(&self) -> &HostKeyId {
         &self.host_id
     }
@@ -545,8 +609,22 @@ fn map_connect_error(
         .hint("运行连接诊断", HintAction::RunCommand("wt diag --last".into()))
 }
 
-fn map_channel_error(e: russh::Error) -> WtError {
-    WtError::new("SSH_CHANNEL_FAILED")
+/// ssh-agent 不可用时的错误。
+///
+/// 这是**配置/环境问题**，不是协议错误：用户需要知道该去启动什么。
+fn agent_unavailable(detail: &str) -> WtError {
+    #[cfg(windows)]
+    let hint = "启动「OpenSSH Authentication Agent」服务，或用 ssh-add 添加私钥";
+    #[cfg(not(windows))]
+    let hint = "确认 ssh-agent 在运行且已导出 SSH_AUTH_SOCK";
+
+    WtError::new(codes::SSH_AGENT_UNAVAILABLE)
+        .message("连不上 ssh-agent")
+        .detail(detail.to_string())
+        .hint(hint, HintAction::None)
+}
+
+fn map_channel_error(e: russh::Error) -> WtError {    WtError::new("SSH_CHANNEL_FAILED")
         .message("SSH 通道操作失败")
         .detail(e.to_string())
 }

@@ -250,6 +250,8 @@ pub mod codes {
     pub const CRY_UNSUPPORTED_VERSION: &str = "CRY_UNSUPPORTED_VERSION";
 
     pub const SSH_AUTH_FAILED: &str = "SSH_AUTH_FAILED";
+    /// ssh-agent 不可用（没在跑、没设 SSH_AUTH_SOCK、管道连不上）
+    pub const SSH_AGENT_UNAVAILABLE: &str = "SSH_AGENT_UNAVAILABLE";
     pub const SSH_HOSTKEY_CHANGED: &str = "SSH_HOSTKEY_CHANGED";
     pub const SSH_HOSTKEY_UNKNOWN: &str = "SSH_HOSTKEY_UNKNOWN";
     pub const SSH_NO_COMMON_KEX: &str = "SSH_NO_COMMON_KEX";

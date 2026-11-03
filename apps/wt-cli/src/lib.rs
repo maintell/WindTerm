@@ -66,6 +66,8 @@ pub enum SshAuth {
         path: std::path::PathBuf,
         passphrase: Option<String>,
     },
+    /// 用 ssh-agent 里的身份（私钥不出 agent）
+    Agent,
 }
 
 /// `wt sftp` 的动作。
@@ -176,6 +178,7 @@ fn parse_ssh(rest: &[String]) -> Result<Command, String> {
     let mut key = None;
     let mut passphrase = None;
     let mut insecure = false;
+    let mut use_agent = false;
 
     let mut i = 1;
     while i < rest.len() {
@@ -215,6 +218,10 @@ fn parse_ssh(rest: &[String]) -> Result<Command, String> {
                 insecure = true;
                 i += 1;
             }
+            "--agent" => {
+                use_agent = true;
+                i += 1;
+            }
             other => return Err(format!("ssh exec 不认识的参数 `{other}`")),
         }
     }
@@ -224,11 +231,14 @@ fn parse_ssh(rest: &[String]) -> Result<Command, String> {
         return Err("缺少要执行的命令：wt ssh exec --host H -- <command...>".into());
     }
 
-    let auth = match (key, password) {
-        (Some(path), _) => SshAuth::Key { path, passphrase },
-        (None, Some(pw)) => SshAuth::Password(pw),
-        (None, None) => {
-            return Err("需要认证方式：--password <pw> 或 --key <path>".into());
+    let auth = match (use_agent, key, password) {
+        (true, _, _) => SshAuth::Agent,
+        (false, Some(path), _) => SshAuth::Key { path, passphrase },
+        (false, None, Some(pw)) => SshAuth::Password(pw),
+        (false, None, None) => {
+            return Err(
+                "需要认证方式：--password <pw>、--key <path> 或 --agent".into(),
+            );
         }
     };
 
@@ -262,6 +272,7 @@ fn parse_sftp(rest: &[String]) -> Result<Command, String> {
     let mut key = None;
     let mut passphrase = None;
     let mut insecure = false;
+    let mut use_agent = false;
     let mut path = None;
     let mut remote = None;
     let mut local = None;
@@ -300,6 +311,10 @@ fn parse_sftp(rest: &[String]) -> Result<Command, String> {
                 insecure = true;
                 i += 1;
             }
+            "--agent" => {
+                use_agent = true;
+                i += 1;
+            }
             "--path" => {
                 path = Some(need(rest, i, "--path")?);
                 i += 2;
@@ -333,10 +348,13 @@ fn parse_sftp(rest: &[String]) -> Result<Command, String> {
         other => return Err(format!("sftp 的子命令只有 ls/get/put，收到 `{other}`")),
     };
 
-    let auth = match (key, password) {
-        (Some(path), _) => SshAuth::Key { path, passphrase },
-        (None, Some(pw)) => SshAuth::Password(pw),
-        (None, None) => return Err("需要认证方式：--password <pw> 或 --key <path>".into()),
+    let auth = match (use_agent, key, password) {
+        (true, _, _) => SshAuth::Agent,
+        (false, Some(path), _) => SshAuth::Key { path, passphrase },
+        (false, None, Some(pw)) => SshAuth::Password(pw),
+        (false, None, None) => {
+            return Err("需要认证方式：--password <pw>、--key <path> 或 --agent".into());
+        }
     };
 
     Ok(Command::Sftp {
@@ -602,6 +620,7 @@ async fn connect_target(target: &SshTarget) -> Result<wt_ssh::SshConnection, Str
             let src = PrivateKeySource::new(pem, passphrase.clone());
             SshConnection::connect_publickey(&cfg, &src, policy).await
         }
+        SshAuth::Agent => SshConnection::connect_agent(&cfg, policy).await,
     }
     .map_err(|e| e.to_string())
 }
@@ -777,15 +796,16 @@ pub fn usage() -> String {
         "用法：",
         "  wt version                     打印版本",
         "  wt doctor                      环境自检",
-        "  wt ssh exec --host <H> --user <U> (--password <PW> | --key <PATH>)",
+        "  wt ssh exec --host <H> --user <U> (--password <PW> | --key <PATH> | --agent)",
         "              [--port <P>] [--passphrase <PP>] [--insecure-host-key]",
         "              -- <command...>",
         "                                 连接真实 SSH 执行命令（默认校验 known_hosts）",
+        "                                 --agent：用 ssh-agent 里的身份，私钥不出 agent",
         "  wt session import --file <MobaXterm.ini> [--db <path>]",
         "                                 导入 MobaXterm 会话（结构优先，密码需重输）",
         "  wt session list [--db <path>] [--json]",
         "                                 列出已导入的会话树",
-        "  wt sftp ls --host <H> --user <U> (--password <PW> | --key <PATH>)",
+        "  wt sftp ls --host <H> --user <U> (--password <PW> | --key <PATH> | --agent)",
         "             [--port <P>] [--path <远端目录>]",
         "  wt sftp get ... --remote <远端文件> --local <本地路径>",
         "  wt sftp put ... --local <本地路径> --remote <远端文件>",
