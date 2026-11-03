@@ -31,6 +31,29 @@
 补上 SolidJS + Vite 是纯前端工作，不影响 Rust 侧与 IPC 契约；
 届时 `terminal-pump.ts` 可以直接照抄现在的 `pump()` 逻辑。
 
+### 1.2 CSP 必须放行 IPC 协议（踩过，别省这一行）
+
+`apps/wt-desktop/tauri.conf.json` 里的 CSP 不是可选的装饰：
+
+```json
+"csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost"
+```
+
+`connect-src` 少了 `ipc: http://ipc.localhost` 时，Tauri 的 IPC 自定义协议会被 CSP 拦掉，
+每次 `invoke` 先 `fetch` 失败、再退到 `postMessage` 兼容路径——**命令照跑，控制台只有一条
+warning**，但响应在这种回退路径上更容易丢，表现就是「后端日志显示做完了，界面一直转圈」。
+
+症状与判据：
+
+| 现象 | 结论 |
+|---|---|
+| 控制台出现 `IPC custom protocol failed, Tauri will now use the postMessage interface instead` | CSP 漏了 `connect-src`，先修这里再查别的 |
+| 后端埋点有 `[离开]`、前端 promise 不 settle | 命令跑完了，问题在响应这一段 |
+
+启动时打一次 `typeof window.__TAURI__` 之外，还应当有一条**版本断言**：前端把自己的
+版本号挂在 `window.__wt.ui` 上，验收脚本比对它，避免「改了 `ui/` 但页面还在跑旧 JS」
+这种沉默失效（WebView2 会缓存 `http://tauri.localhost` 下的静态资源）。
+
 ## 2. 目录结构
 
 ```

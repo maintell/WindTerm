@@ -14,7 +14,7 @@
 //   WT_DESKTOP_EXE=path/to/wt-desktop.exe WT_E2E_PORT=9333 node scripts/e2e-desktop.mjs
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -59,6 +59,8 @@ if (!existsSync(EXE)) {
 const DATA_DIR = join(root, "target", "e2e-data");
 rmSync(DATA_DIR, { recursive: true, force: true });
 mkdirSync(DATA_DIR, { recursive: true });
+// 下载落点必须可预期：不然断言要去用户的真实下载目录里翻，既脏也没法比对内容
+const DOWNLOAD_DIR = join(DATA_DIR, "downloads");
 
 let stderr = "";
 let stdout = "";
@@ -71,6 +73,9 @@ const child = spawn(EXE, [], {
     // 应用内起一台 mock SSH 服务端（仅 e2e-mock feature 编译进来的代码会响应）
     WT_MOCK_SSH: "1",
     WT_DATA_DIR: DATA_DIR,
+    WT_DOWNLOAD_DIR: DOWNLOAD_DIR,
+    // 打开后端埋点：失败时能直接看到命令停在哪一步，不用再改一遍代码重跑
+    WT_TRACE: "1",
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -299,6 +304,42 @@ async function clickAt(box) {
 }
 
 /**
+ * 双击文件面板里的一行（按名字找）。
+ *
+ * 必须发两次按下/抬起并把第二次的 `clickCount` 设为 2：Chromium 是靠这个字段
+ * 才合成 `dblclick` 的。只发一次 `click` 永远不会触发双击处理器。
+ */
+async function doubleClickFileRow(name) {
+  const box = await cdp.eval(`(() => {
+    const row = [...document.querySelectorAll("#files-list .row")].find(
+      (r) => r.querySelector("span")?.textContent === ${JSON.stringify(name)},
+    );
+    if (!row) return null;
+    const r = row.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  })()`);
+  if (!box) throw new Error(`文件面板里找不到 ${name}`);
+  const base = { x: box.x, y: box.y, button: "left" };
+  await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...base, clickCount: 1 });
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...base, clickCount: 1 });
+  await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...base, clickCount: 2 });
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...base, clickCount: 2 });
+}
+
+/**
+ * 给 `<input type=file>` 塞真实文件路径。
+ *
+ * 隐藏的 file input 点不出来，也没有别的办法把本地路径交进去——
+ * `DOM.setFileInputFiles` 是唯一走真实 change 事件的路径。
+ */
+async function setFileInput(selector, paths) {
+  const { root } = await cdp.send("DOM.getDocument", { depth: 1 });
+  const { nodeId } = await cdp.send("DOM.querySelector", { nodeId: root.nodeId, selector });
+  if (!nodeId) throw new Error(`找不到 ${selector}`);
+  await cdp.send("DOM.setFileInputFiles", { nodeId, files: paths });
+}
+
+/**
  * 往输入框里填值。
  *
  * 走 CDP 的 `Input.insertText`（焦点必须先到位），而不是直接改 `el.value`——
@@ -393,6 +434,35 @@ try {
     { timeout: 15000, label: "启动自检" },
   );
   check("启动自检拿到后端应答", true, bootStatus);
+
+  // 3b. 页面跑的必须是这次构建的前端脚本。
+  // WebView2 会缓存 `http://tauri.localhost` 下的静态资源，改完前端只重编二进制时，
+  // 页面可能仍在跑旧 JS——那时所有界面断言测的都是旧代码，结论全是假的。
+  // 前端把自己的版本号挂在 `window.__wt.ui` 上，这里对一次。
+  const uiVersion = await waitFor(
+    () => cdp.eval(`window.__wt?.ui ?? null`),
+    { timeout: 10000, label: "前端版本标记" },
+  );
+  check(
+    "前端脚本是本次构建的版本",
+    uiVersion === "wt-ui-3",
+    `__wt.ui=${uiVersion}`,
+  );
+
+  // 3c. 二进制里内嵌的前端资源也是新的。
+  // `fetch(..., {cache:"no-store"})` 绕过 WebView 缓存，拿到的是**二进制里**那一份；
+  // 与磁盘上的源文件逐字节比对，就能发现「改了 ui/ 但没重新嵌进二进制」这种沉默失效。
+  const served = await cdp.eval(`(async () => {
+    const src = "http://tauri.localhost/main.js";
+    const txt = await (await fetch(src, { cache: "no-store" })).text();
+    return txt.length;
+  })()`);
+  const onDisk = readFileSync(join(root, "apps", "wt-desktop", "ui", "main.js"), "utf8").length;
+  check(
+    "内嵌前端资源与磁盘上的源文件一致",
+    served === onDisk,
+    `二进制 ${served} 字节 / 磁盘 ${onDisk} 字节`,
+  );
 
   // 4. 点击「新建本地终端」——可信鼠标点击，走真实事件链
   await clickElement("#open");
@@ -912,6 +982,106 @@ try {
     khText.includes("127.0.0.1") && khText.includes("ssh-ed25519"),
     `${khPath}（${khText.split("\n").filter(Boolean).length} 条）`,
   );
+
+  // 16b. 文件面板：列远端目录
+  const seed = Buffer.from("hello from server").toString("base64");
+  await cdp.eval(
+    `window.__TAURI__.core.invoke("mock_seed_file", { path: "/notes.txt", content: ${JSON.stringify(seed)} })`,
+  );
+  await clickElement("#files-toggle");
+  // 页面活性自检：定时器与 rAF 还在跑吗？
+  // 「命令跑完但界面不动」有两种完全不同的原因——后端没返回，或者页面任务队列被占死。
+  // 前者要查 IPC，后者要查泵循环。这条自检把两者分开，省掉一整轮瞎猜。
+  await cdp.eval(`(() => {
+    window.__live = { st: null, raf: null, t0: Date.now() };
+    setTimeout(() => (window.__live.st = Date.now() - window.__live.t0), 0);
+    requestAnimationFrame(() => (window.__live.raf = Date.now() - window.__live.t0));
+    return true;
+  })()`);
+  await new Promise((r) => setTimeout(r, 1200));
+  const live = await cdp.eval(`({ ...window.__live, ui: window.__wt?.ui })`);
+  check(
+    "有终端会话时页面定时器与 rAF 仍在跑",
+    live.st !== null && live.raf !== null,
+    `setTimeout=${live.st}ms rAF=${live.raf}ms ui=${live.ui}`,
+  );
+
+  // 断言读 `__wt.files` 而不是逐项 DOM 文本，失败时把真实 rows/msg 打出来。
+  // 踩过：原来在轮询里对「msg 非空」抛错，超时后报的是**第一次**轮询的
+  // 「读取中…」，于是「列目录成功但断言条件不对」被误判成「后端挂起」。
+  const files = await waitFor(
+    async () => {
+      const f = await cdp.eval(`window.__wt?.files ?? null`);
+      if (!f) throw new Error("文件面板状态不可读（__wt.files 缺失）");
+      return f.rows.length ? f : null;
+    },
+    { timeout: 20000, label: "文件面板列目录" },
+  );
+  check(
+    "文件面板能列出远端文件",
+    files.rows.includes("notes.txt"),
+    `rows=${files.rows.join("、")} msg=${files.msg || "(空)"}`,
+  );
+  check(
+    "远端文件的类型来自服务端属性（文件不带斜杠）",
+    !files.rows.some((r) => r.endsWith("/")),
+    files.rows.join("、"),
+  );
+
+  // 16c. 双击下载：文件必须真的落到本地，内容与远端一致
+  await doubleClickFileRow("notes.txt");
+  const savedMsg = await waitFor(
+    async () => {
+      const f = await cdp.eval(`window.__wt.files`);
+      return f.msg.startsWith("已保存") ? f.msg : null;
+    },
+    { timeout: 20000, label: "下载完成" },
+  );
+  const first = join(DOWNLOAD_DIR, "notes.txt");
+  const firstText = existsSync(first) ? readFileSync(first, "utf8") : null;
+  check(
+    "双击把远端文件下载到本地且内容一致",
+    firstText === "hello from server",
+    `落点 ${first} 内容=${JSON.stringify(firstText)}`,
+  );
+
+  // 再下一次：同名文件不能被覆盖（覆盖就是数据丢失）。
+  // 先停一下：Chromium 会把同一位置的快速连击累加成 detail=3/4，那样根本不会再出
+  // `dblclick`——两次双击挨太近，测出来的会是「第二次没反应」这种假失败。
+  await new Promise((r) => setTimeout(r, 700));
+  const before = await cdp.eval(`window.__wt.files.msg`);
+  await doubleClickFileRow("notes.txt");
+  const secondMsg = await waitFor(
+    async () => {
+      const m = await cdp.eval(`window.__wt.files.msg`);
+      return m !== before && m.startsWith("已保存") ? m : null;
+    },
+    { timeout: 20000, label: "第二次下载完成" },
+  ).catch(async () => `未完成，面板=${await cdp.eval(`window.__wt.files.msg`)}`);
+  // 不钉死改名格式（`notes (1).txt` 还是 `notes-1.txt` 属于实现细节），
+  // 要断言的是**语义**：多出一个文件，且原来那份没被覆盖。
+  const downloaded = existsSync(DOWNLOAD_DIR) ? readdirSync(DOWNLOAD_DIR) : [];
+  check(
+    "同名下载自动改名而不覆盖",
+    downloaded.length === 2 &&
+      readFileSync(join(DOWNLOAD_DIR, "notes.txt"), "utf8") === "hello from server",
+    `目录=[${downloaded.join("、")}]；面板=${secondMsg}`,
+  );
+
+  // 16d. 上传：选一个本地文件，远端列表要出现它
+  const localUp = join(DATA_DIR, "upload.txt");
+  writeFileSync(localUp, "uploaded from ui");
+  await setFileInput("#files-upload", [localUp]);
+  const uploaded = await waitFor(
+    async () => {
+      const f = await cdp.eval(`window.__wt.files`);
+      return f.rows.includes("upload.txt") ? f.rows : null;
+    },
+    { timeout: 20000, label: "上传后刷新列表" },
+  );
+  check("上传本地文件后远端列表出现它", true, uploaded.join("、"));
+
+  await clickElement("#files-toggle");
 
   // 17. 密钥认证：仓库里不放测试私钥，让应用现生成一把一次性的
   const pem = await cdp.eval(`window.__TAURI__.core.invoke("mock_generate_key")`);  check(

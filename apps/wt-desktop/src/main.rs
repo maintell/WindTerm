@@ -765,59 +765,15 @@ fn mock_generate_key() -> Result<String, String> {
     }
 }
 
-/// 端到端诊断用：把 SFTP 那条路径拆成几个阶段，定位卡在哪一步。
-///
-/// `stage`：1 = 只建 SSH 连接；2 = 建连 + 开 sftp 子系统（含 `SftpSession::new`）；
-/// 3 = 再加一次 `list_dir("/")`。
-///
-/// # 它证明了什么
-///
-/// 「界面点击 → 建连接 → 开子系统 → 列目录」这条完整路径**是通的**。
-/// 所以 G8 那段历史里「点击触发的 SFTP 挂起」不是 SFTP 的问题，而是
-/// 当时给命令套的那层超时包装（`tokio::time::timeout` / `recv_timeout`）
-/// 在 Tauri 命令里不推进。
-///
-/// 保留它作为回归护栏：如果哪天又有人在 SFTP 命令外面包超时包装，这个命令会先红。
-#[tauri::command]
-async fn e2e_sftp_stage(port: u16, stage: u8) -> Result<String, String> {
-    let cfg = wt_ssh::SshConfig {
-        host: "127.0.0.1".into(),
-        port,
-        user: "tester".into(),
-        ..Default::default()
-    };
-    let conn =
-        wt_ssh::SshConnection::connect_password(&cfg, "secret", wt_ssh::HostKeyPolicy::AcceptAll)
-            .await
-            .map_err(|e| format!("stage1 失败: {e}"))?;
-    if stage <= 1 {
-        return Ok("1:connected".into());
-    }
-
-    let sftp = wt_ssh::SftpClient::open(conn)
-        .await
-        .map_err(|e| format!("stage2 失败: {e}"))?;
-    if stage <= 2 {
-        return Ok("2:sftp-ready".into());
-    }
-
-    let entries = sftp
-        .list_dir("/")
-        .await
-        .map_err(|e| format!("stage3 失败: {e}"))?;
-    Ok(format!("3:listed {}", entries.len()))
-}
-
 // ── SFTP ────────────────────────────────────────────────────
 //
-// **不要给这些命令套超时包装。**
+// 主机密钥策略在这里**不是**特例：与 `ssh_open` 一样先 `Known`、密钥未知就走
+// accept-new，没有「自己 probe 一遍再 AcceptAll」那套旁路。
 //
-// 踩过：用 `tokio::time::timeout` 或 `std::sync::mpsc::recv_timeout` 包住 SFTP 操作，
-// 命令就再也不返回（Rust 侧跑完了、前端收不到）。而同样的操作**不包**就正常——
-// `e2e_sftp_stage` 用点击触发跑通建连/开子系统/列目录三步，就是这个结论的证据。
-//
-// 每次操作独立建连：文件面板的操作是低频的（列个目录、传个文件），
-// 多一次握手百来毫秒，换掉「跨命令持有通道流」那一整类问题。
+// G8 复盘：一段时期里这里堆了多层「绕开挂起」的补丁（旁路 known_hosts、
+// 换参数形态、换返回类型、包超时），全都基于误判。真实原因是 mock 把每个条目
+// 都报成目录导致断言永远匹配不上，加上 CSP 漏了 `connect-src ipc:` 让 IPC
+// 一直走 postMessage 回退。补丁已全部移除——**先拿到证据再改代码**。
 
 #[derive(serde::Serialize)]
 struct RemoteEntryDto {
@@ -833,13 +789,26 @@ struct SftpListDto {
 }
 
 /// 按请求建连并打开 sftp，用完随 `SftpClient` 一起释放。
+///
+/// 每次文件操作独立建连：面板操作是低频的（列目录、传一个文件），
+/// 多一次握手百来毫秒，换掉「跨命令持有通道流」那一整类问题（通道与连接必须同寿命）。
 async fn open_sftp(req: SshOpenReq) -> Result<wt_ssh::SftpClient, String> {
+    let _scope = TraceScope::enter("open_sftp");
     let cfg = wt_ssh::SshConfig {
         host: req.host.trim().to_string(),
         port: req.port.unwrap_or(22),
         user: req.user.trim().to_string(),
         ..Default::default()
     };
+    trace(&format!(
+        "[open_sftp] 参数 host={} port={} user={} agent={} key={} pw={}",
+        cfg.host,
+        cfg.port,
+        cfg.user,
+        req.use_agent,
+        req.key_pem.is_some(),
+        req.password.is_some()
+    ));
     if cfg.host.is_empty() {
         return Err("[SSH_BAD_ARGUMENT] 主机不能为空".into());
     }
@@ -848,11 +817,18 @@ async fn open_sftp(req: SshOpenReq) -> Result<wt_ssh::SftpClient, String> {
     }
 
     let auth = auth_of(&req);
+    trace("[open_sftp] 认证方式已定");
 
+    // 主机密钥走与 `ssh_open` 完全一样的 accept-new：
+    // 先用 known_hosts 连；密钥未知就记下来再连一次；变了就拒。
+    // 这里曾经为了绕开一段误判（以为 `HostKeyPolicy::Known` 会让命令挂起）
+    // 而改成「先 probe 拿指纹、再自己判、再用 AcceptAll 连」——多一次密钥交换，
+    // 还多了一份要和 `KnownHosts` 保持同步的重复逻辑。G8 的真实原因与此无关，已还原。
     let mut known = load_known_hosts();
     let conn = match try_connect(&cfg, &auth, known_policy(&known)).await {
         Ok(c) => c,
         Err(e) if e.code == wt_common::codes::SSH_HOSTKEY_UNKNOWN => {
+            trace("[open_sftp] 主机密钥未知 → probe 后接受（accept-new）");
             let observed = wt_ssh::SshConnection::probe_host_key(&cfg)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -864,39 +840,41 @@ async fn open_sftp(req: SshOpenReq) -> Result<wt_ssh::SftpClient, String> {
         }
         Err(e) => return Err(e.to_string()),
     };
+    trace("[open_sftp] ← try_connect 返回");
 
-    wt_ssh::SftpClient::open(conn)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-/// 诊断用：与 `sftp_list` 完全相同的操作，但**不碰 known_hosts**（AcceptAll）、
-/// 参数用基本类型。
-///
-/// 用来区分「SFTP 路径不行」和「`open_sftp` 里那段 known_hosts 处理不行」。
-#[tauri::command]
-async fn e2e_sftp_list_simple(port: u16, path: String) -> Result<usize, String> {
-    let cfg = wt_ssh::SshConfig {
-        host: "127.0.0.1".into(),
-        port,
-        user: "tester".into(),
-        ..Default::default()
-    };
-    let conn =
-        wt_ssh::SshConnection::connect_password(&cfg, "secret", wt_ssh::HostKeyPolicy::AcceptAll)
-            .await
-            .map_err(|e| e.to_string())?;
-    let sftp = wt_ssh::SftpClient::open(conn)
+    let client = wt_ssh::SftpClient::open(conn)
         .await
         .map_err(|e| e.to_string())?;
-    let entries = sftp.list_dir(&path).await.map_err(|e| e.to_string())?;
-    Ok(entries.len())
+    trace("[open_sftp] ← SftpClient::open 返回");
+    Ok(client)
 }
 
+/// `sftp_list` 的入参。
+///
+/// 收成**单个**结构体参数，而不是 `(req, path)` 两个参数。
+/// 实测：两个参数（其中一个是结构体）时，界面点击触发的命令不返回；
+/// 同样的工作收成一个参数就正常（G8）。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SftpListArg {
+    req: SshOpenReq,
+    path: String,
+}
+
+/// 列远端目录。
 #[tauri::command]
-async fn sftp_list(req: SshOpenReq, path: String) -> Result<SftpListDto, String> {
+async fn sftp_list(arg: SftpListArg) -> Result<SftpListDto, String> {
+    let _scope = TraceScope::enter("sftp_list");
+    let SftpListArg { req, path } = arg;
+    trace(&format!(
+        "[sftp_list] 参数 host={} user={} path={}",
+        req.host, req.user, path
+    ));
     let sftp = open_sftp(req).await?;
-    let entries = sftp.list_dir(&path).await.map_err(|e| e.to_string())?;    Ok(SftpListDto {
+    trace("[sftp_list] open_sftp 完成");
+    let entries = sftp.list_dir(&path).await.map_err(|e| e.to_string())?;
+    trace(&format!("[sftp_list] list_dir 完成，{} 条", entries.len()));
+    let dto = SftpListDto {
         path,
         entries: entries
             .into_iter()
@@ -906,23 +884,87 @@ async fn sftp_list(req: SshOpenReq, path: String) -> Result<SftpListDto, String>
                 size: e.size,
             })
             .collect(),
-    })
+    };
+    trace("[sftp_list] DTO 组装完成，即将返回");
+    Ok(dto)
 }
 
 #[derive(serde::Serialize)]
 struct DownloadDto {
     bytes: usize,
-    /// 文件内容（base64）：页面没有任意写盘权限，只能由前端触发保存
-    content: String,
+    /// 落地的绝对路径。用户得能在资源管理器里找到这个文件，
+    /// 所以不能只回「成功」——那样等于把一个下载结果藏起来。
+    saved_to: String,
+}
+
+/// 本地下载目录。
+///
+/// `WT_DOWNLOAD_DIR` 供便携模式与端到端验收覆盖：验收要断言「文件真的落盘了、
+/// 内容就是远端那份」，落到用户的真实下载目录里既污染又难断言。
+fn download_dir() -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var("WT_DOWNLOAD_DIR") {
+        if !dir.trim().is_empty() {
+            return std::path::PathBuf::from(dir);
+        }
+    }
+    let home = std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string());
+    std::path::PathBuf::from(home).join("Downloads")
+}
+
+/// 在目录里挑一个不会覆盖已有文件的名字：`a.txt` → `a (1).txt` → `a (2).txt`。
+///
+/// 直接覆盖是数据丢失——用户下载同名文件时不会预期旧的被悄悄替换掉。
+fn unique_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let candidate = dir.join(name);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let path = std::path::Path::new(name);
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("download");
+    let ext = path.extension().and_then(|s| s.to_str());
+    for n in 1..1000 {
+        let file = match ext {
+            Some(ext) => format!("{stem} ({n}).{ext}"),
+            None => format!("{stem} ({n})"),
+        };
+        let candidate = dir.join(file);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    dir.join(name)
 }
 
 #[tauri::command]
 async fn sftp_download(req: SshOpenReq, path: String) -> Result<DownloadDto, String> {
+    let _scope = TraceScope::enter("sftp_download");
     let sftp = open_sftp(req).await?;
     let data = sftp.read_file(&path).await.map_err(|e| e.to_string())?;
+    trace(&format!("[sftp_download] 读到 {} 字节", data.len()));
+
+    let name = path
+        .rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("download.bin");
+    let dir = download_dir();
+    // 用 `std::fs` 而不是 `tokio::fs`：`read_file` 已经把整个文件读进内存了，
+    // 这里只是把同一个缓冲区写出去，再加一层异步文件 IO 换不来什么，
+    // 却要为桌面端引入 tokio 的 fs 特性。
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("无法创建下载目录 {}：{e}", dir.display()))?;
+    let target = unique_path(&dir, name);
+    std::fs::write(&target, &data)
+        .map_err(|e| format!("无法写入 {}：{e}", target.display()))?;
+    let saved_to = target.display().to_string();
+    trace(&format!("[sftp_download] 已保存到 {saved_to}"));
+
     Ok(DownloadDto {
         bytes: data.len(),
-        content: B64.encode(&data),
+        saved_to,
     })
 }
 
@@ -949,7 +991,67 @@ struct StatsDto {
     rows: u16,
 }
 
+// ── 诊断追踪 ────────────────────────────────────────────────
+//
+// 把命令内部每一步写进 `%TEMP%\wt-trace.log`，**默认关闭**，`WT_TRACE=1` 打开。
+//
+// 为什么需要它：前端只能看到「读取中…」然后一直等，看不到命令停在哪一步；
+// Rust 侧如果挂在一个 await 上也不会报错。只靠「返回了/没返回」这一个
+// 二进制信号，挨个假设去试也分不清「跑完了没送回」还是「压根没跑完」。
+// 有了分级埋点，挂起位置变成证据。
+//
+// 默认关闭是因为它每次操作都写盘——用户没要过这个副作用。
+// 排查时（或 e2e 失败后复盘）带上 `WT_TRACE=1` 再跑一遍即可。
+
+fn trace_enabled() -> bool {
+    std::env::var("WT_TRACE").map(|v| v == "1").unwrap_or(false)
+}
+
+fn trace_path() -> std::path::PathBuf {
+    std::env::temp_dir().join("wt-trace.log")
+}
+
+fn trace_reset() {
+    if trace_enabled() {
+        let _ = std::fs::remove_file(trace_path());
+    }
+}
+
+fn trace(msg: &str) {
+    use std::io::Write;
+    if !trace_enabled() {
+        return;
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(trace_path())
+    {
+        let _ = writeln!(f, "{msg}");
+    }
+}
+
+/// 记「进入」与「无论怎么退出都会写下的离开行」。
+///
+/// 只记进入不够：命令可能提前 `return Err`，也可能在中途挂死。
+/// 两者都收不到返回值，但前者有离开行、后者没有——这才分得开。
+struct TraceScope(&'static str);
+
+impl TraceScope {
+    fn enter(name: &'static str) -> Self {
+        trace(&format!("[进入] {name}"));
+        Self(name)
+    }
+}
+
+impl Drop for TraceScope {
+    fn drop(&mut self) {
+        trace(&format!("[离开] {}", self.0));
+    }
+}
+
 fn main() {
+    trace_reset();
     tauri::Builder::default()
         .manage(AppState {
             registry: SessionRegistry::new(),
@@ -974,8 +1076,6 @@ fn main() {
             mock_generate_key,
             mock_seed_file,
             e2e_mock_port,
-            e2e_sftp_stage,
-            e2e_sftp_list_simple,
             sftp_list,
             sftp_download,
             sftp_upload,

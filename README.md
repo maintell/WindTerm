@@ -15,14 +15,14 @@
 | `wt` CLI | ✅ 可用 | `version` / `doctor` / `local exec` / `ssh exec` / `ssh shell`（交互式，接管本机终端）/ `sftp`；密码、私钥、ssh-agent 三种认证 + known_hosts 校验 |
 | IPC 数据面（`wt-ipc`） | ✅ 完成 | 会话注册表 + 拉取式二进制读取 + 未确认字节背压 + 事件节流；7 个测试 |
 | MobaXterm 迁移（`SES-020`） | ✅ 可用 | `wt session import/list`：树结构还原、Rlogin 跳过并说明、重复导入按 name+host+port 与会话/文件夹去重 |
-| SFTP（列目录 / 下载 / 上传） | ✅ CLI 可用 | `wt sftp ls/get/put`（认证参数与 `ssh exec` 一致）+ `wt-ssh::SftpClient`；9 个用例：报文级（内存管道）+ 真实 SSH 通道 + CLI 真实执行路径。**界面入口还没做**（试过，Tauri 命令层挂起，已回退） |
+| SFTP（列目录 / 下载 / 上传） | ✅ CLI + 界面 | `wt sftp ls/get/put`（认证参数与 `ssh exec` 一致）+ `wt-ssh::SftpClient`；用例覆盖报文级（内存管道）、真实 SSH 通道、CLI 真实执行路径。界面文件面板：列目录、进出目录、双击下载到本地（同名自动改名）、上传本地文件 |
 | 其余协议（RDP / VNC / 隧道） | ⬜ 未开始 | — |
-| UI 壳（Tauri 2 + xterm.js） | ✅ 可交互 | 端到端验收 53 项通过（`scripts/e2e-desktop.mjs`）：本地终端全链路 + 多标签 + 查找/字号 + 会话树（新建/删除/过滤/导入含 GBK）+ SSH 密码/密钥/**agent** 三种认证 + TOFU + 保险库（存/填/列/删）+ 错误路径 |
+| UI 壳（Tauri 2 + xterm.js） | ✅ 可交互 | 端到端验收 **61 项**通过（`scripts/e2e-desktop.mjs`）：本地终端全链路 + 多标签 + 查找/字号 + 会话树（新建/删除/过滤/导入含 GBK）+ SSH 密码/密钥/**agent** 三种认证 + TOFU + 保险库（存/填/列/删）+ SFTP 文件面板（列目录/下载/上传）+ 错误路径 + 三条防「沉默失效」的自检（前端版本、内嵌资源一致性、页面任务队列活性） |
 
 实现按 [`docs/spec/14-roadmap-acceptance.md`](docs/spec/14-roadmap-acceptance.md) 的里程碑推进。
 
 ```bash
-cargo test --workspace      # 238 个测试
+cargo test --workspace      # 247 个测试
 cargo clippy --workspace --all-targets   # 零告警
 
 # 跑一下 CLI（真实 PTY）
@@ -60,6 +60,14 @@ cargo run -p wt-cli -- session list
 让 `wt-desktop` 给 WebView2 打开 CDP 端口，再用可信鼠标/键盘事件驱动界面——
 不是 `el.click()` 那种假事件，因此能覆盖键位编码与焦点链路。
 
+界面「点了没反应」时用这两个工具定位，不要靠猜：
+
+- `WT_TRACE=1`：把后端命令的分步埋点写进 `%TEMP%\wt-trace.log`（默认关闭，避免用户没要过的写盘副作用）。
+  它能区分「命令跑完但响应没送回」和「命令压根没跑完」——前者有 `[离开]` 行，后者没有。
+  `scripts/e2e-desktop.mjs` 已默认打开，验收失败后直接读这个文件。
+- `node scripts/probe-sftp.mjs`：最小探针，只跑「连上一台 mock SSH → 打开文件面板」，
+  连同页面 console 与埋点尾部一起打出来，不受其余 50 多项断言干扰。
+
 ### 已知缺口（不隐藏）
 
 | # | 缺口 | 影响 | 计划 |
@@ -69,8 +77,9 @@ cargo run -p wt-cli -- session list
 | G3 | `.ppk` 只支持未加密的 ed25519；agent 只接**本机** agent（不支持转发到远端） | RSA 或带口令的 `.ppk` 需 puttygen 转一次；远端主机想复用本机 agent 时不行 | `.ppk` 其余类型视需求补；agent 转发属 `SES-001` AC-8，独立一轮 |
 | ~~G4~~ | ~~本地 PTY 关闭挂起~~ | ✅ 已修复：根因是未应答 ConPTY 的 `ESC[6n` 光标查询，补上应答后子进程输出与关闭均正常 | — |
 | G5 | 非 SSH 会话点不动；保险库只能按会话存密码，没有「主密码提示/恢复」机制 | RDP/VNC 会话只能看不能连；主密码忘了保险库就打不开 | 对应协议栈 + 保险库恢复流程（`SEC-*`） |
-| G8 | 界面里没有 SFTP 文件面板（CLI 可用） | 文件传输要开终端敲命令，不能像 MobaXterm 那样拖文件 | 排查记录见下 |
-| G8 排查记录 | 试过三轮，均回退 | **已排除**：库与 CLI（4 个用例 0.08s）、跨命令持有通道流、`canonicalize`、连接参数、async vs sync 命令、`block_on` 与 `spawn+超时`（给命令套超时包装本身会让它不返回）。**三个探针确立的事实**：① 点击触发 `e2e_sftp_stage` 跑通「建连 → 开子系统 → 列目录」三步（`1:connected / 2:sftp-ready / 3:listed 0`）；② 点击触发 `e2e_sftp_list_simple`（AcceptAll + 基本类型参数）返回 `0`；③ 点击触发 `sftp_list`（经 `open_sftp`）挂起 | **范围已缩到 `open_sftp` 这一个函数**：它与探针 ② 的差别只有两点——读写 `known_hosts`，以及「返回 `SftpClient`（持有连接）」这个形状。下一步在这两点上二分 |
+| ~~G8~~ | ~~界面里没有 SFTP 文件面板~~ | ✅ 已实现：列目录、进出目录、双击下载到本地（同名自动改名不覆盖）、上传本地文件；传输走真实 SSH + SFTP | — |
+| G8 复盘 | 这个缺口排查了七轮才收口，三个根因都不是「SFTP 不行」，值得记下来 | ① **测试保真度**：`russh_sftp` 的 `FileAttributes::dummy()` 把 `permissions` 写死成 `0o777 \| S_IFDIR`，mock 于是把**每个**条目都报成目录——`notes.txt` 渲染成 `notes.txt/`，而断言在等 `notes.txt`。列目录其实一直是成功的。② **断言会撒谎**：轮询里对「msg 非空」抛错，超时后报的是**第一次**轮询的「读取中…」，于是「成功但条件不匹配」被读成「后端挂起」。③ **IPC 一直走回退路径**：CSP 缺 `connect-src 'self' ipc: http://ipc.localhost`，每次 `invoke` 都先 `fetch` 失败再退到 postMessage。三处都已修，并补了三条常驻断言：前端版本标记、内嵌资源与磁盘源文件逐字节一致、有终端会话时定时器与 rAF 仍在跑 | — |
+| G10 | 文件面板还缺：拖拽传输（`FIL-004`）、多会话并存（`FIL-001`）、新建目录/改名/删除、传输进度与断点续传（`FIL-019`） | 能用，但不如 MobaXterm 顺手：批量要一个个选，大文件没有进度也不能续传 | 按 `FIL-004` → `FIL-001` → `FIL-019` 顺序补 |
 | G6 | 没有分屏、主题自定义 | 多会话已用标签页解决；查找与字号已可用（Ctrl+F / Ctrl+±） | 随 `TER-01x` / `SET-00x` 推进 |
 | G9 | `wt ssh shell` 的**交互路径**没有在真实 sshd 上验证过（本机无 sshd） | 参数解析、连接失败与「连接前不碰终端」已验证；raw 模式下的按键转发、窗口尺寸、远端退出后恢复终端只能靠人工试 | 拿到真实 sshd 后走一遍：`ls` 有颜色、方向键可用、`Ctrl+C` 中断、`Ctrl+D` 退出后本机终端正常 |
 | ~~G7~~ | ~~非 UTF-8 的 ini 会让中文名乱码~~ | ✅ 已修复：`wt_import::decode_ini` 先按 UTF-8 严格解、失败再按 GBK；导入结果里显示用了哪种编码 | — |

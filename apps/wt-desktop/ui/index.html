@@ -113,6 +113,41 @@
         font-size: 12px;
       }
       #tree-filter-row input:focus { outline: 1px solid var(--accent); }
+      #files {
+        border-top: 1px solid #2a2a30;
+        max-height: 55%;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        font-size: 12px;
+      }
+      #files[hidden] { display: none; }
+      #files-head,
+      #files-foot {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 6px;
+        color: var(--muted);
+      }
+      #files-head { border-bottom: 1px solid #2a2a30; }
+      #files-foot { border-top: 1px solid #2a2a30; }
+      #files-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #files button {
+        background: #2a2a30;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 3px;
+        padding: 0 6px;
+        font: inherit;
+        cursor: pointer;
+      }
+      #files button:hover { border-color: var(--accent); }
+      #files-list { flex: 1; overflow: auto; }
+      #files-list .row { display: flex; gap: 8px; padding: 1px 8px; white-space: nowrap; }
+      #files-list .row.name { cursor: pointer; }
+      #files-list .row:hover { background: #24242a; }
+      #files-list .row span:first-child { flex: 1; overflow: hidden; text-overflow: ellipsis; }
       #vault-panel {
         border-bottom: 1px solid #2a2a30;
         padding: 4px 0;
@@ -261,6 +296,7 @@
       <aside id="tree">
         <div id="tree-head">
           <button id="vault-toggle" title="查看保险库里保存的密码">保险库</button>
+          <button id="files-toggle" title="打开 SFTP 文件面板">文件</button>
           <button id="delete-session" disabled title="删除选中的会话">删除</button>
           <button id="import" title="从 MobaXterm.ini 导入会话">导入</button>
           <button id="refresh" title="重新读取会话库">刷新</button>
@@ -271,6 +307,17 @@
           <input id="tree-filter" placeholder="过滤会话" spellcheck="false" />
         </div>
         <div id="tree-body"><p id="tree-empty">正在读取会话库…</p></div>
+        <div id="files" hidden>
+          <div id="files-head">
+            <span id="files-path">/</span>
+            <button id="files-up" title="上一级">↑</button>
+            <button id="files-upload-btn" title="上传本地文件到当前目录">上传</button>
+            <button id="files-refresh" title="刷新">⟳</button>
+          </div>
+          <div id="files-list"></div>
+          <div id="files-foot"><span id="files-msg"></span></div>
+          <input id="files-upload" type="file" multiple hidden />
+        </div>
         <input id="import-file" type="file" accept=".ini,text/plain" hidden />
       </aside>
       <div id="right">

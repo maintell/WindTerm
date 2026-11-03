@@ -743,6 +743,202 @@ document.addEventListener("keydown", (ev) => {
   }
 });
 
+// ── 文件面板（SFTP）────────────────────────────────────────
+const filesPanel = document.getElementById("files");
+const filesPath = document.getElementById("files-path");
+const filesList = document.getElementById("files-list");
+const filesMsg = document.getElementById("files-msg");
+const filesUp = document.getElementById("files-up");
+const filesRefresh = document.getElementById("files-refresh");
+const filesUploadBtn = document.getElementById("files-upload-btn");
+const filesUpload = document.getElementById("files-upload");
+
+let sftpPath = "/";
+
+function setFilesMsg(text) {
+  filesMsg.textContent = text;
+}
+
+function joinPath(dir, name) {
+  return dir.endsWith("/") ? `${dir}${name}` : `${dir}/${name}`;
+}
+
+function parentPath(path) {
+  const trimmed = path.replace(/\/+$/, "");
+  const i = trimmed.lastIndexOf("/");
+  return i <= 0 ? "/" : trimmed.slice(0, i);
+}
+
+/** 把表单里的连接参数整理成 sftp 命令要的形状（认证与 ssh_open 一致） */
+function sftpReq() {
+  return {
+    host: hostInput.value.trim(),
+    port: Number.parseInt(portInput.value, 10) || 22,
+    user: userInput.value.trim(),
+    password: useKeyBox.checked || useAgentBox.checked ? null : passInput.value,
+    keyPem: useKeyBox.checked ? keyPem : null,
+    keyPassphrase: useKeyBox.checked ? keyPassInput.value || null : null,
+    useAgent: useAgentBox.checked,
+    cols: 80,
+    rows: 24,
+  };
+}
+
+async function loadDir(path) {
+  setFilesMsg("读取中…");
+  try {
+    // 后端如果挂住，前端只会一直显示「读取中…」——既看不出是慢还是死，
+    // 也没法让用户重试。deadline 把它变成一条明确的错误，界面才有出路。
+    const r = await withDeadline(
+      invoke("sftp_list", { arg: { req: sftpReq(), path } }),
+      20000,
+      "列目录",
+    );
+    sftpPath = r.path || path;
+    filesPath.textContent = sftpPath;
+    filesPath.title = sftpPath;
+    filesList.textContent = "";
+    if (!r.entries.length) {
+      const el = document.createElement("div");
+      el.className = "row";
+      el.textContent = "（空目录）";
+      filesList.appendChild(el);
+      setFilesMsg("");
+      return;
+    }
+    for (const e of r.entries) {
+      const row = document.createElement("div");
+      row.className = "row name";
+      const label = document.createElement("span");
+      label.textContent = e.is_dir ? `${e.name}/` : e.name;
+      const size = document.createElement("span");
+      size.textContent = e.is_dir ? "" : `${e.size}`;
+      size.style.color = "#8a8a92";
+      row.append(label, size);
+      if (e.is_dir) {
+        row.addEventListener("click", () => loadDir(joinPath(sftpPath, e.name)));
+      } else {
+        // 双击下载：单击留给「选中」，与文件管理器一致，也避免误点就传文件
+        row.addEventListener("dblclick", () => void downloadFile(joinPath(sftpPath, e.name)));
+      }
+      filesList.appendChild(row);
+    }
+    setFilesMsg("");
+  } catch (e) {
+    filesList.textContent = "";
+    setFilesMsg(`列目录失败：${e}`);
+  }
+}
+
+/**
+ * 给 invoke 加一层前端超时。
+ *
+ * 后端如果挂住，前端只会一直显示「读取中…」——既看不出是慢还是死，也没法
+ * 让用户重试。超时后把它变成一条明确的错误，界面才有出路。
+ * 注意这只是前端的 deadline，不参与后端那条链路的调度。
+ */
+function withDeadline(promise, ms, what) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${what}超过 ${ms / 1000}s 没有返回`)),
+      ms,
+    );
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
+
+filesUp.addEventListener("click", () => loadDir(parentPath(sftpPath)));
+filesRefresh.addEventListener("click", () => loadDir(sftpPath));
+
+/** 下载远端文件到本地下载目录（路径由后端决定并回报）。 */
+async function downloadFile(path) {
+  setFilesMsg("下载中…");
+  try {
+    const r = await withDeadline(
+      invoke("sftp_download", { req: sftpReq(), path }),
+      30000,
+      "下载",
+    );
+    setFilesMsg(`已保存 ${r.bytes} 字节 → ${r.saved_to}`);
+    setStatus(`已下载到 ${r.saved_to}`);
+  } catch (e) {
+    setFilesMsg(`下载失败：${e}`);
+  }
+}
+
+/**
+ * 把二进制转成 base64。
+ *
+ * 分段而不是 `String.fromCharCode(...bytes)`：后者在几 MB 的文件上会因为
+ * 展开成太多实参直接抛 `Maximum call stack size exceeded`。
+ */
+function toBase64(bytes) {
+  const chunk = 0x8000;
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(bin);
+}
+
+/** 上传本地文件到当前远端目录，成功后刷新列表。 */
+async function uploadFiles(picked) {
+  if (!picked.length) return;
+  let done = 0;
+  for (const file of picked) {
+    setFilesMsg(`上传中… ${file.name}`);
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      await withDeadline(
+        invoke("sftp_upload", {
+          req: sftpReq(),
+          path: joinPath(sftpPath, file.name),
+          content: toBase64(bytes),
+        }),
+        60000,
+        "上传",
+      );
+      done += 1;
+    } catch (e) {
+      setFilesMsg(`上传 ${file.name} 失败：${e}`);
+      return;
+    }
+  }
+  setFilesMsg(`已上传 ${done} 个文件`);
+  await loadDir(sftpPath);
+}
+
+filesUploadBtn.addEventListener("click", () => filesUpload.click());
+filesUpload.addEventListener("change", () => {
+  const picked = [...filesUpload.files];
+  // 清空，否则同一个文件第二次选不会触发 change
+  filesUpload.value = "";
+  void uploadFiles(picked);
+});
+
+// 面板开关。每次操作独立建连，所以「关掉」只是收起 UI。
+document.getElementById("files-toggle").addEventListener("click", async () => {
+  if (!filesPanel.hidden) {
+    filesPanel.hidden = true;
+    return;
+  }
+  if (!hostInput.value.trim() || !userInput.value.trim()) {
+    setStatus("文件面板需要先填主机与用户名");
+    return;
+  }
+  filesPanel.hidden = false;
+  await loadDir("/");
+});
+
 // ── 窗口尺寸 ────────────────────────────────────────────────
 // 每个会话各自 fit：切换标签页时也要重新算，否则隐藏期间的 resize 会漏掉
 let resizeTimer = null;
@@ -885,6 +1081,22 @@ async function savePasswordIfAsked() {
 // 只读、无副作用：靠 DOM 文本反推会话句柄会变成脆弱实现，
 // 而「界面可被脚本驱动」本身也是 AI Agent 体验的一部分。
 window.__wt = {
+  /**
+   * 前端脚本版本标记。
+   *
+   * WebView2 会缓存 `http://tauri.localhost` 下的静态资源，改完前端只重编二进制
+   * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
+   * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
+   */
+  ui: "wt-ui-3",
+  /** 文件面板的当前状态（验收与脚本用） */
+  get files() {
+    return {
+      path: sftpPath,
+      msg: filesMsg.textContent,
+      rows: [...filesList.querySelectorAll(".row span:first-child")].map((e) => e.textContent),
+    };
+  },
   /** 当前激活会话的句柄 */
   get handle() {
     return active?.handle ?? null;

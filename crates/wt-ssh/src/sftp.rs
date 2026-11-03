@@ -192,11 +192,31 @@ mod tests {
                 format!("{handle}/")
             };
             let fs = self.fs.lock().await;
-            let files = fs
-                .keys()
+            let keys: Vec<String> = fs.keys().cloned().collect();
+            let files = keys
+                .iter()
                 .filter_map(|path| path.strip_prefix(&prefix))
                 .filter(|rest| !rest.is_empty() && !rest.contains('/'))
-                .map(|name| File::new(name, FileAttributes::dummy()))
+                .map(|name| {
+                    let full = format!("{prefix}{name}");
+                    // 没有独立目录表，一个路径「是目录」当且仅当存在它的子项
+                    let is_dir = keys.iter().any(|p| p.starts_with(&format!("{full}/")));
+                    // 不能用 `FileAttributes::dummy()`：它把 permissions 写死成
+                    // `0o777 | S_IFDIR`，于是每个条目都被报成目录。列目录仍然「成功」，
+                    // 但 `is_dir` 全错——界面上给文件加个 `/`，而这种错测不出来。
+                    let mut attrs = FileAttributes::empty();
+                    attrs.permissions = Some(if is_dir {
+                        0o755 | 0o040000 // S_IFDIR
+                    } else {
+                        0o644 | 0o100000 // S_IFREG
+                    });
+                    attrs.size = Some(if is_dir {
+                        0
+                    } else {
+                        fs.get(&full).map(|v| v.len() as u64).unwrap_or(0)
+                    });
+                    File::new(name, attrs)
+                })
                 .collect::<Vec<_>>();
             Ok(Name { id, files })
         }
@@ -305,6 +325,13 @@ mod tests {
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert!(names.contains(&"hello.txt"), "实际: {names:?}");
         assert!(names.contains(&"other.bin"), "实际: {names:?}");
+
+        // 类型与大小必须来自服务端属性，不能靠名字猜。
+        // 服务端把 permissions 写成 `0o777 | S_IFDIR`（`FileAttributes::dummy()` 就是这样）
+        // 时，所有条目都会变成目录——列目录仍然「成功」，界面却给文件加个 `/`。
+        let hello = entries.iter().find(|e| e.name == "hello.txt").unwrap();
+        assert!(!hello.is_dir, "普通文件不该被报成目录");
+        assert_eq!(hello.size, 8, "大小要来自服务端属性");
 
         assert_eq!(sftp.read_file("/hello.txt").await.unwrap(), b"hi there");
 

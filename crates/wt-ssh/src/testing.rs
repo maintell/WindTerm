@@ -81,11 +81,32 @@ impl russh_sftp::server::Handler for MemSftp {
             format!("{handle}/")
         };
         let fs = self.fs.lock().await;
-        let files = fs
-            .keys()
+        // 先快照键：判断「这一项是不是目录」要再查一遍前缀，边迭代边借用过不了编译
+        let keys: Vec<String> = fs.keys().cloned().collect();
+        let files = keys
+            .iter()
             .filter_map(|path| path.strip_prefix(&prefix))
             .filter(|rest| !rest.is_empty() && !rest.contains('/'))
-            .map(|name| File::new(name, FileAttributes::dummy()))
+            .map(|name| {
+                let full = format!("{prefix}{name}");
+                // 没有独立目录表，一个路径「是目录」当且仅当存在它的子项
+                let is_dir = keys.iter().any(|p| p.starts_with(&format!("{full}/")));
+                // 不能用 `FileAttributes::dummy()`：它把 permissions 写死成
+                // `0o777 | S_IFDIR`，于是每个条目都被报成目录，界面上给文件加个 `/`。
+                // 这会让「列目录」看起来对、`is_dir` 全错——测试保真度的问题最难发现。
+                let mut attrs = FileAttributes::empty();
+                attrs.permissions = Some(if is_dir {
+                    0o755 | 0o040000 // S_IFDIR
+                } else {
+                    0o644 | 0o100000 // S_IFREG
+                });
+                attrs.size = Some(if is_dir {
+                    0
+                } else {
+                    fs.get(&full).map(|v| v.len() as u64).unwrap_or(0)
+                });
+                File::new(name, attrs)
+            })
             .collect::<Vec<_>>();
         Ok(Name { id, files })
     }
