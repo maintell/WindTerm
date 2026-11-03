@@ -99,6 +99,38 @@
       }
       #tree-head button:hover { border-color: var(--accent); }
       #tree-body { flex: 1; overflow: auto; padding: 4px 0; }
+      #vault-panel {
+        border-bottom: 1px solid #2a2a30;
+        padding: 4px 0;
+        font-size: 12px;
+        max-height: 40%;
+        overflow: auto;
+      }
+      #vault-panel[hidden] { display: none; }
+      #vault-panel .entry {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 2px 8px;
+        color: var(--fg);
+      }
+      #vault-panel .entry span {
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      #vault-panel .entry button {
+        background: none;
+        border: 1px solid #3a3a44;
+        border-radius: 3px;
+        color: var(--muted);
+        cursor: pointer;
+        font: inherit;
+        padding: 0 6px;
+      }
+      #vault-panel .entry button:hover { border-color: #d06c6c; color: #e8e8ea; }
+      #vault-panel .empty { color: var(--muted); padding: 2px 8px; }
       .node {
         padding: 2px 8px;
         font-size: 12px;
@@ -154,10 +186,12 @@
     <div id="main">
       <aside id="tree">
         <div id="tree-head">
+          <button id="vault-toggle" title="查看保险库里保存的密码">保险库</button>
           <button id="delete-session" disabled title="删除选中的会话">删除</button>
           <button id="import" title="从 MobaXterm.ini 导入会话">导入</button>
           <button id="refresh" title="重新读取会话库">刷新</button>
         </div>
+        <div id="vault-panel" hidden></div>
         <p id="tree-msg" hidden></p>
         <div id="tree-body"><p id="tree-empty">正在读取会话库…</p></div>
         <input id="import-file" type="file" accept=".ini,text/plain" hidden />

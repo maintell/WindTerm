@@ -123,7 +123,7 @@ def test_ssh_connect(server, wt):
 | 调试参数必须由代码传，不能用 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` | `wry` 每次都会 `set_additional_browser_arguments`，会覆盖该环境变量 |
 | 连上 CDP 后立刻 `Emulation.setFocusEmulationEnabled` | 窗口没拿到前台焦点时，WebView2 会偶发吞掉可信鼠标/键盘事件——观察到过一次「点了按钮没反应」的假失败 |
 
-当前覆盖 41 项断言：
+当前覆盖 43 项断言：
 
 - 本地终端：页面加载与 Tauri 桥接、启动自检、点击建会话、句柄可取、首屏输出渲染、
   焦点在终端、键盘输入、命令输出、统计字段非零值、前后端行列一致、ack 回流归零、
@@ -140,7 +140,8 @@ def test_ssh_connect(server, wt):
   断言选中后显示文件名、无密码也能连上并收到服务端横幅；
 - 保险库：密钥模式下「记住密码」被禁用（没有密码可存，不能让控件静默失效）、
   勾选后出现保险库输入、创建并解锁、连接成功后密码写入保险库、`vault.wtvlt` 落盘且是
-  `WTVLT\0` 加密容器、重新选中会话时自动填入密码、用存下的密码能直接连上；
+  `WTVLT\0` 加密容器、重新选中会话时自动填入密码、用存下的密码能直接连上、
+  条目面板能看到存了哪些密码、能删掉条目且面板与计数同步；
 - 全程断言页面无未捕获异常。
 
 SSH 那几项需要一台「服务器」。本机没有 sshd，所以 `wt-desktop` 带 `e2e-mock` feature 编译时

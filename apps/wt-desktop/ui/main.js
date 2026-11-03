@@ -426,6 +426,59 @@ importFile.addEventListener("change", async () => {
   }
 });
 
+// ── 保险库条目面板 ─────────────────────────────────────────
+const vaultToggleBtn = document.getElementById("vault-toggle");
+const vaultPanel = document.getElementById("vault-panel");
+
+async function renderVaultPanel() {
+  vaultPanel.textContent = "";
+  const line = (text, cls = "empty") => {
+    const el = document.createElement("div");
+    el.className = cls;
+    el.textContent = text;
+    vaultPanel.appendChild(el);
+  };
+  try {
+    const entries = await invoke("credential_list");
+    if (!entries.length) {
+      line("保险库里没有密码");
+      return;
+    }
+    for (const e of entries) {
+      const row = document.createElement("div");
+      row.className = "entry";
+      const name = document.createElement("span");
+      name.textContent = e.name;
+      name.title = e.sessionId ?? e.id;
+      const del = document.createElement("button");
+      del.textContent = "删除";
+      del.addEventListener("click", async () => {
+        try {
+          await invoke("credential_delete", { entryId: e.id });
+          await refreshVault();
+          await renderVaultPanel();
+          setStatus(`已删除保险库条目 ${e.name}`);
+        } catch (err) {
+          setStatus(`删除失败：${err}`);
+        }
+      });
+      row.append(name, del);
+      vaultPanel.appendChild(row);
+    }
+  } catch (e) {
+    line(String(e));
+  }
+}
+
+vaultToggleBtn.addEventListener("click", async () => {
+  if (!vaultPanel.hidden) {
+    vaultPanel.hidden = true;
+    return;
+  }
+  vaultPanel.hidden = false;
+  await renderVaultPanel();
+});
+
 // ── 输入 ────────────────────────────────────────────────────
 /** xterm 交来的输入事件计数，用于诊断「首字符丢失」这类问题 */
 let dataEvents = 0;
@@ -561,6 +614,7 @@ async function savePasswordIfAsked() {
       password: pw,
     });
     await refreshVault();
+    if (!vaultPanel.hidden) await renderVaultPanel();
   } catch (e) {
     term.write(`\r\n\x1b[33m密码未保存：${e}\x1b[0m\r\n`);
   }

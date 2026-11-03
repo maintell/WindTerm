@@ -880,7 +880,44 @@ try {
   );
   check("用保险库里的密码能直接连上", reusedStatus.includes("tester@127.0.0.1"), reusedStatus);
 
-  // 19. 连不上的错误路径：必须给出稳定错误码，不能静默失败
+  // 19. 保险库条目面板：能看到存了什么，也能删掉
+  await clickElement("#vault-toggle");
+  const listedEntries = await waitFor(
+    async () => {
+      const names = await cdp.eval(
+        `[...document.querySelectorAll("#vault-panel .entry span")].map((e) => e.textContent)`,
+      );
+      return names.includes("mock-ssh") ? names : null;
+    },
+    { timeout: 10000, label: "保险库条目列表" },
+  );
+  check("保险库面板能看到存了哪些密码", true, listedEntries.join("、"));
+
+  const deleteBtnBox = await cdp.eval(`(() => {
+    const btn = document.querySelector("#vault-panel .entry button");
+    if (!btn) return null;
+    const r = btn.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  })()`);
+  if (!deleteBtnBox) throw new Error("保险库面板里找不到删除按钮");
+  await clickAt(deleteBtnBox);
+  const panelCleared = await waitFor(
+    async () => {
+      const t = await cdp.eval(`document.getElementById("vault-panel").textContent`);
+      return t.includes("没有密码") ? t : null;
+    },
+    { timeout: 10000, label: "删除保险库条目" },
+  );
+  const vaultAfterDelete = await cdp.eval(
+    `document.getElementById("vault-state").textContent`,
+  );
+  check(
+    "能删掉保险库里的密码（面板与计数同步）",
+    panelCleared.includes("没有密码") && vaultAfterDelete.includes("0 条"),
+    vaultAfterDelete,
+  );
+
+  // 20. 连不上的错误路径：必须给出稳定错误码，不能静默失败
   await clickElement("#close");
   await waitFor(
     async () => (await cdp.eval(`document.getElementById("status").textContent`)) === "已关闭",

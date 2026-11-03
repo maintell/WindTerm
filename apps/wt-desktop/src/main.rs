@@ -123,6 +123,61 @@ fn term_close(state: State<'_, AppState>, handle: String) {
     state.registry.close(&h);
 }
 
+#[derive(serde::Serialize)]
+struct CredentialDto {
+    id: String,
+    name: String,
+    session_id: Option<String>,
+}
+
+/// 列出保险库里的密码条目。
+///
+/// 用户有权知道自己的密码都存了哪些——没有这个列表，
+/// 保险库就是个黑盒，删都无从删起。
+#[tauri::command]
+fn credential_list(state: State<'_, AppState>) -> Result<Vec<CredentialDto>, String> {
+    let st = state.vault.lock().unwrap();
+    let Some(vault) = st.vault.as_ref() else {
+        return Err(locked_error());
+    };
+    Ok(vault
+        .entries()
+        .iter()
+        .filter_map(|e| match e {
+            wt_crypto::Entry::Password {
+                id,
+                name,
+                session_id,
+                ..
+            } => Some(CredentialDto {
+                id: id.clone(),
+                name: name.clone(),
+                session_id: session_id.clone(),
+            }),
+            _ => None,
+        })
+        .collect())
+}
+
+/// 删掉一条密码条目并重新落盘。
+#[tauri::command]
+fn credential_delete(
+    state: State<'_, AppState>,
+    entry_id: String,
+) -> Result<VaultStatusDto, String> {
+    let mut st = state.vault.lock().unwrap();
+    let master = st.password.clone().ok_or_else(locked_error)?;
+    {
+        let Some(vault) = st.vault.as_mut() else {
+            return Err(locked_error());
+        };
+        vault.remove(&entry_id).map_err(|e| e.to_string())?;
+        let bytes = vault.seal(&master).map_err(|e| e.to_string())?;
+        std::fs::write(vault_path(), bytes).map_err(|e| format!("写入保险库失败：{e}"))?;
+    }
+    Ok(status_of(&st))
+}
+
 // ── 会话列表 ────────────────────────────────────────────────
 
 /// 会话库位置，与 `wt` CLI 的默认值一致（`%APPDATA%\WindTerm\data.db`），
@@ -699,6 +754,8 @@ fn main() {
             vault_lock,
             credential_save,
             credential_get,
+            credential_list,
+            credential_delete,
             session_save,
             session_delete
         ])
