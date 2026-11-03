@@ -226,6 +226,7 @@ impl russh::server::Server for MockServer {
             subsystems: Arc::new(AsyncMutex::new(std::collections::HashSet::new())),
             fs: self.fs.clone(),
             input_buf: String::new(),
+            forward_stops: HashMap::new(),
         }
     }
 }
@@ -240,6 +241,9 @@ struct MockHandler {
     /// shell 收到的输入累积（按字符截断）。客户端是**逐键**发的，
     /// 想识别一段词就必须累积，否则永远匹配不到整词。
     input_buf: String,
+    /// 已建立的远程转发（`-R`）：`(address, port) → 停止信号`。
+    /// `cancel_tcpip_forward` 靠它让监听真的停下，否则用例只能验「开始监听」。
+    forward_stops: HashMap<(String, u32), tokio::sync::watch::Sender<bool>>,
 }
 
 impl russh::server::Handler for MockHandler {
@@ -433,9 +437,88 @@ impl russh::server::Handler for MockHandler {
         }
         Ok(())
     }
-}
+    /// `-R`：按客户端请求在**服务端本地**监听，把进来的连接转成
+    /// `forwarded-tcpip` 通道发回客户端。真实 sshd 就是这个行为。
+    ///
+    /// `port` 是 `&mut u32`：请求 0 时由这里绑定实际端口并写回去。
+    async fn tcpip_forward(
+        &mut self,
+        address: &str,
+        port: &mut u32,
+        session: &mut Session,
+    ) -> Result<bool, Self::Error> {
+        if address == "deny-forward" {
+            return Ok(false);
+        }
+        let listener = match tokio::net::TcpListener::bind(format!("{address}:{port}")).await {
+            Ok(l) => l,
+            Err(_) => return Ok(false),
+        };
+        let actual = listener.local_addr().map(|a| a.port()).unwrap_or(*port as u16);
+        *port = u32::from(actual);
 
-/// 已启动的 mock 服务端。`port` 指向 `127.0.0.1`。
+        // 记住停止信号：`cancel_tcpip_forward` 要能让监听真的停下
+        let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+        self.forward_stops
+            .insert((address.to_string(), u32::from(actual)), stop_tx);
+
+        let handle = session.handle();
+        let connect_address = address.to_string();
+        // 转发通道也是「已接管」的：不登记的话 `data()` 里的 shell 回显会往
+        // 同一条通道补一句 `echo:...`，把转发流量污染成乱码（与 direct-tcpip 同一个坑）
+        let subsystems = self.subsystems.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    changed = stop_rx.changed() => {
+                        if changed.is_err() || *stop_rx.borrow() {
+                            break;
+                        }
+                    }
+                    accepted = listener.accept() => {
+                        let Ok((mut tcp, peer)) = accepted else { continue };
+                        let handle = handle.clone();
+                        let address = connect_address.clone();
+                        let subsystems = subsystems.clone();
+                        tokio::spawn(async move {
+                            let channel = match handle
+                                .channel_open_forwarded_tcpip(
+                                    address,
+                                    u32::from(actual),
+                                    peer.ip().to_string(),
+                                    u32::from(peer.port()),
+                                )
+                                .await
+                            {
+                                Ok(c) => c,
+                                Err(_) => return,
+                            };
+                            subsystems.lock().await.insert(channel.id());
+                            let mut stream = channel.into_stream();
+                            let _ = tokio::io::copy_bidirectional(&mut tcp, &mut stream).await;
+                        });
+                    }
+                }
+            }
+        });
+        Ok(true)
+    }
+
+    async fn cancel_tcpip_forward(
+        &mut self,
+        address: &str,
+        port: u32,
+        _session: &mut Session,
+    ) -> Result<bool, Self::Error> {
+        match self.forward_stops.remove(&(address.to_string(), port)) {
+            Some(tx) => {
+                let _ = tx.send(true);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+}
 pub struct MockSshServer {
     pub port: u16,
     /// SFTP 子系统的内存文件系统：用例在连接前预置、连接后检查

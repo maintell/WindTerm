@@ -44,7 +44,7 @@ pub struct ForwardStats {
 }
 
 #[derive(Debug, Default)]
-struct Counters {
+pub(crate) struct Counters {
     active: AtomicUsize,
     total: AtomicUsize,
     up: AtomicU64,
@@ -53,7 +53,24 @@ struct Counters {
 }
 
 impl Counters {
-    fn snapshot(&self) -> ForwardStats {
+    pub(crate) fn inc_active(&self) {
+        self.active.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn dec_active(&self) {
+        self.active.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn inc_total(&self) {
+        self.total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn add_bytes(&self, up: u64, down: u64) {
+        self.up.fetch_add(up, Ordering::Relaxed);
+        self.down.fetch_add(down, Ordering::Relaxed);
+    }
+
+    pub(crate) fn snapshot(&self) -> ForwardStats {
         ForwardStats {
             active: self.active.load(Ordering::Relaxed),
             total: self.total.load(Ordering::Relaxed),
@@ -63,13 +80,13 @@ impl Counters {
         }
     }
 
-    fn record_error(&self, message: &str) {
+    pub(crate) fn record_error(&self, message: &str) {
         if let Ok(mut slot) = self.last_error.lock() {
             *slot = Some(message.to_string());
         }
     }
 
-    fn clear_error(&self) {
+    pub(crate) fn clear_error(&self) {
         if let Ok(mut slot) = self.last_error.lock() {
             *slot = None;
         }
@@ -311,8 +328,7 @@ pub async fn start_socks5(
     })
 }
 
-async fn serve_socks5(
-    conn: Arc<SshConnection>,
+async fn serve_socks5(    conn: Arc<SshConnection>,
     socket: &mut tokio::net::TcpStream,
     peer: std::net::SocketAddr,
     auth: Option<&(String, String)>,
@@ -351,4 +367,74 @@ async fn serve_socks5(
     counters.up.fetch_add(up, Ordering::Relaxed);
     counters.down.fetch_add(down, Ordering::Relaxed);
     Ok(())
+}
+
+/// 一条运行中的远程转发（`-R`，`NET-002`）。
+///
+/// 与 `-L` 相反：**监听在服务端**，本地没有端口。所以它没有 `listen_addr`，
+/// 只有「服务端上实际绑定的地址」。别把两者混在一个类型里——
+/// 界面上「本地 127.0.0.1:8080」和「服务器 0.0.0.0:8080」是两件完全不同的事。
+pub struct RemoteForward {
+    remote_host: String,
+    remote_port: u16,
+    counters: Arc<Counters>,
+    conn: Arc<SshConnection>,
+}
+
+impl RemoteForward {
+    /// 服务端上实际监听的地址（请求端口 0 时由服务端分配）。
+    pub fn remote_addr(&self) -> String {
+        format!("{}:{}", self.remote_host, self.remote_port)
+    }
+
+    pub fn stats(&self) -> ForwardStats {
+        self.counters.snapshot()
+    }
+
+    /// 停止：让服务端取消监听（`cancel-tcpip-forward`）。
+    ///
+    /// 只关本地的东西是不够的——`-R` 的监听在别人机器上，不通知服务端
+    /// 会留下一个「我们以为停了、服务器还在监听」的端口。
+    pub async fn stop(self) {
+        self.conn
+            .cancel_remote_forward(&self.remote_host, self.remote_port)
+            .await;
+    }
+}
+
+/// 启动一条远程转发（`-R`）。
+///
+/// `remote_host:remote_port` 是**服务端**要监听的地址（`remote_port = 0` 时由它分配），
+/// `local_host:local_port` 是本机上能访问的目标。
+pub async fn start_remote(
+    conn: Arc<SshConnection>,
+    remote_host: &str,
+    remote_port: u16,
+    local_host: &str,
+    local_port: u16,
+) -> Result<RemoteForward, WtError> {
+    if local_port == 0 {
+        return Err(WtError::new("TUN_BAD_ARGUMENT")
+            .message("远程转发必须指定本地目标端口")
+            .hint(
+                "远程转发是反向的：把服务器上的端口映射到**你本机**能访问的服务",
+                HintAction::None,
+            ));
+    }
+    let counters = Arc::new(Counters::default());
+    let bound = conn
+        .remote_forward(
+            remote_host,
+            remote_port,
+            local_host,
+            local_port,
+            counters.clone(),
+        )
+        .await?;
+    Ok(RemoteForward {
+        remote_host: remote_host.to_string(),
+        remote_port: bound,
+        counters,
+        conn,
+    })
 }

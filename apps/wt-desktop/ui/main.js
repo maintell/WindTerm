@@ -1444,10 +1444,19 @@ async function startTunnel() {
 
 // 动态代理不需要目标：每次请求由客户端决定连哪里。让它禁用而不是消失，
 // 用户才看得出「这里本来有东西、只是现在用不上」。
+// `-R` 的语义是反的：监听在服务器、目标在本地，所以占位文案必须跟着变，
+// 否则用户会以为「本地端口」填的是自己机器上的端口。
 function syncTunnelKind() {
-  const dynamic = tunnelKind.value === "dynamic";
+  const kind = tunnelKind.value;
+  const dynamic = kind === "dynamic";
+  const remote = kind === "remote";
   tunnelTarget.disabled = dynamic;
-  tunnelTarget.placeholder = dynamic ? "动态代理不需要目标" : "目标主机:端口";
+  tunnelListen.placeholder = remote ? "服务器上的端口，0 为随机" : "本地端口，0 为随机";
+  tunnelTarget.placeholder = dynamic
+    ? "动态代理不需要目标"
+    : remote
+      ? "本机目标 host:port"
+      : "目标主机:端口";
   if (dynamic) tunnelTarget.value = "";
 }
 
@@ -1677,7 +1686,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-13",
+  ui: "wt-ui-14",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";

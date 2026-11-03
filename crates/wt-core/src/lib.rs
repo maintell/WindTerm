@@ -448,20 +448,22 @@ impl TunnelSpec {
                 .hint("给隧道起个能认出来的名字，比如「测试库」", HintAction::None));
         }
         match self.kind {
-            TunnelKind::Remote => Err(WtError::new("TUN_UNSUPPORTED_KIND")
-                .message("远程转发（-R）还没实现")
-                .detail("当前只支持本地转发 -L 与动态代理 -D")
-                .hint("用本地转发 -L 或者动态代理 -D 替代", HintAction::None)),
-            TunnelKind::Local => {
+            TunnelKind::Local | TunnelKind::Remote => {
+                // `-L` 的目标在服务器侧、`-R` 的目标在本机，但两者的必填项一样：
+                // 没有目标就无从转发
                 let host = self.target_host.as_deref().unwrap_or_default().trim();
                 if host.is_empty() {
                     return Err(WtError::new("TUN_BAD_ARGUMENT")
-                        .message("本地转发必须有目标主机")
+                        .message(if self.kind == TunnelKind::Local {
+                            "本地转发必须有目标主机"
+                        } else {
+                            "远程转发必须有本机目标主机"
+                        })
                         .detail("目标主机名在服务器侧解析，比如 db 或 redis.internal"));
                 }
                 if self.target_port.unwrap_or(0) == 0 {
                     return Err(WtError::new("TUN_BAD_ARGUMENT")
-                        .message("本地转发必须有目标端口")
+                        .message("转发必须有目标端口")
                         .detail("端口范围 1–65535"));
                 }
                 Ok(())
@@ -728,10 +730,17 @@ mod tests {
         assert!(dyn_ok.validate().is_ok());
         assert_eq!(dyn_ok.listen_port, 0, "动态代理同样支持随机端口");
 
-        // -R 还没实现：明确拒绝，而不是存进库里假装能用
+        // -R 已实现：必填项与 -L 一样（目标变成「本机目标」），不再拒绝
         let mut remote = base.clone();
         remote.kind = TunnelKind::Remote;
-        assert_eq!(remote.validate().unwrap_err().code, "TUN_UNSUPPORTED_KIND");
+        assert!(remote.validate().is_ok(), "-R 现在应当通过校验");
+        let mut remote_no_target = remote.clone();
+        remote_no_target.target_host = None;
+        assert_eq!(
+            remote_no_target.validate().unwrap_err().code,
+            "TUN_BAD_ARGUMENT",
+            "-R 没有本机目标时应拒绝"
+        );
 
         let mut no_name = base.clone();
         no_name.name = "  ".into();

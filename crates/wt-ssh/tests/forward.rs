@@ -237,8 +237,7 @@ async fn socks5_dynamic_forward_passes_bytes_through() {
 }
 
 #[tokio::test]
-async fn socks5_rejects_when_auth_configured_but_client_offers_none() {
-    let server = MockSshServer::start().await;
+async fn socks5_rejects_when_auth_configured_but_client_offers_none() {    let server = MockSshServer::start().await;
     let conn = connect(server.port).await;
     let fwd = wt_ssh::start_socks5(
         conn,
@@ -259,4 +258,77 @@ async fn socks5_rejects_when_auth_configured_but_client_offers_none() {
     assert_eq!(picked, [5, 0xFF], "没有可接受的方法时必须拒绝");
 
     fwd.stop().await;
+}
+
+/// `RemoteForward` 的统计轮询（与 `wait_stats` 同形，但对象不同）。
+async fn wait_remote_stats(
+    fwd: &wt_ssh::RemoteForward,
+    want: impl Fn(&wt_ssh::ForwardStats) -> bool,
+) -> wt_ssh::ForwardStats {
+    for _ in 0..100 {
+        let s = fwd.stats();
+        if want(&s) {
+            return s;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    fwd.stats()
+}
+
+#[tokio::test]
+async fn remote_forward_lets_server_reach_local_target() {
+    let server = MockSshServer::start().await;
+    let echo = spawn_echo().await; // 本机上的目标
+    let conn = connect(server.port).await;
+
+    let fwd = wt_ssh::start_remote(conn, "127.0.0.1", 0, "127.0.0.1", echo.port())
+        .await
+        .expect("启动远程转发");
+
+    // 端口由**服务端**分配并回填（请求的是 0）
+    let addr = fwd.remote_addr();
+    let port: u16 = addr.rsplit(':').next().unwrap().parse().unwrap();
+    assert_ne!(port, 0, "服务端应回填实际端口，实际：{addr}");
+
+    // 连「服务器上的」那个端口：应当被转到本机的 echo
+    let mut client = tokio::net::TcpStream::connect(&addr)
+        .await
+        .expect("连上服务端的转发端口");
+    client.write_all(b"reverse").await.expect("写入");
+    let mut buf = [0u8; 7];
+    client.read_exact(&mut buf).await.expect("读回");
+    assert_eq!(&buf, b"reverse", "-R 必须把服务端的连接转到我本地目标");
+
+    drop(client);
+    let stats = wait_remote_stats(&fwd, |s| s.up_bytes >= 7 && s.down_bytes >= 7).await;
+    assert_eq!(stats.total, 1, "累计连接数");
+    assert_eq!(stats.up_bytes, 7, "上行字节数");
+    assert_eq!(stats.down_bytes, 7, "下行字节数");
+    assert_eq!(stats.active, 0, "连接结束后活跃数必须归零");
+    assert_eq!(stats.last_error, None);
+
+    fwd.stop().await;
+    // 取消后服务端不该还在监听：不通知服务端会留下一个「我们以为停了」的端口
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        tokio::net::TcpStream::connect(&addr).await.is_err(),
+        "cancel_tcpip_forward 之后不该还能连：{addr}"
+    );
+}
+
+#[tokio::test]
+async fn remote_forward_rejects_when_server_says_no() {
+    let server = MockSshServer::start().await;
+    let conn = connect(server.port).await;
+    // mock 的约定：`deny-forward` 直接拒绝（等价于 sshd 不允许 -R）
+    let err = wt_ssh::start_remote(conn, "deny-forward", 8080, "127.0.0.1", 1234)
+        .await
+        .err()
+        .expect("服务端拒绝时必须失败");
+    assert_eq!(err.code, wt_common::codes::TUN_CHANNEL_FAILED, "实际：{}", err.code);
+    assert!(
+        err.message.contains("拒绝"),
+        "错误要说清是服务端不让监听，实际：{}",
+        err.message
+    );
 }

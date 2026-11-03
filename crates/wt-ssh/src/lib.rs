@@ -29,7 +29,10 @@ pub use client::{
     SshConnection, TunnelStream,
 };
 pub use keys::{inspect as inspect_key, KeyInfo, PrivateKeySource};
-pub use forward::{exposes_to_lan, start_local, start_socks5, ForwardStats, LocalForward};
+pub use forward::{
+    exposes_to_lan, start_local, start_remote, start_socks5, ForwardStats, LocalForward,
+    RemoteForward,
+};
 pub use jump::connect_via;
 pub use sftp::{RemoteEntry, SftpClient};
 pub use term::{Keepalive, SshTermSession};

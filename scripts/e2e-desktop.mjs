@@ -609,7 +609,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-13",
+    uiVersion === "wt-ui-14",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -1729,6 +1729,48 @@ try {
     { timeout: 15000, label: "删除动态代理" },
   ).catch(() => null);
   check("动态代理删除后从列表消失", dynDeleted === true);
+
+  // 16g. 远程转发（-R，NET-002）：监听在**服务器**上，连接进来后被转到本机
+  await cdp.eval(`(() => {
+    const kind = document.getElementById("tunnel-kind");
+    kind.value = "remote";
+    kind.dispatchEvent(new Event("change", { bubbles: true }));
+    document.getElementById("tunnel-listen").value = "0";
+    document.getElementById("tunnel-target").value = ${JSON.stringify(`127.0.0.1:${echo.port}`)};
+    return true;
+  })()`);
+  check(
+    "切到远程转发后端口占位改成「服务器上的端口」",
+    (await cdp.eval(`document.getElementById("tunnel-listen").placeholder`)).includes("服务器"),
+  );
+  await clickElement("#tunnel-add");
+  const rev = await waitFor(
+    async () => {
+      const list = await cdp.eval(`window.__wt.tunnels`);
+      return list.find((x) => x.kind === "R") ?? null;
+    },
+    { timeout: 30000, label: "远程转发启动" },
+  );
+  const revPort = Number(String(rev.listen).split(":").pop());
+  check("远程转发启动并显示服务端端口", revPort > 0, rev.listen);
+
+  // 连「服务器上的」端口：应当被转到我本机的 echo
+  const viaReverse = await tunnelExchange(revPort, "reverse-ok").catch((e) => `失败：${e.message}`);
+  check(
+    "连服务器的端口能到达本机目标（-R）",
+    viaReverse === "reverse-ok",
+    JSON.stringify(viaReverse),
+  );
+
+  await clickTunnelButton("R", "delete");
+  const revDeleted = await waitFor(
+    async () => {
+      const list = await cdp.eval(`window.__wt.tunnels`);
+      return list.some((x) => x.kind === "R") ? null : true;
+    },
+    { timeout: 15000, label: "删除远程转发" },
+  ).catch(() => null);
+  check("远程转发删除后从列表消失", revDeleted === true);
 
   await clickElement("#tunnels-toggle");
   echo.server.close();

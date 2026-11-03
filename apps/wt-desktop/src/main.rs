@@ -44,10 +44,33 @@ struct AppState {
     vault: std::sync::Mutex<VaultState>,
     /// 运行中的隧道（`NET-004`）。`LocalForward` 不是 `Clone`，停止时要从表里
     /// 取出来调用 `stop()`——所以存值而不是存引用。
-    tunnels: std::sync::Mutex<HashMap<String, (TunnelMeta, wt_ssh::LocalForward)>>,
+    tunnels: std::sync::Mutex<HashMap<String, (TunnelMeta, RunningTunnel)>>,
     /// 库里的隧道配置。启动时读一次，增删改后同步更新——
     /// 不要在 1 s 一次的统计轮询里开 SQLite。
     tunnel_specs: std::sync::Mutex<Vec<wt_core::TunnelSpec>>,
+}
+
+/// 一条运行中的隧道。`-L`/`-D` 在本地监听、`-R` 在服务端监听——
+/// 两者的停止与统计接口不同，用枚举收在一起，别让调用方到处 match 字段。
+enum RunningTunnel {
+    Local(wt_ssh::LocalForward),
+    Remote(wt_ssh::RemoteForward),
+}
+
+impl RunningTunnel {
+    fn stats(&self) -> wt_ssh::ForwardStats {
+        match self {
+            Self::Local(f) => f.stats(),
+            Self::Remote(f) => f.stats(),
+        }
+    }
+
+    async fn stop(self) {
+        match self {
+            Self::Local(f) => f.stop().await,
+            Self::Remote(f) => f.stop().await,
+        }
+    }
 }
 
 /// 一条隧道的展示信息。运行期状态（字节数、连接数）在 `stats` 里实时取。
@@ -1215,7 +1238,7 @@ struct TunnelStartArg {
 /// 用递增序号而不是随机串：出问题时人能一眼对上界面上的列表。
 static TUNNEL_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-fn tunnel_dto(meta: &TunnelMeta, fwd: &wt_ssh::LocalForward) -> TunnelDto {
+fn tunnel_dto(meta: &TunnelMeta, fwd: &RunningTunnel) -> TunnelDto {
     let s = fwd.stats();
     TunnelDto {
         id: meta.id.clone(),
@@ -1291,16 +1314,18 @@ async fn tunnel_start(
         .filter(|s| !s.is_empty())
         .unwrap_or("127.0.0.1")
         .to_string();
-    // 两种隧道：本地转发要目标地址；动态代理（SOCKS5）由客户端每次请求决定目标
-    let dynamic = match arg.kind.as_deref().unwrap_or("local") {
-        "local" => false,
-        "dynamic" => true,
+    // 三种隧道：`-L` 监听本地、`-D` 本地 SOCKS5、`-R` 监听**服务端**
+    let kind = match arg.kind.as_deref().unwrap_or("local") {
+        "local" => wt_core::TunnelKind::Local,
+        "dynamic" => wt_core::TunnelKind::Dynamic,
+        "remote" => wt_core::TunnelKind::Remote,
         other => {
             return Err(format!(
-                "[TUN_BAD_ARGUMENT] 不认识的隧道类型 {other}（只支持 local / dynamic）"
+                "[TUN_BAD_ARGUMENT] 不认识的隧道类型 {other}（只支持 local / dynamic / remote）"
             ))
         }
     };
+    let dynamic = kind == wt_core::TunnelKind::Dynamic;
     let target_host = arg.target_host.trim().to_string();
     if !dynamic && target_host.is_empty() {
         return Err("[TUN_BAD_ARGUMENT] 目标主机不能为空".into());
@@ -1336,23 +1361,49 @@ async fn tunnel_start(
 
     let via = format!("{}@{}", cfg.user, cfg.host);
     let conn = std::sync::Arc::new(conn);
-    let fwd = if dynamic {
-        wt_ssh::start_socks5(conn, &listen_host, arg.listen_port, None)
+    let (fwd, bound) = match kind {
+        wt_core::TunnelKind::Dynamic => {
+            let f = wt_ssh::start_socks5(conn, &listen_host, arg.listen_port, None)
+                .await
+                .map_err(|e| e.to_string())?;
+            let p = f.listen_addr().port();
+            (RunningTunnel::Local(f), p)
+        }
+        wt_core::TunnelKind::Local => {
+            let f = wt_ssh::start_local(
+                conn,
+                &listen_host,
+                arg.listen_port,
+                &target_host,
+                arg.target_port,
+            )
             .await
-            .map_err(|e| e.to_string())?
-    } else {
-        wt_ssh::start_local(
-            conn,
-            &listen_host,
-            arg.listen_port,
-            &target_host,
-            arg.target_port,
-        )
-        .await
-        .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+            let p = f.listen_addr().port();
+            (RunningTunnel::Local(f), p)
+        }
+        wt_core::TunnelKind::Remote => {
+            // `-R`：监听在服务端（`listen_host:listen_port`），目标是本地
+            let f = wt_ssh::start_remote(
+                conn,
+                &listen_host,
+                arg.listen_port,
+                &target_host,
+                arg.target_port,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            let p = f
+                .remote_addr()
+                .rsplit(':')
+                .next()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(arg.listen_port);
+            (RunningTunnel::Remote(f), p)
+        }
     };
 
-    let listen_port = fwd.listen_addr().port();
+    let listen_port = bound;
     trace(&format!("[tunnel_start] 已监听 {listen_host}:{listen_port}"));
     let id = format!("f{}", TUNNEL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
     let name = arg
@@ -1377,7 +1428,11 @@ async fn tunnel_start(
     let meta = TunnelMeta {
         id: id.clone(),
         name,
-        kind: if dynamic { 'D' } else { 'L' },
+        kind: match kind {
+            wt_core::TunnelKind::Dynamic => 'D',
+            wt_core::TunnelKind::Remote => 'R',
+            wt_core::TunnelKind::Local => 'L',
+        },
         listen_host: listen_host.clone(),
         listen_port,
         // 动态代理没有固定目标
@@ -1392,11 +1447,7 @@ async fn tunnel_start(
     let spec = wt_core::TunnelSpec {
         id: id.clone(),
         name: meta.name.clone(),
-        kind: if dynamic {
-            wt_core::TunnelKind::Dynamic
-        } else {
-            wt_core::TunnelKind::Local
-        },
+        kind,
         listen_host: listen_host.clone(),
         listen_port: arg.listen_port,
         target_host: if dynamic { None } else { Some(target_host) },
@@ -1559,16 +1610,18 @@ async fn start_spec(state: &AppState, spec: &wt_core::TunnelSpec) -> Result<Tunn
     let auth = AuthInput::Password(password);
     let (conn, _added) = connect_accept_new(&cfg, &auth, None).await?;
     let conn = std::sync::Arc::new(conn);
-    let fwd = match spec.kind {
+    let (fwd, bound) = match spec.kind {
         wt_core::TunnelKind::Dynamic => {
-            wt_ssh::start_socks5(conn, &spec.listen_host, spec.listen_port, None)
+            let f = wt_ssh::start_socks5(conn, &spec.listen_host, spec.listen_port, None)
                 .await
-                .map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())?;
+            let p = f.listen_addr().port();
+            (RunningTunnel::Local(f), p)
         }
         wt_core::TunnelKind::Local => {
             let target_host = spec.target_host.clone().unwrap_or_default();
             let target_port = spec.target_port.unwrap_or(0);
-            wt_ssh::start_local(
+            let f = wt_ssh::start_local(
                 conn,
                 &spec.listen_host,
                 spec.listen_port,
@@ -1576,20 +1629,43 @@ async fn start_spec(state: &AppState, spec: &wt_core::TunnelSpec) -> Result<Tunn
                 target_port,
             )
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+            let p = f.listen_addr().port();
+            (RunningTunnel::Local(f), p)
         }
         wt_core::TunnelKind::Remote => {
-            return Err("[TUN_UNSUPPORTED_KIND] 远程转发（-R）还没实现".into())
+            // `-R` 是反的：监听在**服务端**，目标在本地
+            let local_host = spec.target_host.clone().unwrap_or_default();
+            let local_port = spec.target_port.unwrap_or(0);
+            let f = wt_ssh::start_remote(
+                conn,
+                &spec.listen_host,
+                spec.listen_port,
+                &local_host,
+                local_port,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            let p = f
+                .remote_addr()
+                .rsplit(':')
+                .next()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(spec.listen_port);
+            (RunningTunnel::Remote(f), p)
         }
     };
 
-    let listen_port = fwd.listen_addr().port();
     let meta = TunnelMeta {
         id: spec.id.clone(),
         name: spec.name.clone(),
-        kind: if spec.kind == wt_core::TunnelKind::Dynamic { 'D' } else { 'L' },
+        kind: match spec.kind {
+            wt_core::TunnelKind::Dynamic => 'D',
+            wt_core::TunnelKind::Remote => 'R',
+            wt_core::TunnelKind::Local => 'L',
+        },
         listen_host: spec.listen_host.clone(),
-        listen_port,
+        listen_port: bound,
         target_host: spec.target_host.clone().unwrap_or_default(),
         target_port: spec.target_port.unwrap_or(0),
         via: session.name.clone(),

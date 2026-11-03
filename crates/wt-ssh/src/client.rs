@@ -59,10 +59,26 @@ pub struct ObservedHostKey {
     pub blob: Vec<u8>,
 }
 
+/// 远程转发表（`-R`）。
+pub(crate) type Forwards = Arc<Mutex<std::collections::HashMap<(String, u16), ForwardSlot>>>;
+
+/// 一条远程转发（`-R`）的落地目标：服务端把新连接转过来时，连到这里的本地目标。
+#[derive(Clone)]
+pub(crate) struct ForwardSlot {
+    pub local_host: String,
+    pub local_port: u16,
+    pub counters: std::sync::Arc<crate::forward::Counters>,
+}
+
 struct ClientHandler {
     host_id: HostKeyId,
     policy: Arc<Mutex<HostKeyPolicy>>,
     observed: Arc<Mutex<Option<ObservedHostKey>>>,
+    /// 远程转发表：`(远端 host, 端口) → 本地目标`。
+    ///
+    /// 必须挂在 handler 上：`forwarded-tcpip` 通道是由 handler 回调收到的，
+    /// 那时只有它知道该把数据送到哪里。
+    forwards: Arc<Mutex<std::collections::HashMap<(String, u16), ForwardSlot>>>,
 }
 
 impl client::Handler for ClientHandler {
@@ -104,6 +120,62 @@ impl client::Handler for ClientHandler {
         };
         Ok(ok)
     }
+
+    /// `-R` 的数据面：服务端把新连接转过来，我们连本地目标再双向搬运。
+    ///
+    /// 这里必须**先连本地目标再 accept**：反过来的话，客户端已经收到
+    /// 「转发成功」而我们连不上本地，那条连接会挂在那里直到超时。
+    async fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        channel: russh::Channel<russh::client::Msg>,
+        connected_address: &str,
+        connected_port: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: russh::ChannelOpenHandleInner<russh::client::Msg>,
+        _session: &mut russh::client::Session,
+    ) -> Result<(), Self::Error> {
+        let slot = self
+            .forwards
+            .lock()
+            .unwrap()
+            .get(&(connected_address.to_string(), connected_port as u16))
+            .cloned();
+        let Some(slot) = slot else {
+            // 没有登记的转发：拒绝，别让对端以为连上了
+            reply.reject(russh::ChannelOpenFailure::ConnectFailed).await;
+            return Ok(());
+        };
+
+        slot.counters.inc_total();
+        slot.counters.inc_active();
+        let counts = slot.counters.clone();
+        match tokio::net::TcpStream::connect((slot.local_host.as_str(), slot.local_port)).await {
+            Ok(mut tcp) => {
+                reply.accept().await;
+                let mut stream = channel.into_stream();
+                tokio::spawn(async move {
+                    match tokio::io::copy_bidirectional(&mut tcp, &mut stream).await {
+                        Ok((up, down)) => {
+                            counts.add_bytes(up, down);
+                            counts.clear_error();
+                        }
+                        Err(e) => counts.record_error(&format!("远程转发数据流中断：{e}")),
+                    }
+                    counts.dec_active();
+                });
+            }
+            Err(e) => {
+                counts.record_error(&format!(
+                    "无法连接到本地目标 {}:{}：{e}",
+                    slot.local_host, slot.local_port
+                ));
+                counts.dec_active();
+                reply.reject(russh::ChannelOpenFailure::ConnectFailed).await;
+            }
+        }
+        Ok(())
+    }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -115,6 +187,8 @@ pub struct SshConnection {
     handle: client::Handle<ClientHandler>,
     host_id: HostKeyId,
     observed: Arc<Mutex<Option<ObservedHostKey>>>,
+    /// 与 handler 共享的远程转发表（`-R`）
+    forwards: Arc<Mutex<std::collections::HashMap<(String, u16), ForwardSlot>>>,
 }
 
 /// 一条既能读也能写的承载流。
@@ -148,16 +222,19 @@ impl SshConnection {
             client::Handle<ClientHandler>,
             HostKeyId,
             Arc<Mutex<Option<ObservedHostKey>>>,
+            Forwards,
         ),
         WtError,
     > {
         let host_id = cfg.endpoint();
         let observed = Arc::new(Mutex::new(None));
+        let forwards: Forwards = Arc::new(Mutex::new(std::collections::HashMap::new()));
 
         let handler = ClientHandler {
             host_id: host_id.clone(),
             policy: Arc::new(Mutex::new(policy)),
             observed: observed.clone(),
+            forwards: forwards.clone(),
         };
 
         // 算法偏好：使用 russh 默认集。
@@ -178,7 +255,7 @@ impl SshConnection {
 
         let handle = resolve_established(connect_result, &host_id, &observed, &addr, timeout)?;
 
-        Ok((handle, host_id, observed))
+        Ok((handle, host_id, observed, forwards))
     }
 
     /// 与 `establish` 相同，但跑在一条**已经打开的承载流**上（`SES-024` 跳板机）。
@@ -194,6 +271,7 @@ impl SshConnection {
             client::Handle<ClientHandler>,
             HostKeyId,
             Arc<Mutex<Option<ObservedHostKey>>>,
+            Forwards,
         ),
         WtError,
     >
@@ -202,11 +280,13 @@ impl SshConnection {
     {
         let host_id = cfg.endpoint();
         let observed = Arc::new(Mutex::new(None));
+        let forwards: Forwards = Arc::new(Mutex::new(std::collections::HashMap::new()));
 
         let handler = ClientHandler {
             host_id: host_id.clone(),
             policy: Arc::new(Mutex::new(policy)),
             observed: observed.clone(),
+            forwards: forwards.clone(),
         };
         let config = Arc::new(client::Config::default());
 
@@ -218,7 +298,7 @@ impl SshConnection {
         .await;
 
         let handle = resolve_established(connect_result, &host_id, &observed, &addr, timeout)?;
-        Ok((handle, host_id, observed))
+        Ok((handle, host_id, observed, forwards))
     }
 
     /// 用密码建立连接。
@@ -238,12 +318,13 @@ impl SshConnection {
         auth: &Auth<'_>,
         policy: HostKeyPolicy,
     ) -> Result<Self, WtError> {
-        let (mut handle, host_id, observed) = Self::establish(cfg, policy).await?;
+        let (mut handle, host_id, observed, forwards) = Self::establish(cfg, policy).await?;
         Self::authenticate(&mut handle, cfg, auth).await?;
         Ok(Self {
             handle,
             host_id,
             observed,
+            forwards,
         })
     }
 
@@ -260,12 +341,14 @@ impl SshConnection {
     where
         S: TunnelStream + 'static,
     {
-        let (mut handle, host_id, observed) = Self::establish_over(cfg, policy, stream).await?;
+        let (mut handle, host_id, observed, forwards) =
+            Self::establish_over(cfg, policy, stream).await?;
         Self::authenticate(&mut handle, cfg, auth).await?;
         Ok(Self {
             handle,
             host_id,
             observed,
+            forwards,
         })
     }
 
@@ -502,6 +585,8 @@ impl SshConnection {
             host_id: host_id.clone(),
             policy: Arc::new(Mutex::new(HostKeyPolicy::AcceptAll)),
             observed: observed.clone(),
+            // 只做密钥交换，不收转发
+            forwards: Arc::new(Mutex::new(std::collections::HashMap::new())),
         };
 
         let addr = format!("{}:{}", cfg.host, cfg.port);
@@ -564,6 +649,59 @@ impl SshConnection {
             )
             .await?;
         Ok(channel.into_stream())
+    }
+
+    /// 建立一条远程转发（`-R`，`NET-002`）。
+    ///
+    /// **服务端**监听 `remote_host:remote_port`；有连接进来时由服务端开一条
+    /// `forwarded-tcpip` 通道给我们，我们再连本地目标。返回服务端实际绑定的端口
+    /// （请求 0 时由它分配）。
+    ///
+    /// 注意登记顺序：先让服务端开始监听、再登记本地目标。反过来会在失败时
+    /// 留下一批「指向不存在的转发」的脏条目。
+    pub(crate) async fn remote_forward(
+        &self,
+        remote_host: &str,
+        remote_port: u16,
+        local_host: &str,
+        local_port: u16,
+        counters: std::sync::Arc<crate::forward::Counters>,
+    ) -> Result<u16, WtError> {
+        let bound = self
+            .handle
+            .tcpip_forward(remote_host, u32::from(remote_port))
+            .await
+            .map_err(|e| {
+                WtError::new(codes::TUN_CHANNEL_FAILED)
+                    .message(format!("服务端拒绝在 {remote_host}:{remote_port} 上监听"))
+                    .detail(e.to_string())
+                    .hint(
+                        "确认 sshd 允许 AllowTcpForwarding / GatewayPorts，且该端口在服务器上没被占用",
+                        HintAction::None,
+                    )
+            })?;
+        let port = u16::try_from(bound).unwrap_or(remote_port);
+        self.forwards.lock().unwrap().insert(
+            (remote_host.to_string(), port),
+            ForwardSlot {
+                local_host: local_host.to_string(),
+                local_port,
+                counters,
+            },
+        );
+        Ok(port)
+    }
+
+    /// 取消一条远程转发：服务端会停止监听，表里的落地目标也一并删掉。
+    pub(crate) async fn cancel_remote_forward(&self, remote_host: &str, remote_port: u16) {
+        let _ = self
+            .handle
+            .cancel_tcpip_forward(remote_host, u32::from(remote_port))
+            .await;
+        self.forwards
+            .lock()
+            .unwrap()
+            .remove(&(remote_host.to_string(), remote_port));
     }
 
     /// 打开一个 `direct-tcpip` 通道（`NET-001` 本地转发的数据面）。

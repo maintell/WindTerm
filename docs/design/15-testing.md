@@ -123,7 +123,7 @@ def test_ssh_connect(server, wt):
 | 调试参数必须由代码传，不能用 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` | `wry` 每次都会 `set_additional_browser_arguments`，会覆盖该环境变量 |
 | 连上 CDP 后立刻 `Emulation.setFocusEmulationEnabled` | 窗口没拿到前台焦点时，WebView2 会偶发吞掉可信鼠标/键盘事件——观察到过一次「点了按钮没反应」的假失败 |
 
-当前覆盖 95 项断言：
+当前覆盖 99 项断言：
 
 - 本地终端：页面加载与 Tauri 桥接、启动自检、点击建会话、句柄可取、首屏输出渲染、
   焦点在终端、键盘输入、命令输出、统计字段非零值、前后端行列一致、ack 回流归零、
@@ -173,6 +173,10 @@ def test_ssh_connect(server, wt):
   是在 `AcceptAll` 连上后用 `trust_observed_key` 补的）、
   跳板机能存成**会话属性**且再点会话自动带出、把会话自己设为跳板机时保存被拒
   （AC-4，环引用在保存时就拦）、取消跳板后不再带出；
+- 远程转发（`NET-002`）：切到「远程转发 -R」后端口占位变成「服务器上的端口」、
+  启动并显示**服务端**分配的端口、连服务器的那个端口能把字节送到本机目标、
+  删除后从列表消失；引擎侧另有 2 条用例：服务端回填端口 + 双向字节计数 +
+  `cancel_tcpip_forward` 之后端口真的不再监听、服务端拒绝 `-R` 时给出明确原因；
 - 隧道自动启动（`NET-005`）：建一条 `autoStart` 的动态代理 → 停掉（配置留下）→
   调 `tunnel_autostart` **只用保险库里的凭据**把它重新拉起来（`start_spec` 与手动启动
   共用同一条路径，所以两者的错误语义一致）；
