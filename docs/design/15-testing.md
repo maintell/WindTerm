@@ -142,6 +142,9 @@ def test_ssh_connect(server, wt):
   `mock_generate_key` 现生成一把一次性密钥（仅 `e2e-mock` feature 编译进来，
   生产构建该命令只返回错误），再经 `<input type=file>` + `DOM.setFileInputFiles` 喂给界面；
   断言选中后显示文件名、无密码也能连上并收到服务端横幅；
+- SSH agent 认证：勾「用 agent」时密钥与密码都收起（三者互斥）、
+  agent 不可用时错误指向环境而不是网络（`SSH_AGENT_UNAVAILABLE`）、
+  这两种模式下「记住密码」被禁用；
 - 保险库：密钥模式下「记住密码」被禁用（没有密码可存，不能让控件静默失效）、
   勾选后出现保险库输入、创建并解锁、连接成功后密码写入保险库、`vault.wtvlt` 落盘且是
   `WTVLT\0` 加密容器、重新选中会话时自动填入密码、用存下的密码能直接连上、

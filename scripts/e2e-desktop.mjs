@@ -914,8 +914,7 @@ try {
   );
 
   // 17. 密钥认证：仓库里不放测试私钥，让应用现生成一把一次性的
-  const pem = await cdp.eval(`window.__TAURI__.core.invoke("mock_generate_key")`);
-  check(
+  const pem = await cdp.eval(`window.__TAURI__.core.invoke("mock_generate_key")`);  check(
     "能生成一次性测试私钥",
     typeof pem === "string" && pem.includes("OPENSSH PRIVATE KEY"),
     `${String(pem).length} 字节`,
@@ -962,19 +961,56 @@ try {
     keyStatus,
   );
 
+  // 17b. agent 认证：本机没有 agent 时，错误必须指向环境而不是网络。
+  //      有 agent 的机器上这条会走「身份被拒」，两种都算通过。
+  await closeAllTabs();
+  await clickElement("#use-key"); // 退出密钥模式
+  await clickElement("#use-agent");
+  const agentUi = await waitFor(
+    async () => {
+      const s = await cdp.eval(`({
+        agent: document.getElementById("use-agent").checked,
+        key: document.getElementById("use-key").checked,
+        passHidden: document.getElementById("password").hidden,
+      })`);
+      return s.agent && !s.key && s.passHidden ? s : null;
+    },
+    { timeout: 5000, label: "agent 模式界面" },
+  );
+  check("勾「用 agent」时密钥与密码都收起", agentUi.agent === true);
+
+  await clickElement("#ssh");
+  const agentErr = await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.screen()`);
+      if (t.includes("SSH_AGENT_UNAVAILABLE") || t.includes("ssh-agent")) return t;
+      if (t.includes("SSH_AUTH_FAILED")) return t;
+      return null;
+    },
+    { timeout: 30000, label: "agent 认证失败提示" },
+  );
+  const agentLine =
+    agentErr.split(/\r?\n/).find((l) => l.includes("agent") || l.includes("SSH_AUTH_FAILED")) ?? "";
+  check(
+    "agent 不可用时给出指向环境的错误",
+    true,
+    agentLine.trim().slice(0, 90),
+  );
+  await closeAllTabs();
+  await clickElement("#use-agent"); // 退出 agent 模式
+
   // 18. 保险库：把密码存起来，下次选中会话自动填
   await closeAllTabs();
 
-  // 先退出密钥模式：密钥模式下没有密码可存，「记住密码」会被禁用
-  await clickElement("#use-key");
+  // 密钥/agent 模式都已在上一步退出，「记住密码」应已恢复可用
   const keyModeOff = await waitFor(
     async () => {
       const disabled = await cdp.eval(`document.getElementById("remember").disabled`);
       return disabled === false ? true : null;
     },
-    { timeout: 5000, label: "退出密钥模式" },
+    { timeout: 5000, label: "退出密钥与 agent 模式" },
   );
-  check("密钥模式下「记住密码」被禁用，退出后恢复", keyModeOff === true);
+  check("密钥/agent 模式下「记住密码」被禁用，退出后恢复", keyModeOff === true);
 
   await clickElement("#remember");
   const vaultVisible = await waitFor(

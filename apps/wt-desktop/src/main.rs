@@ -572,10 +572,11 @@ struct SshOpenDto {
     host_key_added: bool,
 }
 
-/// 认证方式：密码，或一把私钥（可带口令）。
+/// 认证方式：密码、一把私钥（可带口令），或 ssh-agent 里的身份。
 enum AuthInput {
     Password(String),
     Key(wt_ssh::PrivateKeySource),
+    Agent,
 }
 
 fn known_policy(known: &wt_ssh::KnownHosts) -> wt_ssh::HostKeyPolicy {
@@ -590,6 +591,24 @@ async fn try_connect(
     match auth {
         AuthInput::Password(p) => wt_ssh::SshConnection::connect_password(cfg, p, policy).await,
         AuthInput::Key(k) => wt_ssh::SshConnection::connect_publickey(cfg, k, policy).await,
+        AuthInput::Agent => wt_ssh::SshConnection::connect_agent(cfg, policy).await,
+    }
+}
+
+/// 从请求里挑出认证方式：agent > 密钥 > 密码。
+///
+/// 顺序很重要：勾了 agent 就不该再悄悄用密码兜底——那会掩盖「agent 里没有
+/// 被接受的密钥」这种问题，用户以为 agent 生效了。
+fn auth_of(req: &SshOpenReq) -> AuthInput {
+    if req.use_agent {
+        return AuthInput::Agent;
+    }
+    match req.key_pem.as_ref() {
+        Some(pem) if !pem.trim().is_empty() => AuthInput::Key(wt_ssh::PrivateKeySource::new(
+            pem.clone().into_bytes(),
+            req.key_passphrase.clone(),
+        )),
+        _ => AuthInput::Password(req.password.clone().unwrap_or_default()),
     }
 }
 
@@ -608,6 +627,9 @@ struct SshOpenReq {
     key_pem: Option<String>,
     #[serde(default)]
     key_passphrase: Option<String>,
+    /// 用 ssh-agent 里的身份认证（私钥不出 agent）
+    #[serde(default)]
+    use_agent: bool,
     cols: u16,
     rows: u16,
 }
@@ -620,15 +642,10 @@ struct SshOpenReq {
 /// 认证支持密码与私钥两条路：很多服务器关掉了密码认证，只给密钥。
 #[tauri::command]
 async fn ssh_open(state: State<'_, AppState>, req: SshOpenReq) -> Result<SshOpenDto, String> {
+    // 先定认证方式（要读 req 的多个字段），再解构出连接参数
+    let auth = auth_of(&req);
     let SshOpenReq {
-        host,
-        port,
-        user,
-        password,
-        key_pem,
-        key_passphrase,
-        cols,
-        rows,
+        host, port, user, cols, rows, ..
     } = req;
     let cfg = wt_ssh::SshConfig {
         host: host.trim().to_string(),
@@ -642,13 +659,6 @@ async fn ssh_open(state: State<'_, AppState>, req: SshOpenReq) -> Result<SshOpen
     if cfg.user.is_empty() {
         return Err("[SSH_BAD_ARGUMENT] 用户名不能为空".into());
     }
-
-    let auth = match key_pem {
-        Some(pem) if !pem.trim().is_empty() => {
-            AuthInput::Key(wt_ssh::PrivateKeySource::new(pem.into_bytes(), key_passphrase))
-        }
-        _ => AuthInput::Password(password.unwrap_or_default()),
-    };
 
     let mut known = load_known_hosts();
     let mut host_key_added = false;
@@ -837,12 +847,7 @@ async fn open_sftp(req: SshOpenReq) -> Result<wt_ssh::SftpClient, String> {
         return Err("[SSH_BAD_ARGUMENT] 用户名不能为空".into());
     }
 
-    let auth = match req.key_pem {
-        Some(pem) if !pem.trim().is_empty() => {
-            AuthInput::Key(wt_ssh::PrivateKeySource::new(pem.into_bytes(), req.key_passphrase))
-        }
-        _ => AuthInput::Password(req.password.unwrap_or_default()),
-    };
+    let auth = auth_of(&req);
 
     let mut known = load_known_hosts();
     let conn = match try_connect(&cfg, &auth, known_policy(&known)).await {

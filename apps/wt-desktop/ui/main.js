@@ -42,6 +42,7 @@ const nameInput = document.getElementById("session-name");
 const saveSessionBtn = document.getElementById("save-session");
 const deleteSessionBtn = document.getElementById("delete-session");
 const useKeyBox = document.getElementById("use-key");
+const useAgentBox = document.getElementById("use-agent");
 const keyRow = document.getElementById("key-row");
 const pickKeyBtn = document.getElementById("pick-key");
 const keyFileInput = document.getElementById("key-file");
@@ -300,10 +301,12 @@ async function openSsh() {
         host,
         port,
         user,
-        // 密钥模式下不传密码：传了会被当成备选，容易掩盖「密钥没被接受」这种问题
-        password: useKeyBox.checked ? null : passInput.value,
+        // 只用勾选的那一种：多传一个会被当成备选，
+        // 从而掩盖「密钥/agent 没被接受」这类问题
+        password: useKeyBox.checked || useAgentBox.checked ? null : passInput.value,
         keyPem: useKeyBox.checked ? keyPem : null,
         keyPassphrase: useKeyBox.checked ? keyPassInput.value || null : null,
+        useAgent: useAgentBox.checked,
         cols: view.term.cols,
         rows: view.term.rows,
       },
@@ -765,16 +768,31 @@ for (const el of [hostInput, portInput, userInput, passInput, keyPassInput]) {
 }
 
 // ── 密钥认证 ────────────────────────────────────────────────
-useKeyBox.addEventListener("change", () => {
-  keyRow.hidden = !useKeyBox.checked;
-  passInput.hidden = useKeyBox.checked;
-  // 密钥模式下没有密码可存：与其让「记住密码」静默失效，不如直接禁用并收起
-  rememberBox.disabled = useKeyBox.checked;
-  if (useKeyBox.checked) {
+// 三种认证方式互斥：勾一个就把另外两个收起来。
+// 让他们同时可见会让人以为可以叠加，而实际只会用其中一个。
+function syncAuthUi() {
+  const useKey = useKeyBox.checked;
+  const useAgent = useAgentBox.checked;
+  keyRow.hidden = !useKey;
+  passInput.hidden = useKey || useAgent;
+  // 密钥/agent 模式没有密码可存：与其让「记住密码」静默失效，不如禁用并收起
+  rememberBox.disabled = useKey || useAgent;
+  if (useKey || useAgent) {
     rememberBox.checked = false;
     vaultRow.hidden = true;
   }
-  (useKeyBox.checked ? pickKeyBtn : passInput).focus();
+  if (useKey) pickKeyBtn.focus();
+  else if (!useAgent) passInput.focus();
+}
+
+useKeyBox.addEventListener("change", () => {
+  if (useKeyBox.checked) useAgentBox.checked = false;
+  syncAuthUi();
+});
+
+useAgentBox.addEventListener("change", () => {
+  if (useAgentBox.checked) useKeyBox.checked = false;
+  syncAuthUi();
 });
 
 pickKeyBtn.addEventListener("click", () => keyFileInput.click());
