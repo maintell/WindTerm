@@ -4134,14 +4134,61 @@ function buildSettingGroups() {
   if (empty) body.appendChild(empty);
 }
 
+/**
+ * 把命中的那几个字标出来（`SET-002`）。
+ *
+ * 原文先存在 `dataset.raw` 里：每次输入都重建的话，直接在已高亮的节点上再切一刀，
+ * 标记会越套越乱（表现为「搜两次之后文字越少」）。
+ */
+function highlightName(el, needle) {
+  if (!el) return;
+  if (el.dataset.raw === undefined) el.dataset.raw = el.textContent;
+  const raw = el.dataset.raw;
+  const at = needle ? raw.toLowerCase().indexOf(needle) : -1;
+  if (at < 0) {
+    if (el.firstChild?.nodeType !== Node.TEXT_NODE || el.childNodes.length !== 1) {
+      el.textContent = raw;
+    }
+    return;
+  }
+  el.textContent = "";
+  const mark = document.createElement("mark");
+  mark.textContent = raw.slice(at, at + needle.length);
+  el.append(
+    document.createTextNode(raw.slice(0, at)),
+    mark,
+    document.createTextNode(raw.slice(at + needle.length)),
+  );
+}
+
 function filterSettings(query) {
   const needle = query.trim().toLowerCase();
   let shown = 0;
   for (const row of document.querySelectorAll("#set-body .set-row")) {
-    const hay = `${row.dataset.kw ?? ""} ${row.textContent}`.toLowerCase();
+    const nameEl = row.querySelector(".set-name");
+    // 只拿「关键词别名 + 名称」做匹配：算上整行 textContent 会把分组徽标里的
+    // 「终端」也算进去，搜「终端」就命中一大堆无关项
+    const name = nameEl?.dataset.raw ?? nameEl?.textContent ?? "";
+    const hay = `${row.dataset.kw ?? ""} ${name}`.toLowerCase();
     const hit = !needle || hay.includes(needle);
     row.hidden = !hit;
     if (hit) shown += 1;
+    highlightName(nameEl, needle);
+
+    // 搜索时把「这个设置在哪个分组」写在行首（`SET-002`）：分组标题虽然也在，
+    // 但过滤之后只剩零星几行，路径比滚动去找标题快
+    let badge = row.querySelector(".set-path");
+    if (needle && hit) {
+      if (!badge) {
+        badge = document.createElement("span");
+        badge.className = "set-path";
+        row.prepend(badge);
+      }
+      badge.textContent = `${row.closest(".set-group")?.dataset.group ?? ""} ›`;
+      badge.hidden = false;
+    } else if (badge) {
+      badge.hidden = true;
+    }
   }
   // 分组标题跟着内容走：一个组里没有可见项就整组收起来，
   // 否则搜索时满屏都是空标题，等于没过滤
@@ -4301,7 +4348,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-69",
+  ui: "wt-ui-70",
   /** 「本次记住」存了几条（验收用：只回数量，不回口令） */
   sessionPasswords() {
     return sessionPasswords.size;

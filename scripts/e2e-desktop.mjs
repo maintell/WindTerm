@@ -4722,6 +4722,74 @@ try {
   check("清空搜索后分组全部回来（SET-001）", groupsBack !== null, `${groupsBack ?? 0} 组`);
   await closeAllDialogs();
 
+  // 19y. 设置搜索：命中高亮 + 分组路径（`SET-002`）
+  await closeAllDialogs();
+  await clickElement("#settings-open");
+  const setQuery = (q) =>
+    cdp.eval(`(() => {
+      const el = document.getElementById("set-search");
+      el.value = ${JSON.stringify(q)};
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      return el.value;
+    })()`);
+
+  await setQuery("字体");
+  const hitView = await waitFor(
+    async () => {
+      const s = await cdp.eval(`(() => {
+        const rows = [...document.querySelectorAll("#set-body .set-row")].filter((r) => !r.hidden);
+        const row = rows.find((r) => r.querySelector("mark"));
+        return {
+          rows: rows.length,
+          mark: row?.querySelector("mark")?.textContent ?? null,
+          path: row?.querySelector(".set-path")?.textContent ?? null,
+          pathHidden: row?.querySelector(".set-path")?.hidden ?? null,
+        };
+      })()`);
+      return s.mark ? s : null;
+    },
+    { timeout: 5000, label: "搜索命中高亮" },
+  ).catch(() => null);
+  check("搜索把命中的字标出来（SET-002）", hitView?.mark === "字体", JSON.stringify(hitView));
+  check(
+    "搜索结果标出所在分组（SET-002）",
+    hitView?.path === "终端 ›" && hitView?.pathHidden === false,
+    hitView ? `${hitView.path} hidden=${hitView.pathHidden}` : "没有路径",
+  );
+
+  await setQuery("font");
+  const byAlias = await waitFor(
+    async () => {
+      const names = await cdp.eval(`[...document.querySelectorAll("#set-body .set-row")]
+        .filter((r) => !r.hidden)
+        .map((r) => r.querySelector(".set-name")?.dataset.raw ?? r.querySelector(".set-name")?.textContent ?? "")`);
+      return names.includes("字体") ? names : null;
+    },
+    { timeout: 5000, label: "英文别名搜索" },
+  ).catch(() => null);
+  check("英文关键词能搜到中文项（SET-002）", byAlias !== null, byAlias ? byAlias.join("、") : "没命中");
+
+  await setQuery("");
+  const cleaned = await waitFor(
+    async () => {
+      const s = await cdp.eval(`(() => ({
+        marks: document.querySelectorAll("#set-body mark").length,
+        badges: [...document.querySelectorAll("#set-body .set-path")].filter((b) => !b.hidden).length,
+        names: [...document.querySelectorAll("#set-body .set-name")].some((n) =>
+          (n.dataset.raw ?? n.textContent).includes("字体"),
+        ),
+      }))()`);
+      return s.marks === 0 && s.badges === 0 && s.names ? s : null;
+    },
+    { timeout: 5000, label: "清空搜索复位" },
+  ).catch(() => null);
+  check(
+    "清空搜索后高亮与分组路径都收起（SET-002）",
+    cleaned !== null,
+    JSON.stringify(cleaned),
+  );
+  await closeAllDialogs();
+
   // 18. 页面无未捕获异常
   check("页面无未捕获异常", cdp.exceptions.length === 0, cdp.exceptions.join(" | ") || "0 条");
 
