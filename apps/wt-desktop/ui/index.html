@@ -650,6 +650,9 @@
       .set-row .set-scope { color: #6a6a72; font-size: 11px; }
       /* 只有选「自定义」时才展开，其余情况收起来 */
       #local-shell-custom[hidden] { display: none; }
+      /* 字体缺失的回退提示（TER-005）：不能静默回退，得说清「没有「X」，用的是「Y」」 */
+      .set-warn { color: #ffb86b; font-size: 11px; }
+      #look-font-warn[hidden] { display: none; }
       .set-row select,
       .set-row input {
         background: #2a2a30;
@@ -1170,6 +1173,7 @@
             <option value='"Courier New", Courier, monospace'>Courier New</option>
             <option value="monospace">系统等宽</option>
           </select>
+          <span id="look-font-warn" class="set-warn" hidden></span>
         </div>
         <div class="set-row" data-kw="字号 font size 字">
           <span class="set-name">字号</span>

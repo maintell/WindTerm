@@ -1558,6 +1558,7 @@ function applyLook() {
     view.fit.fit();
   }
   fontSize = look.fontSize;
+  refreshFontWarn();
   saveLook();
 }
 
@@ -3092,6 +3093,7 @@ const askBody = document.getElementById("ask-body");
 const encodingSelect = document.getElementById("encoding");
 const lookThemeSelect = document.getElementById("look-theme");
 const lookFontSelect = document.getElementById("look-font");
+const lookFontWarn = document.getElementById("look-font-warn");
 const lookSizeInput = document.getElementById("look-size");
 const lookHeightInput = document.getElementById("look-height");
 const lookScrollbackInput = document.getElementById("look-scrollback");
@@ -3551,6 +3553,59 @@ function jumpReq() {
 }
 
 // ── 外观控件（`TER-005` / `TER-008`）────────────────────────
+
+/**
+ * 字体栈里第一个**本机真的有**的 family；一个都没有就返回 `null`。
+ *
+ * `document.fonts.check` 对「系统装了这个字体」和「已经用 @font-face 加载」都认，
+ * 所以拿它判断回退是可靠的——比量文字宽度稳得多。
+ */
+function firstAvailableFamily(stack) {
+  for (const raw of String(stack).split(",")) {
+    const name = raw.trim().replace(/^["']|["']$/g, "");
+    if (!name) continue;
+    // 通用族名永远可用，不用测
+    if (name === "monospace" || name === "sans-serif" || name === "serif") return name;
+    if (familyAvailable(name)) return name;
+  }
+  return null;
+}
+
+/**
+ * 本机到底有没有这个字体。
+ *
+ * **不能用 `document.fonts.check`**：实测 Chromium 里它对不存在的 family 也返回 true
+ * （总能匹配到某个回退），拿它判断等于永远「有」。这里用经典的宽度对照法：把候选字体
+ * 与三个通用族各排一次同样的字，只要有一个宽度不同，就说明候选字体真的生效了。
+ */
+function familyAvailable(name) {
+  const ctx = document.createElement("canvas").getContext("2d");
+  if (!ctx) return false;
+  const text = "mmmmmmmmmmlli";
+  return ["monospace", "serif", "sans-serif"].some((base) => {
+    ctx.font = `72px ${base}`;
+    const plain = ctx.measureText(text).width;
+    ctx.font = `72px "${name}", ${base}`;
+    return ctx.measureText(text).width !== plain;
+  });
+}
+
+/**
+ * 把「字体到底生效了没」写进设置面板（`TER-005`）。
+ *
+ * 首选的字体本机没有时，浏览器会**静默**往后回退：字号、行高都对，字形却变了，
+ * 用户只会觉得「字怎么怪怪的」。这里把实际用的那个说出来。
+ */
+function refreshFontWarn() {
+  const wanted = String(look.fontFamily).split(",")[0].trim().replace(/^["']|["']$/g, "");
+  const actual = firstAvailableFamily(look.fontFamily);
+  const ok = actual !== null && actual.toLowerCase() === wanted.toLowerCase();
+  lookFontWarn.hidden = ok;
+  if (ok) return;
+  lookFontWarn.textContent = actual
+    ? `本机没有「${wanted}」，实际用的是「${actual}」`
+    : `本机没有「${wanted}」，已回退到系统等宽字体`;
+}
 
 function initLookControls() {
   // 先清空：导入配色后这里会再被调用一次，不清就会攒出重复项
@@ -4108,7 +4163,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-64",
+  ui: "wt-ui-66",
   /** 「本次记住」存了几条（验收用：只回数量，不回口令） */
   sessionPasswords() {
     return sessionPasswords.size;

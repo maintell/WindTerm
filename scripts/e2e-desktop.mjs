@@ -4475,6 +4475,68 @@ try {
     `${changedMode ?? "没变"}`,
   );
 
+  // 19u. 字体缺失回退提示（`TER-005`）
+  //
+  // 选了本机没有的字体时，浏览器会**静默**往后回退：字号行高都对、字形却变了。
+  // 这里塞一个不存在的 family，要求面板把「本机没有 X，实际用的是 Y」说出来。
+  await closeAllDialogs();
+  await clickElement("#settings-open");
+  const uiFontBefore = await cdp.eval(`document.getElementById("look-font").value`);
+  await cdp.eval(`(() => {
+    const sel = document.getElementById("look-font");
+    const o = document.createElement("option");
+    o.value = '"NoSuchFontXYZ", monospace';
+    o.textContent = "NoSuchFontXYZ";
+    sel.appendChild(o);
+    sel.value = o.value;
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    return sel.value;
+  })()`);
+  const fontWarn = await waitFor(
+    async () => {
+      const s = await cdp.eval(`(() => {
+        const el = document.getElementById("look-font-warn");
+        return { hidden: el.hidden, text: el.textContent };
+      })()`);
+      return s.hidden === false && s.text.includes("NoSuchFontXYZ") ? s : null;
+    },
+    { timeout: 8000, label: "字体回退提示" },
+  ).catch(() => null);
+  check(
+    "字体缺失时明确说清回退到了哪个（TER-005）",
+    fontWarn !== null && fontWarn.text.includes("本机没有"),
+    fontWarn ? fontWarn.text : "没有出现提示",
+  );
+
+  // 换回通用族名：提示要收起来
+  await cdp.eval(`(() => {
+    const sel = document.getElementById("look-font");
+    const o = document.createElement("option");
+    o.value = "monospace";
+    o.textContent = "系统等宽";
+    sel.appendChild(o);
+    sel.value = "monospace";
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    return sel.value;
+  })()`);
+  const fontWarnGone = await waitFor(
+    async () => {
+      const h = await cdp.eval(`document.getElementById("look-font-warn").hidden`);
+      return h === true ? true : null;
+    },
+    { timeout: 8000, label: "提示收起" },
+  ).catch(() => null);
+  check("换回能用的字体后提示收起（TER-005）", fontWarnGone === true, fontWarnGone === true);
+
+  // 复原：字体是写进 config.toml 的全局设置
+  await cdp.eval(`(() => {
+    const sel = document.getElementById("look-font");
+    sel.value = ${JSON.stringify(uiFontBefore)};
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    return sel.value;
+  })()`);
+  await closeAllDialogs();
+
   // 18. 页面无未捕获异常
   check("页面无未捕获异常", cdp.exceptions.length === 0, cdp.exceptions.join(" | ") || "0 条");
 
