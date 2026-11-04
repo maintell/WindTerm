@@ -5167,6 +5167,45 @@ try {
     recovered ? `${recovered.path}，${recovered.rows} 条` : "没恢复",
   );
 
+  // 19zc. 复制标签（`TER-001`）
+  await closeAllDialogs();
+  await closeAllTabs();
+  await clickUntil(
+    () => clickElement("#open"),
+    async () => (await cdp.eval(`document.querySelectorAll("#tabs .tab").length`)) === 1,
+    { timeout: 10000, tries: 4, label: "复制标签用例建终端" },
+  );
+  const dupTabBox = await cdp.eval(`(() => {
+    const r = document.querySelectorAll("#tabs .tab")[0].getBoundingClientRect();
+    return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+  })()`);
+  await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...dupTabBox, button: "right", buttons: 2, clickCount: 1 });
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...dupTabBox, button: "right", buttons: 0, clickCount: 1 });
+  const dupMenu = await waitFor(
+    async () => {
+      const items = await cdp.eval(`
+        [...document.querySelectorAll("#ctx-menu button")].map((b) => b.textContent)
+      `);
+      return items.includes("复制标签") ? items : null;
+    },
+    { timeout: 5000, label: "复制标签菜单项" },
+  ).catch(() => null);
+  check(
+    "标签菜单里有「复制标签」（TER-001）",
+    dupMenu !== null,
+    dupMenu ? dupMenu.join("、") : "没有这一项",
+  );
+  await clickCtxItem("复制标签");
+  const dupDone = await waitFor(
+    async () => {
+      const n = await cdp.eval(`document.querySelectorAll("#tabs .tab").length`);
+      return n === 2 ? n : null;
+    },
+    { timeout: 20000, label: "复制出第二个标签" },
+  ).catch(() => null);
+  check("复制标签会再开一条（TER-001）", dupDone === 2, `标签数 ${dupDone ?? "不对"}`);
+  await closeAllTabs();
+
   // 18. 页面无未捕获异常
   check("页面无未捕获异常", cdp.exceptions.length === 0, cdp.exceptions.join(" | ") || "0 条");
 

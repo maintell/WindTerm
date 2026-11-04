@@ -555,6 +555,7 @@ function showTabMenu(view, x, y) {
   const at = order.findIndex((v) => v.id === view.id);
   const right = at < 0 ? 0 : order.length - at - 1;
   showCtxMenu(x, y, [
+    { label: "复制标签", run: () => duplicateTab(view) },
     { label: "重命名…", run: () => renameTab(view) },
     { label: `关闭其他（${order.length - 1}）`, run: () => closeTabsExcept(view) },
     { label: `关闭右侧（${right}）`, run: () => closeTabsRight(view) },
@@ -658,6 +659,8 @@ function afterOpen(view, statusText) {
 
 async function openLocal() {
   const view = createView("本地终端");
+  // 复制标签要知道这是一条本地会话（`TER-001`）
+  view.isLocalTerminal = true;
   view.fit.fit();
   try {
     view.handle = await invoke("local_open", {
@@ -690,31 +693,44 @@ async function openSsh() {
     return;
   }
 
-  const view = createView(`${user}@${host}`);
+  await runSshOpen(
+    {
+      host,
+      port,
+      user,
+      // 只用勾选的那一种：多传一个会被当成备选，
+      // 从而掩盖「密钥/agent 没被接受」这类问题
+      password: useKeyBox.checked || useAgentBox.checked ? null : passInput.value,
+      keyPem: useKeyBox.checked ? keyPem : null,
+      keyPassphrase: useKeyBox.checked ? keyPassInput.value || null : null,
+      useAgent: useAgentBox.checked,
+    },
+    jumpReq(),
+    `${user}@${host}`,
+  );
+}
+
+/**
+ * 用一组现成参数开一条 SSH 会话：`openSsh` 与「复制标签」共用（`TER-001`）。
+ *
+ * 参数记在 `view.openReq` 上——复制标签要能原样重来，而不是回头去读表单，
+ * 那时表单可能早就被改成别的机器了。
+ */
+async function runSshOpen(req, jump, label) {
+  const view = createView(label);
   view.fit.fit();
-  view.status = `正在连接 ${user}@${host}…`;
+  view.status = `正在连接 ${label}…`;
+  view.openReq = { req, jump, label };
   setActive(view);
   setStatus(view.status);
   sshBtn.disabled = true;
   try {
     const r = await invoke("ssh_open", {
-      req: {
-        host,
-        port,
-        user,
-        // 只用勾选的那一种：多传一个会被当成备选，
-        // 从而掩盖「密钥/agent 没被接受」这类问题
-        password: useKeyBox.checked || useAgentBox.checked ? null : passInput.value,
-        keyPem: useKeyBox.checked ? keyPem : null,
-        keyPassphrase: useKeyBox.checked ? keyPassInput.value || null : null,
-        useAgent: useAgentBox.checked,
-        cols: view.term.cols,
-        rows: view.term.rows,
-      },
-      jump: jumpReq(),
+      req: { ...req, cols: view.term.cols, rows: view.term.rows },
+      jump,
     });
     view.handle = r.handle;
-    const text = `已连接 ${user}@${host}${r.host_key_added ? "（已记录主机密钥）" : ""}`;
+    const text = `已连接 ${label}${r.host_key_added ? "（已记录主机密钥）" : ""}`;
     afterOpen(view, text);
     if (r.fingerprint) view.term.write(`\x1b[2m主机密钥 ${r.fingerprint}\x1b[0m\r\n`);
     await savePasswordIfAsked();
@@ -724,12 +740,25 @@ async function openSsh() {
   } catch (e) {
     // 失败原因写进这个标签页：状态栏放不下 hints，而且用户需要能复制下来
     view.term.write(`\r\n\x1b[31m${String(e)}\x1b[0m\r\n`);
-    view.status = `连接失败：${user}@${host}`;
+    view.status = `连接失败：${label}`;
     setStatus("连接失败");
     renderTabs();
   } finally {
     sshBtn.disabled = false;
   }
+}
+
+/** 复制标签（`TER-001`）：用这条标签自己的参数再开一条。 */
+async function duplicateTab(view) {
+  if (view?.isLocalTerminal) {
+    await openLocal();
+    return;
+  }
+  if (!view?.openReq) {
+    setStatus("这条标签没有记录连接参数，无法复制");
+    return;
+  }
+  await runSshOpen(view.openReq.req, view.openReq.jump, view.openReq.label);
 }
 
 async function closeView(view) {
@@ -4572,7 +4601,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-76",
+  ui: "wt-ui-77",
   /** 「本次记住」存了几条（验收用：只回数量，不回口令） */
   sessionPasswords() {
     return sessionPasswords.size;
