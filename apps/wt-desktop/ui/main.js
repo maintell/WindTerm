@@ -1424,45 +1424,246 @@ document.addEventListener(
   true,
 );
 
-// 捕获阶段处理并 stopPropagation：否则 Ctrl+F 会先被 xterm 当成 ^F 发给远端
+// ── 键位表（`TER-020`）────────────────────────────────────
+//
+// 之前是几个 if 写死在这里：改一个键要动代码，也没法告诉用户「现在有哪些快捷键」。
+// 改成表驱动之后，重绑 / 冲突检测 / 导出导入都只是这张表上的操作。
+//
+// 粘贴（`Ctrl+Shift+V` / `Shift+Insert`）**不在表里**：浏览器只在真正的粘贴动作上
+// 触发 `paste` 事件，拦下按键反而会让事件不产生。它是浏览器行为，不是我们的键位。
+
+const KEYMAP_DEFAULT = {
+  copy: { label: "复制选区", chords: ["Ctrl+Shift+C", "Ctrl+Insert"] },
+  find: { label: "查找", chords: ["Ctrl+F"] },
+  zoomIn: { label: "放大字号", chords: ["Ctrl+=", "Ctrl++"] },
+  zoomOut: { label: "缩小字号", chords: ["Ctrl+-"] },
+  zoomReset: { label: "重置字号", chords: ["Ctrl+0"] },
+  closeFind: { label: "关闭查找栏", chords: ["Escape"] },
+  broadcast: { label: "多执行广播", chords: ["Ctrl+Shift+B"] },
+  files: { label: "文件面板", chords: ["Ctrl+Shift+F"] },
+  tunnels: { label: "隧道面板", chords: ["Ctrl+Shift+T"] },
+};
+
+const KEYMAP_KEY = "wt.keymap";
+/** 当前生效的键位表：`action → { label, chords[] }` */
+let keymap = structuredClone(KEYMAP_DEFAULT);
+
+/** 把按键事件规范化成可比较的字符串：修饰键顺序固定，字母统一大写 */
+function chordOf(ev) {
+  const mods = [];
+  if (ev.ctrlKey) mods.push("Ctrl");
+  if (ev.altKey) mods.push("Alt");
+  if (ev.shiftKey) mods.push("Shift");
+  let key = ev.key;
+  if (key === " ") key = "Space";
+  else if (key.length === 1) key = key.toUpperCase();
+  // 只有修饰键被按下时不算一个键位
+  if (["Control", "Shift", "Alt", "Meta"].includes(ev.key)) return null;
+  return [...mods, key].join("+");
+}
+
+function loadKeymap() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(KEYMAP_KEY) ?? "null");
+    if (!saved || typeof saved !== "object") return;
+    for (const [action, chords] of Object.entries(saved)) {
+      if (keymap[action] && Array.isArray(chords)) {
+        keymap[action].chords = chords.filter((c) => typeof c === "string");
+      }
+    }
+  } catch {
+    // 存坏了就用默认键位，不该让界面起不来
+  }
+}
+
+function saveKeymap() {
+  try {
+    const plain = {};
+    for (const [action, v] of Object.entries(keymap)) plain[action] = v.chords;
+    localStorage.setItem(KEYMAP_KEY, JSON.stringify(plain));
+  } catch {
+    // 隐私模式写不进去，本次运行内仍然生效
+  }
+}
+
+/** 键位冲突：同一个组合被两个动作占用时返回占用者 */
+function chordOwner(chord, exceptAction) {
+  for (const [action, v] of Object.entries(keymap)) {
+    if (action === exceptAction) continue;
+    if (v.chords.includes(chord)) return v.label;
+  }
+  return null;
+}
+
+function runAction(action) {
+  switch (action) {
+    case "copy":
+      void copySelection();
+      return true;
+    case "find":
+      openFind();
+      return true;
+    case "zoomIn":
+      setFontSize(look.fontSize + 1);
+      return true;
+    case "zoomOut":
+      setFontSize(look.fontSize - 1);
+      return true;
+    case "zoomReset":
+      setFontSize(13);
+      return true;
+    case "closeFind":
+      if (findBar.hidden) return false;
+      closeFind();
+      return true;
+    case "broadcast":
+      bcToggle.click();
+      return true;
+    case "files":
+      document.getElementById("files-toggle").click();
+      return true;
+    case "tunnels":
+      document.getElementById("tunnels-toggle").click();
+      return true;
+    default:
+      return false;
+  }
+}
+
+// ── 键位设置界面（`TER-020`）──────────────────────────────
+
+const keysDialog = document.getElementById("keys-dialog");
+const keysList = document.getElementById("keys-list");
+const keysOpen = document.getElementById("keys-open");
+const keysExport = document.getElementById("keys-export");
+const keysImport = document.getElementById("keys-import");
+const keysReset = document.getElementById("keys-reset");
+
+/** 正在录制键位的动作（null 表示没在录制） */
+let recordingAction = null;
+
+function renderKeys() {
+  keysList.textContent = "";
+  for (const [action, v] of Object.entries(keymap)) {
+    const row = document.createElement("div");
+    row.className = "key-row";
+    row.dataset.action = action;
+    if (recordingAction === action) row.classList.add("recording");
+
+    const label = document.createElement("span");
+    label.className = "label";
+    label.textContent = v.label;
+
+    const chord = document.createElement("span");
+    chord.className = "chord";
+    chord.textContent =
+      recordingAction === action ? "按下新组合键…" : v.chords.join(" 或 ") || "（未绑定）";
+
+    const btn = document.createElement("button");
+    btn.textContent = recordingAction === action ? "取消" : "录制";
+    btn.addEventListener("click", () => {
+      recordingAction = recordingAction === action ? null : action;
+      renderKeys();
+    });
+
+    row.append(label, chord, btn);
+    keysList.appendChild(row);
+  }
+}
+
+/** 录制：下一次按键直接成为该动作的唯一组合键 */
 document.addEventListener(
   "keydown",
   (ev) => {
-    if (ev.altKey || ev.metaKey) return;
-    const key = ev.key;
-
-    // 复制（TER-011）。注意 Ctrl+C **不**在这里拦：它必须继续作为 SIGINT
-    // 发给远端，改了就是破坏肌肉记忆。
-    //
-    // 粘贴（Ctrl+Shift+V / Shift+Insert）也**不拦**：浏览器只在真正的粘贴动作上
-    // 触发 `paste` 事件，拦下按键反而会让事件不产生。事件处理见下面的 paste 监听。
-    if (
-      (ev.ctrlKey && ev.shiftKey && (key === "c" || key === "C")) ||
-      (ev.ctrlKey && key === "Insert")
-    ) {
-      ev.preventDefault();
-      ev.stopPropagation();
-      void copySelection();
+    if (!keysDialog.open || !recordingAction) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const chord = chordOf(ev);
+    if (!chord) return; // 只按了修饰键，继续等
+    const owner = chordOwner(chord, recordingAction);
+    if (owner) {
+      // 冲突就明说被谁占了，并且**不保存**——留个「看起来改了其实没改」的状态最糟
+      setStatus(`键位冲突：${chord} 已被「${owner}」占用`);
+      recordingAction = null;
+      renderKeys();
       return;
     }
+    keymap[recordingAction].chords = [chord];
+    recordingAction = null;
+    saveKeymap();
+    renderKeys();
+    setStatus(`已绑定 ${chord}`);
+  },
+  true,
+);
 
-    if (!ev.ctrlKey) return;
-    if (key === "f") {
+keysOpen.addEventListener("click", () => {
+  recordingAction = null;
+  renderKeys();
+  keysDialog.showModal();
+});
+
+// 这个对话框里没有 `<form method=dialog>`（里面的按钮都是普通按钮），
+// 所以「关闭」要自己接——否则点下去什么都不会发生，接着按键全被当成录制
+document.getElementById("keys-close").addEventListener("click", () => keysDialog.close());
+
+keysReset.addEventListener("click", () => {
+  keymap = structuredClone(KEYMAP_DEFAULT);
+  saveKeymap();
+  renderKeys();
+  setStatus("键位已恢复默认");
+});
+
+keysExport.addEventListener("click", async () => {
+  const text = JSON.stringify(
+    Object.fromEntries(Object.entries(keymap).map(([a, v]) => [a, v.chords])),
+    null,
+    2,
+  );
+  try {
+    await navigator.clipboard.writeText(text);
+    setStatus("键位方案已复制到剪贴板");
+  } catch {
+    setStatus("复制失败：读剪贴板被拒绝");
+  }
+});
+
+keysImport.addEventListener("click", () => {
+  const text = prompt("粘贴键位方案 JSON");
+  if (!text) return;
+  try {
+    const parsed = JSON.parse(text);
+    let applied = 0;
+    for (const [action, chords] of Object.entries(parsed)) {
+      if (!keymap[action] || !Array.isArray(chords)) continue;
+      keymap[action].chords = chords.filter((c) => typeof c === "string");
+      applied += 1;
+    }
+    saveKeymap();
+    renderKeys();
+    setStatus(`已导入 ${applied} 项键位`);
+  } catch (e) {
+    setStatus(`导入失败：${e}`);
+  }
+});
+
+// 捕获阶段处理并 stopPropagation：否则 Ctrl+F 会先被 xterm 当成 ^F 发给远端。
+//
+// 注意 `Ctrl+C` **不在表里**：它必须继续作为 SIGINT 发给远端，改了就是破坏肌肉记忆。
+document.addEventListener(
+  "keydown",
+  (ev) => {
+    // 键位对话框开着时，按键归录制流程，不再当快捷键用
+    if (keysDialog.open) return;
+    const chord = chordOf(ev);
+    if (!chord) return;
+    for (const [action, v] of Object.entries(keymap)) {
+      if (!v.chords.includes(chord)) continue;
+      // 动作自己判断「这次不该触发」（比如查找栏没开时按 Esc）就放行
+      if (!runAction(action)) continue;
       ev.preventDefault();
       ev.stopPropagation();
-      openFind();
-    } else if (ev.key === "=" || ev.key === "+") {
-      ev.preventDefault();
-      ev.stopPropagation();
-      setFontSize(fontSize + 1);
-    } else if (ev.key === "-") {
-      ev.preventDefault();
-      ev.stopPropagation();
-      setFontSize(fontSize - 1);
-    } else if (ev.key === "0") {
-      ev.preventDefault();
-      ev.stopPropagation();
-      setFontSize(13);
+      return;
     }
   },
   true,
@@ -2728,7 +2929,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-34",
+  ui: "wt-ui-36",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";
@@ -2839,6 +3040,12 @@ window.__wt = {
   get encoding() {
     return encoding;
   },
+  /** 键位表（`TER-020`）：验收读它，别去解析对话框里的文本 */
+  get keymap() {
+    return Object.fromEntries(
+      Object.entries(keymap).map(([a, v]) => [a, { label: v.label, chords: [...v.chords] }]),
+    );
+  },
   /** 多执行广播（`TER-004`）：目标数、最近一次结果与分组 */
   get broadcast() {
     return {
@@ -2895,6 +3102,7 @@ window.__wt = {
 (async () => {
   // 外观要先读回来再建会话，否则第一个终端会用默认配色闪一下再变色
   loadLook();
+  loadKeymap();
   initLookControls();
   initBroadcast();
   loadTree();

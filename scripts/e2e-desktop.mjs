@@ -595,6 +595,42 @@ async function clickTreeNode(name) {
   await clickAt(box);
 }
 
+/**
+ * 等屏幕内容稳定（连续 `ms` 毫秒没有新输出）。
+ *
+ * 定位文本再点击之前必须先等它稳下来：本地 shell 执行完命令会再打印一个提示符，
+ * 行会整体上移——这时量到的坐标指向的已经是下一行了。
+ */
+async function waitScreenStable(ms) {
+  let last = null;
+  let since = Date.now();
+  return waitFor(
+    async () => {
+      const s = await cdp.eval(`window.__wt.screen()`);
+      if (s !== last) {
+        last = s;
+        since = Date.now();
+        return null;
+      }
+      return Date.now() - since >= ms ? s : null;
+    },
+    { timeout: 10000, label: "屏幕稳定" },
+  );
+}
+
+/** 点键位对话框里某个动作的「录制」按钮 */
+async function clickKeyRow(action) {
+  const box = await cdp.eval(`(() => {
+    const row = document.querySelector("#keys-list .key-row[data-action=\\"${action}\\"]");
+    const btn = row?.querySelector("button");
+    if (!btn) return null;
+    const r = btn.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  })()`);
+  if (!box) throw new Error(`键位表里找不到动作 ${action}`);
+  await clickAt(box);
+}
+
 /** 在会话树上右键某个节点（真实右键事件，让页面的 contextmenu 监听自己触发） */
 async function rightClickNode(name) {
   const box = await cdp.eval(`(() => {
@@ -821,6 +857,31 @@ try {
   );
   check("页面加载且 Tauri 桥接注入", hasBridge === true);
 
+  // 2b. 每次运行都从干净的本地状态开始。
+  //     `localStorage` 里存着上一轮的键位与外观，而 WebView2 的 profile 跨运行保留：
+  //     不清掉的话「Ctrl+F 打开查找」这类**默认值**断言会在第二次运行开始失败，
+  //     看起来像功能坏了，其实是被上一轮的实验污染了。
+  const dirtyLocal = await cdp.eval(`(() => {
+    const had = localStorage.length > 0;
+    localStorage.clear();
+    return had;
+  })()`);
+  if (dirtyLocal) {
+    await cdp.eval(`location.reload()`);
+    await waitFor(
+      async () => {
+        try {
+          const v = await cdp.eval(`window.__wt?.ui ?? null`);
+          return v === "wt-ui-36" ? v : null;
+        } catch {
+          return null; // 重载瞬间执行上下文可能失效，下一轮再试
+        }
+      },
+      { timeout: 25000, label: "清理本地状态后重载" },
+    );
+  }
+  check("本地状态已清理（键位/外观从默认值开始）", true, dirtyLocal ? "已清理并重载" : "本来就是干净的");
+
   // 3. 启动自检：前端主动探一次后端，拿到 IPC_UNKNOWN_HANDLE 说明命令通道通
   const bootStatus = await waitFor(
     async () => {
@@ -841,7 +902,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-34",
+    uiVersion === "wt-ui-36",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -1030,6 +1091,7 @@ try {
   // 先往屏幕上打一段「有分隔符歧义」的串：规格里「默认分隔符含 /」与 AC-1
   //「双击要选全 user@host:/var/log」互相矛盾，这条断言把结论钉在 AC-1 上。
   await typeText("echo user@host:/var/log");
+  await waitScreenStable(350);
   const wordPoint = await waitFor(
     () => cdp.eval(`window.__wt.textPoint("user@host:/var/log")`),
     { timeout: 10000, label: "屏幕上出现待选文本" },
@@ -2891,6 +2953,72 @@ try {
     cycleErr.includes("FOLDER_CYCLE"),
     cycleErr.slice(0, 80),
   );
+
+  // 19g. 键位可重绑（`TER-020`）：录制新组合键、冲突检测、关闭后真的生效
+  await closeAllTabs();
+  await clickSessionNode("mock-ssh");
+  await fillInput("#port", String(sshPort));
+  await clickElement("#ssh");
+  await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      return s.startsWith("已连接") ? s : null;
+    },
+    { timeout: 30000, label: "键位用例建会话" },
+  );
+
+  await clickElement("#keys-open");
+  const keyRows = await cdp.eval(`document.querySelectorAll("#keys-list .key-row").length`);
+  check("键位表列出所有可重绑动作", keyRows >= 8, `${keyRows} 项`);
+
+  await clickKeyRow("find");
+  await pressChord(2 | 8, "k", "KeyK", 75);
+  const rebound = await waitFor(
+    async () => {
+      const km = await cdp.eval(`window.__wt.keymap`);
+      return km.find.chords.includes("Ctrl+Shift+K") ? km : null;
+    },
+    { timeout: 5000, label: "录制新键位" },
+  );
+  check("能把「查找」重绑到 Ctrl+Shift+K", rebound !== null, rebound?.find?.chords?.join("/"));
+
+  // 冲突：把「放大字号」也录成 Ctrl+Shift+K，必须被拒且原绑定不动
+  await clickKeyRow("zoomIn");
+  await pressChord(2 | 8, "k", "KeyK", 75);
+  const conflict = await waitFor(
+    async () => {
+      const st = await cdp.eval(`document.getElementById("status").textContent`);
+      return st.includes("键位冲突") ? st : null;
+    },
+    { timeout: 5000, label: "键位冲突提示" },
+  );
+  const zoomKept = (await cdp.eval(`window.__wt.keymap`)).zoomIn.chords.includes("Ctrl+=");
+  check("重复键位被拒且原绑定不变", zoomKept === true, conflict);
+
+  await clickElement("#keys-close");
+  const prePress = await cdp.eval(`({
+    tabs: window.__wt.tabs().length,
+    active: window.__wt.tabs().find((t) => t.active)?.label ?? null,
+    dialogOpen: document.getElementById("keys-dialog").open,
+  })`);
+  await pressChord(2 | 8, "k", "KeyK", 75);
+  const findByNewChord = await waitFor(
+    async () =>
+      (await cdp.eval(`document.getElementById("find-bar").hidden`)) ? null : true,
+    { timeout: 8000, label: "新键位生效" },
+  ).catch(() => null);
+  const keyDiag = await cdp.eval(`({
+    tabs: window.__wt.tabs().length,
+    hidden: document.getElementById("find-bar").hidden,
+    status: document.getElementById("status").textContent,
+  })`);
+  check(
+    "关闭对话框后新键位真的生效",
+    findByNewChord === true,
+    JSON.stringify({ prePress, keyDiag }),
+  );
+  await pressChord(0, "Escape", "Escape", 27);
+  await closeAllTabs();
 
   // 19c-2. 多执行广播（`TER-004`）：同一命令发给多个会话，按输出分组收起
   await closeAllTabs();
