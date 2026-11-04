@@ -201,7 +201,10 @@
       #files-tree .ftree-row:hover { background: #24242a; }
       #files-tree .ftree-row.selected { background: #2f4f7f; }
       #files-tree .ftree-toggle { width: 12px; color: #8a8a92; }
-      #files-list { flex: 1; overflow: auto; }
+      #files-list { flex: 1; overflow: auto; position: relative; }
+      /* 虚拟滚动（FIL-001 AC-1）：行绝对定位，外层撑出总高度 */
+      #files-list .vbody { position: relative; }
+      #files-list .vrow { position: absolute; left: 0; right: 0; height: 20px; box-sizing: border-box; }
       /* 拖拽进入时给个明确的目标提示，否则用户不知道能往哪放 */
       #files-list.dropping { outline: 2px dashed var(--accent); outline-offset: -2px; }
       #files-list .row { display: flex; gap: 8px; padding: 1px 8px; white-space: nowrap; }

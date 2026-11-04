@@ -2616,47 +2616,10 @@ async function loadDir(path) {
     filesPaths.set(filesSessionId, sftpPath);
     filesPath.textContent = sftpPath;
     filesPath.title = sftpPath;
-    filesList.textContent = "";
-    if (!r.entries.length) {
-      const el = document.createElement("div");
-      el.className = "row";
-      el.textContent = "（空目录）";
-      filesList.appendChild(el);
-      setFilesMsg("");
-      return true;
-    }
-    for (const e of r.entries) {
-      const row = document.createElement("div");
-      row.className = "row name";
-      const label = document.createElement("span");
-      // 注意字段名：`RemoteEntryDto` 没有 camelCase 重命名，序列化出来就是 snake_case
-      if (e.is_symlink) {
-        // `name@` 是 `ls -F` 的老习惯；目标放 tooltip，断链单独标色
-        label.textContent = `${e.name}@`;
-        label.title = e.broken
-          ? `断链：${e.link_target ?? "（读不到目标）"} 不存在`
-          : `链接到 ${e.link_target ?? ""}`;
-        label.className = e.broken ? "link broken" : "link";
-      } else {
-        label.textContent = e.is_dir ? `${e.name}/` : e.name;
-      }
-      // 权限位（`FIL-002`）：`drwxr-xr-x` 这种十列串，等宽字体对齐。
-      // 服务端不给就留空，别显示一个 "-" 让人以为是文件
-      const perms = document.createElement("span");
-      perms.className = "mode";
-      perms.textContent = modeString(e.mode);
-      const size = document.createElement("span");
-      size.textContent = e.is_dir ? "" : `${e.size}`;
-      size.style.color = "#8a8a92";
-      row.append(label, perms, size);
-      // 单击只选中，双击才动作：与文件管理器一致，也让「改名/删除」有明确的操作对象
-      row.addEventListener("click", () => selectEntry(e, row));
-      row.addEventListener("dblclick", () => {
-        if (e.is_dir) void loadDir(joinPath(sftpPath, e.name));
-        else void downloadFile(joinPath(sftpPath, e.name));
-      });
-      filesList.appendChild(row);
-    }
+    // 只存数据，DOM 由 `renderFileList` 按可视窗口渲染（`FIL-001` AC-1）：
+    // 1000 个条目逐个建 DOM 会明显卡顿，而绝大多数根本看不到
+    filesEntries = r.entries;
+    renderFileList();
     setFilesMsg("");
     return true;
   } catch (e) {
@@ -2709,6 +2672,87 @@ filesRefresh.addEventListener("click", async () => {
   // 刷新会把树收回到根层——保留展开状态得记住每条路径，收益不值这个复杂度。
   ftree.clear();
   await initFileTree();
+});
+
+/** 文件列表的行高（虚拟滚动按它算窗口）。与 CSS 里 `.vrow` 的高度保持一致 */
+const FILES_ROW_H = 20;
+/** 当前目录的全部条目。DOM 里只有可视窗口内的那些（`FIL-001` AC-1） */
+let filesEntries = [];
+let filesScrollRaf = 0;
+
+/** 一条的显示名：目录带 `/`、链接带 `@`（`ls -F` 的老习惯） */
+function entryLabel(e) {
+  if (e.is_symlink) return `${e.name}@`;
+  return e.is_dir ? `${e.name}/` : e.name;
+}
+
+function buildFileRow(e, index) {
+  const row = document.createElement("div");
+  const selected = selectedEntry && selectedEntry.name === e.name;
+  row.className = selected ? "row name vrow selected" : "row name vrow";
+  row.style.top = `${index * FILES_ROW_H}px`;
+  const label = document.createElement("span");
+  // 注意字段名：`RemoteEntryDto` 没有 camelCase 重命名，序列化出来就是 snake_case
+  label.textContent = entryLabel(e);
+  if (e.is_symlink) {
+    // 目标放 tooltip，断链单独标色
+    label.title = e.broken
+      ? `断链：${e.link_target ?? "（读不到目标）"} 不存在`
+      : `链接到 ${e.link_target ?? ""}`;
+    label.className = e.broken ? "link broken" : "link";
+  }
+  // 权限位（`FIL-002`）：`drwxr-xr-x` 这种十列串，等宽字体对齐。
+  // 服务端不给就留空，别显示一个 "-" 让人以为是文件
+  const perms = document.createElement("span");
+  perms.className = "mode";
+  perms.textContent = modeString(e.mode);
+  const size = document.createElement("span");
+  size.textContent = e.is_dir ? "" : `${e.size}`;
+  size.style.color = "#8a8a92";
+  row.append(label, perms, size);
+  // 单击只选中，双击才动作：与文件管理器一致，也让「改名/删除」有明确的操作对象
+  row.addEventListener("click", () => selectEntry(e, row));
+  row.addEventListener("dblclick", () => {
+    if (e.is_dir) void loadDir(joinPath(sftpPath, e.name));
+    else void downloadFile(joinPath(sftpPath, e.name));
+  });
+  return row;
+}
+
+/**
+ * 只渲染可视窗口内的条目，上下用撑高的容器保持滚动条长度。
+ *
+ * 关键是**先记住 scrollTop 再清空**：清空后内容高度变 0，浏览器会把 scrollTop
+ * 夹回 0，那时再读窗口就永远是第一屏（表现为「滚下去又跳回顶部」）。
+ */
+function renderFileList() {
+  const savedTop = filesList.scrollTop;
+  filesList.textContent = "";
+  if (!filesEntries.length) {
+    const el = document.createElement("div");
+    el.className = "row";
+    el.textContent = "（空目录）";
+    filesList.appendChild(el);
+    return;
+  }
+  const body = document.createElement("div");
+  body.className = "vbody";
+  body.style.height = `${filesEntries.length * FILES_ROW_H}px`;
+  const viewport = filesList.clientHeight || 320;
+  const start = Math.max(0, Math.floor(savedTop / FILES_ROW_H) - 4);
+  const end = Math.min(filesEntries.length, start + Math.ceil(viewport / FILES_ROW_H) + 8);
+  for (let i = start; i < end; i += 1) body.appendChild(buildFileRow(filesEntries[i], i));
+  filesList.appendChild(body);
+  filesList.scrollTop = savedTop;
+}
+
+filesList.addEventListener("scroll", () => {
+  // 滚动事件很密：一帧只重建一次
+  if (filesScrollRaf) return;
+  filesScrollRaf = requestAnimationFrame(() => {
+    filesScrollRaf = 0;
+    renderFileList();
+  });
 });
 
 /** 选中某一行（只改状态，不发请求）。 */
@@ -4513,7 +4557,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-74",
+  ui: "wt-ui-75",
   /** 「本次记住」存了几条（验收用：只回数量，不回口令） */
   sessionPasswords() {
     return sessionPasswords.size;
@@ -4596,7 +4640,8 @@ window.__wt = {
     return {
       path: sftpPath,
       msg: filesMsg.textContent,
-      rows: [...filesList.querySelectorAll(".row span:first-child")].map((e) => e.textContent),
+      // 读**数据**而不是 DOM：列表是虚拟滚动的，DOM 里只有可视窗口内的那些条
+      rows: filesEntries.map(entryLabel),
       /** 当前选中项的名字（验收与脚本用） */
       selected: selectedEntry?.name ?? null,
       /** 最近一次上传的进度快照：`{name,total,last,events}` */

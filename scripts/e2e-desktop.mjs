@@ -5038,6 +5038,72 @@ try {
     `${treeNav?.selected ?? "没有选中"}`,
   );
 
+  // 19za. 大目录的虚拟滚动（`FIL-001` AC-1）
+  await cdp.eval(`window.__TAURI__.core.invoke("mock_seed_many", { dir: "/many", count: 1000 })`);
+  // 先回到根目录：上一步还停在 /treeA，刷新只会刷那一层
+  for (let i = 0; i < 5; i += 1) {
+    const at = await cdp.eval(`document.getElementById("files-path").textContent`);
+    if (at === "/") break;
+    await clickElement("#files-up");
+    await waitFor(
+      async () => {
+        const p = await cdp.eval(`document.getElementById("files-path").textContent`);
+        return p !== at;
+      },
+      { timeout: 8000, label: "回到根目录" },
+    ).catch(() => null);
+  }
+  await clickElement("#files-refresh");
+  const t0 = Date.now();
+  await doubleClickFileRow("many/");
+  const many = await waitFor(
+    async () => {
+      const s = await cdp.eval(`({
+        rows: window.__wt.files.rows.length,
+        rendered: document.querySelectorAll("#files-list .vrow").length,
+      })`);
+      return s.rows === 1000 ? s : null;
+    },
+    { timeout: 20000, label: "1000 个条目" },
+  ).catch(() => null);
+  const listMs = Date.now() - t0;
+  check(
+    "1000 个条目的目录能列出来（FIL-001）",
+    many !== null,
+    many ? `rows=${many.rows}，用时 ${listMs}ms（含轮询开销）` : "没列出来",
+  );
+  check(
+    "大目录只渲染可视窗口内的行（虚拟滚动）",
+    many !== null && many.rendered > 0 && many.rendered < 120,
+    `DOM 行数 ${many?.rendered ?? 0}` ,
+  );
+  check(
+    "1000 条列表 1 秒内完成（AC-1）",
+    many !== null && listMs < 1000,
+    `${listMs}ms`,
+  );
+
+  // 滚到底：窗口要跟着走，最后一条能渲染出来
+  await cdp.eval(`(() => {
+    const list = document.getElementById("files-list");
+    list.scrollTop = list.scrollHeight;
+    return list.scrollTop;
+  })()`);
+  const lastRow = await waitFor(
+    async () => {
+      const texts = await cdp.eval(`
+        [...document.querySelectorAll("#files-list .vrow span:first-child")].map((s) => s.textContent)
+      `);
+      return texts.some((t) => t.startsWith("f1000")) ? texts : null;
+    },
+    { timeout: 8000, label: "滚到底部" },
+  ).catch(() => null);
+  check(
+    "滚动到末尾时窗口跟着走（虚拟滚动正确）",
+    lastRow !== null,
+    lastRow ? `末行在：${lastRow[lastRow.length - 1]}` : "没渲染出末尾",
+  );
+
   // 18. 页面无未捕获异常
   check("页面无未捕获异常", cdp.exceptions.length === 0, cdp.exceptions.join(" | ") || "0 条");
 

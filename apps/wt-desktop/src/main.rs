@@ -1936,6 +1936,29 @@ fn e2e_mock_port() -> u16 {
     }
 }
 
+/// 端到端验收专用：一次种 `count` 个文件，用来压虚拟滚动（`FIL-001` AC-1）。
+#[tauri::command]
+async fn mock_seed_many(dir: String, count: usize) -> Result<usize, String> {
+    #[cfg(feature = "e2e-mock")]
+    {
+        let fs = MOCK_FS
+            .get()
+            .ok_or_else(|| "[E2E_ONLY] mock 服务端未启动".to_string())?;
+        let mut guard = fs.lock().await;
+        // 目录本身也要有一条：mock 用「路径以 / 结尾」表示目录
+        guard.insert(format!("{dir}/"), Vec::new());
+        for i in 1..=count {
+            guard.insert(format!("{dir}/f{i:04}.txt"), vec![b'x'; 4]);
+        }
+        Ok(count)
+    }
+    #[cfg(not(feature = "e2e-mock"))]
+    {
+        let _ = (dir, count);
+        Err("[E2E_ONLY] 该命令只在 e2e-mock 构建里可用".into())
+    }
+}
+
 /// 端到端验收专用：往 mock 的 SFTP 文件系统里种一个符号链接（`FIL-002`）。
 #[tauri::command]
 async fn mock_seed_link(path: String, target: String) -> Result<(), String> {
@@ -3110,6 +3133,7 @@ fn main() {
             mock_generate_key,
             mock_seed_file,
             mock_seed_link,
+            mock_seed_many,
             e2e_mock_port,
             sftp_list,
             sftp_download,
