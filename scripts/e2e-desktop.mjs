@@ -580,6 +580,21 @@ function socksExchange(proxyPort, targetHost, targetPort, payload) {
  * `which`：`toggle` = 启动/停止（第一个按钮），`delete` = 删除（第二个）。
  * 停止后配置仍留在库里（灰灯），所以「删除」是独立的一步。
  */
+/** 点会话树里的**任意**节点（会话或文件夹，`clickSessionNode` 只认会话） */
+async function clickTreeNode(name) {
+  const box = await cdp.eval(`(() => {
+    const el = [...document.querySelectorAll("#tree-body .node")].find(
+      (n) => n.textContent === ${JSON.stringify(name)},
+    );
+    if (!el) return null;
+    el.scrollIntoView({ block: "nearest" });
+    const r = el.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  })()`);
+  if (!box) throw new Error(`会话树里找不到节点 ${name}`);
+  await clickAt(box);
+}
+
 /** 在会话树上右键某个节点（真实右键事件，让页面的 contextmenu 监听自己触发） */
 async function rightClickNode(name) {
   const box = await cdp.eval(`(() => {
@@ -826,7 +841,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-32",
+    uiVersion === "wt-ui-33",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -2759,6 +2774,82 @@ try {
     { timeout: 10000, label: "新建子文件夹" },
   );
   check("右键文件夹能新建子文件夹", folderMade.includes("sub-net"), folderMade.join("、"));
+
+  // 19e-2. 折叠与拖拽（`SES-013`）
+  await clickTreeNode("Lab");
+  const collapsed = await waitFor(
+    async () => {
+      const names = await cdp.eval(`window.__wt.sessions()`);
+      return names.includes("mock-ssh") ? null : true;
+    },
+    { timeout: 8000, label: "折叠文件夹" },
+  );
+  check("点文件夹能折叠，子节点从树里消失", collapsed === true);
+
+  // 折叠状态要落库：刷新一次树，仍然得是折叠的
+  await clickElement("#refresh");
+  await waitFor(
+    async () => ((await cdp.eval(`window.__wt.sessions()`)).length ? true : null),
+    { timeout: 10000, label: "刷新会话树" },
+  );
+  const stillCollapsed = await cdp.eval(
+    `![...document.querySelectorAll("#tree-body .node.session")].some((n) => n.textContent === "mock-ssh")`,
+  );
+  check("折叠状态会落库（刷新后仍然折叠）", stillCollapsed === true);
+
+  // 展开回来，后面还要用这些节点
+  await clickTreeNode("Lab");
+  await waitFor(
+    async () => ((await cdp.eval(`window.__wt.sessions()`)).includes("mock-ssh") ? true : null),
+    { timeout: 8000, label: "展开文件夹" },
+  );
+
+  // 拖拽：把会话拖进 sub-net。合成 DragEvent 带同一个 DataTransfer，
+  // 走的是页面自己的 dragstart/drop 处理器（CDP 造不出真实 OS 拖拽）
+  const moved = await cdp.eval(`(async () => {
+    const src = [...document.querySelectorAll("#tree-body .node.session")].find(
+      (n) => n.textContent === "mock-ssh",
+    );
+    const dst = [...document.querySelectorAll("#tree-body .node.folder")].find(
+      (n) => n.textContent === "sub-net",
+    );
+    if (!src || !dst) return { ok: false, why: "找不到节点" };
+    const dt = new DataTransfer();
+    src.dispatchEvent(new DragEvent("dragstart", { bubbles: true, dataTransfer: dt }));
+    dst.dispatchEvent(new DragEvent("dragover", { bubbles: true, dataTransfer: dt }));
+    dst.dispatchEvent(new DragEvent("drop", { bubbles: true, dataTransfer: dt }));
+    return { ok: true };
+  })()`);
+  const movedOk = await waitFor(
+    async () => {
+      const snap = await cdp.eval(`window.__TAURI__.core.invoke("sessions_load")`);
+      const sub = snap.folders.find((f) => f.name === "sub-net");
+      const s = snap.sessions.find((x) => x.name === "mock-ssh");
+      return sub && s && s.folder_id === sub.id ? true : null;
+    },
+    { timeout: 10000, label: "拖拽移动会话" },
+  ).catch(() => null);
+  check("把会话拖进文件夹后 folder_id 变了", movedOk === true, JSON.stringify(moved));
+
+  // 环检测：把 Lab 挪进它自己的子文件夹 sub-net，必须被拒
+  const cycleErr = await cdp.eval(`(async () => {
+    const snap = await window.__TAURI__.core.invoke("sessions_load");
+    const lab = snap.folders.find((f) => f.name === "Lab");
+    const sub = snap.folders.find((f) => f.name === "sub-net");
+    try {
+      await window.__TAURI__.core.invoke("folder_move", {
+        folderId: lab.id, parentId: sub.id,
+      });
+      return "没有报错";
+    } catch (e) {
+      return String(e);
+    }
+  })()`);
+  check(
+    "把文件夹挪进自己的子文件夹被拒绝",
+    cycleErr.includes("FOLDER_CYCLE"),
+    cycleErr.slice(0, 80),
+  );
 
   // 19c-2. 多执行广播（`TER-004`）：同一命令发给多个会话，按输出分组收起
   await closeAllTabs();

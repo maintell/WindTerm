@@ -115,6 +115,17 @@
         cursor: pointer;
       }
       #tree-head button:hover { border-color: var(--accent); }
+      /* 折叠标记用伪元素：节点的 textContent 仍是纯名字，验收与右键菜单都按名字找 */
+      #tree-body .node.folder { cursor: pointer; }
+      #tree-body .node.folder::before {
+        content: "▾";
+        display: inline-block;
+        width: 10px;
+        color: #8a8a92;
+      }
+      #tree-body .node.folder.collapsed::before { content: "▸"; }
+      #tree-body .node.drop-target { background: #2f4f7f; }
+      #tree-body .node[draggable="true"] { cursor: grab; }
       #tree-body { flex: 1; overflow: auto; padding: 4px 0; }
       #tree-filter-row { padding: 4px 6px; }
       #tree-filter-row input {

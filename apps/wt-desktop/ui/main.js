@@ -694,7 +694,14 @@ function renderTree(dto) {  lastTree = dto;
     el.textContent = text;
     // 右键菜单靠这几个 id 找回对象：树节点是纯文本，没有别的身份标识
     Object.assign(el.dataset, data);
+    el.draggable = true;
     if (onClick) el.addEventListener("click", onClick);
+    // 拖拽只带「我是谁」，放下的地方决定去哪儿（`SES-013`）
+    el.addEventListener("dragstart", (ev) => {
+      const payload = JSON.stringify({ kind: cls, ...data });
+      ev.dataTransfer?.setData("text/plain", payload);
+      if (ev.dataTransfer) ev.dataTransfer.effectAllowed = "move";
+    });
     treeBody.appendChild(el);
     return el;
   };
@@ -707,8 +714,23 @@ function renderTree(dto) {  lastTree = dto;
         f.name.toLowerCase().includes(query) ||
         folderHasMatch(f.id, query, byParent, byFolder);
       if (!keep) continue;
-      addNode(f.name, "folder", depth, null, { folderId: f.id });
-      walk(f.id, depth + 1);
+      const node = addNode(f.name, "folder", depth, () => void toggleFolder(f), {
+        folderId: f.id,
+      });
+      // 折叠标记走 CSS 伪元素，节点的 textContent 仍是纯名字
+      if (f.collapsed) node.classList.add("collapsed");
+      // 接受拖放：把会话或文件夹挪进来（自己到自己由后端拦）
+      node.addEventListener("dragover", (ev) => {
+        ev.preventDefault();
+        node.classList.add("drop-target");
+      });
+      node.addEventListener("dragleave", () => node.classList.remove("drop-target"));
+      node.addEventListener("drop", (ev) => {
+        ev.preventDefault();
+        node.classList.remove("drop-target");
+        void dropInto(ev.dataTransfer?.getData("text/plain") ?? "", f.id);
+      });
+      if (!f.collapsed) walk(f.id, depth + 1);
     }
     for (const s of byFolder.get(key) ?? []) {
       if (query && !s.name.toLowerCase().includes(query)) continue;
@@ -851,6 +873,47 @@ async function exportSession(s) {
   }
 }
 
+/** 折叠/展开一个文件夹（`SES-013`）：状态落库，重启后还是这个形状 */
+async function toggleFolder(f) {
+  try {
+    await invoke("folder_save", {
+      req: { id: f.id, name: f.name, collapsed: !f.collapsed },
+    });
+    await loadTree();
+  } catch (e) {
+    setStatus(`折叠失败：${e}`);
+  }
+}
+
+/**
+ * 把拖来的东西放进某个文件夹（`folderId` 为空表示根）。
+ *
+ * 环检测在后端：把文件夹挪进自己的子孙会让整棵子树从树上消失，
+ * 这种错在界面上看不出来，所以必须在写库前拦住。
+ */
+async function dropInto(raw, folderId) {
+  let payload = null;
+  try {
+    payload = JSON.parse(raw);
+  } catch {
+    return;
+  }
+  if (!payload) return;
+  try {
+    if (payload.sessionId) {
+      await invoke("session_move", { sessionId: payload.sessionId, folderId: folderId || null });
+    } else if (payload.folderId && payload.folderId !== folderId) {
+      await invoke("folder_move", { folderId: payload.folderId, parentId: folderId || null });
+    } else {
+      return;
+    }
+    await loadTree();
+    setStatus("已移动");
+  } catch (e) {
+    setStatus(`移动失败：${e}`);
+  }
+}
+
 async function newSubFolder(parentId) {
   const name = await askName("新建子文件夹", "");
   if (!name) return;
@@ -874,6 +937,14 @@ async function renameFolder(f) {
     setStatus(`重命名失败：${e}`);
   }
 }
+
+// 拖到树空白处＝移到根：否则「从文件夹里拖出来」没有落点
+treeBody.addEventListener("dragover", (ev) => ev.preventDefault());
+treeBody.addEventListener("drop", (ev) => {
+  if (ev.target !== treeBody) return;
+  ev.preventDefault();
+  void dropInto(ev.dataTransfer?.getData("text/plain") ?? "", null);
+});
 
 treeBody.addEventListener("contextmenu", (ev) => {
   const node = ev.target.closest?.(".node");
@@ -2615,7 +2686,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-32",
+  ui: "wt-ui-33",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";

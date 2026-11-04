@@ -495,9 +495,12 @@ struct FolderSaveReq {
     #[serde(default)]
     id: Option<String>,
     name: String,
-    /// 只在新建时生效：父文件夹（空表示根）
+    /// 只在新建时生效：父文件夹（空表示根）。移动走 `folder_move`，这里不掺和
     #[serde(default)]
     parent_id: Option<String>,
+    /// 折叠状态（`SES-013`）：只存不要动结构，所以形状跟 parentId 一样克制
+    #[serde(default)]
+    collapsed: Option<bool>,
 }
 
 #[derive(serde::Deserialize)]
@@ -548,6 +551,9 @@ fn folder_save(req: FolderSaveReq) -> Result<String, String> {
         rev: 1,
     });
     folder.name = name.to_string();
+    if let Some(collapsed) = req.collapsed {
+        folder.collapsed = collapsed;
+    }
     if req.id.is_none() {
         folder.parent_id = req
             .parent_id
@@ -559,6 +565,55 @@ fn folder_save(req: FolderSaveReq) -> Result<String, String> {
     let id = folder.id.as_str().to_string();
     store.upsert_folder(&folder).map_err(|e| e.to_string())?;
     Ok(id)
+}
+
+/// 移动文件夹（`SES-013` 拖拽）。
+///
+/// **必须做环检测**：把 A 挪进 A/B 会让 A 变成自己的子孙，整棵子树从树上消失——
+/// 界面上看不出错，数据却已经坏了。
+#[tauri::command]
+fn folder_move(folder_id: String, parent_id: Option<String>) -> Result<(), String> {
+    let mut store = wt_store::Store::open(&sessions_db_path()).map_err(|e| e.to_string())?;
+    let snapshot = store.load_snapshot().map_err(|e| e.to_string())?;
+    let parent = parent_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    if parent.as_deref() == Some(folder_id.as_str()) {
+        return Err("[FOLDER_BAD_ARGUMENT] 不能把文件夹移到自己里面".into());
+    }
+    if let Some(parent) = &parent {
+        // 顺着 parent 往上走，遇到自己就说明目标是自己的子孙
+        let by_id: std::collections::HashMap<&str, &wt_core::Folder> =
+            snapshot.folders.iter().map(|f| (f.id.as_str(), f)).collect();
+        let mut cursor = Some(parent.clone());
+        let mut guard = 0;
+        while let Some(id) = cursor {
+            if id == folder_id {
+                return Err(format!(
+                    "[FOLDER_CYCLE] 不能把文件夹移到它自己的子文件夹「{parent}」里"
+                ));
+            }
+            guard += 1;
+            if guard > 64 {
+                return Err("[FOLDER_CYCLE] 文件夹层级异常（超过 64 层）".into());
+            }
+            cursor = by_id
+                .get(id.as_str())
+                .and_then(|f| f.parent_id.as_ref())
+                .map(|p| p.as_str().to_string());
+        }
+    }
+
+    let mut folder = snapshot
+        .folders
+        .into_iter()
+        .find(|f| f.id.as_str() == folder_id)
+        .ok_or_else(|| "[FOLDER_NOT_FOUND] 文件夹不存在（可能已被删除）".to_string())?;
+    folder.parent_id = parent.map(wt_core::FolderId::from);
+    store.upsert_folder(&folder).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// 把一条会话导出成 JSON（`SES-014`）。
@@ -2324,6 +2379,7 @@ fn main() {
             session_save,
             session_delete,
             folder_save,
+            folder_move,
             session_move,
             session_export
         ])
