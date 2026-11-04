@@ -15,7 +15,7 @@ fn target(port: u16) -> SshTarget {
         user: "tester".into(),
         auth: SshAuth::Password("secret".into()),
         insecure_host_key: true,
-        jump: None,
+        jumps: Vec::new(),
     }
 }
 

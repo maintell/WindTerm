@@ -15,21 +15,29 @@ use wt_ssh::testing::MockSshServer;
 
 /// 目标机 + 指向 mock A 的跳板机。
 fn target_via(jump_port: u16, target_port: u16) -> SshTarget {
+    target_via_hops(&[jump_port], target_port)
+}
+
+/// 多个跳板机（`SES-025`）：`jump_ports` 按「离本机由近到远」排列。
+fn target_via_hops(jump_ports: &[u16], target_port: u16) -> SshTarget {
     SshTarget {
         host: "127.0.0.1".into(),
         port: target_port,
         user: "tester".into(),
         auth: SshAuth::Password("secret".into()),
         insecure_host_key: true,
-        jump: Some(JumpTarget {
-            host: "127.0.0.1".into(),
-            port: jump_port,
-            user: "tester".into(),
-            // 跳板机的凭据是**自己一份**（结构上就没有「继承目标」这种写法）。
-            // mock 只认 tester/secret，所以值一样，但取值路径完全独立——
-            // `wrong_jump_credentials_name_the_jump_host` 就是拿这个做的判据。
-            auth: SshAuth::Password("secret".into()),
-        }),
+        jumps: jump_ports
+            .iter()
+            .map(|p| JumpTarget {
+                host: "127.0.0.1".into(),
+                port: *p,
+                user: "tester".into(),
+                // 跳板机的凭据是**自己一份**（结构上就没有「继承目标」这种写法）。
+                // mock 只认 tester/secret，所以值一样，但取值路径完全独立——
+                // `wrong_jump_credentials_name_the_jump_host` 就是拿这个做的判据。
+                auth: SshAuth::Password("secret".into()),
+            })
+            .collect(),
     }
 }
 
@@ -79,18 +87,59 @@ async fn wrong_jump_credentials_name_the_jump_host() {
     let target = MockSshServer::start().await;
 
     let mut t = target_via(jump.port, target.port);
-    if let Some(j) = t.jump.as_mut() {
+    if let Some(j) = t.jumps.first_mut() {
         j.auth = SshAuth::Password("wrong".into());
     }
 
     let mut out: Vec<u8> = Vec::new();
     let err = run_ssh_exec(&t, "whoami", &mut out).await.unwrap_err();
 
-    // 认证失败必须指向「跳板机」，否则用户会去目标机上找原因
-    assert!(err.contains("跳板机"), "实际错误: {err}");
+    // 认证失败必须指向**哪一跳**，否则用户会去目标机上找原因
+    assert!(err.contains("第 1 跳"), "实际错误: {err}");
     assert!(err.contains("SSH_AUTH_FAILED"), "实际错误: {err}");
     assert!(
         err.contains(&format!("127.0.0.1:{}", jump.port)),
         "错误里要有跳板机地址，实际: {err}"
+    );
+}
+
+#[tokio::test]
+async fn ssh_exec_goes_through_two_jump_hosts() {
+    // A → B → 目标（`SES-025`）：每一段都是真的 SSH 会话，
+    // mock 的 direct-tcpip 连的是真实 TCP，所以「两跳」不是模拟出来的
+    let jump_a = MockSshServer::start().await;
+    let jump_b = MockSshServer::start().await;
+    let target = MockSshServer::start().await;
+
+    let mut out: Vec<u8> = Vec::new();
+    let code = run_ssh_exec(
+        &target_via_hops(&[jump_a.port, jump_b.port], target.port),
+        "whoami",
+        &mut out,
+    )
+    .await
+    .expect("经两台跳板机执行应成功");
+
+    assert_eq!(code, 0);
+    let text = String::from_utf8_lossy(&out);
+    assert!(text.contains("ran:whoami"), "实际输出: {text:?}");
+}
+
+#[tokio::test]
+async fn second_jump_credentials_name_that_hop() {
+    let jump_a = MockSshServer::start().await;
+    let jump_b = MockSshServer::start().await;
+    let target = MockSshServer::start().await;
+
+    let mut t = target_via_hops(&[jump_a.port, jump_b.port], target.port);
+    // 第 2 跳的凭据错：错误必须落在第 2 跳，而不是目标
+    t.jumps[1].auth = SshAuth::Password("wrong".into());
+
+    let mut out: Vec<u8> = Vec::new();
+    let err = run_ssh_exec(&t, "whoami", &mut out).await.unwrap_err();
+    assert!(err.contains("第 2 跳"), "实际错误: {err}");
+    assert!(
+        err.contains(&format!("127.0.0.1:{}", jump_b.port)),
+        "错误里要有第 2 跳地址，实际: {err}"
     );
 }

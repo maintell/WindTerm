@@ -100,14 +100,11 @@ pub struct SshTarget {
     pub auth: SshAuth,
     /// 跳过 known_hosts 校验（危险，仅调试用）
     pub insecure_host_key: bool,
-    /// 跳板机（`G14`）。`None` 表示直连。
-    pub jump: Option<JumpTarget>,
+    /// 跳板机链（`G14` / `SES-025`）。按「离本机由近到远」排列，空数组表示直连。
+    pub jumps: Vec<JumpTarget>,
 }
 
-/// 跳板机（`G14`，单跳）。
-///
-/// 刻意只支持一层：多跳（`SES-025`）要先补 `StreamProvider` 抽象，
-/// 否则参数会变成「`--jump a --jump b` 谁在外谁在内」这种没法校验的形态。
+/// 一台跳板机。
 ///
 /// 它**自带**认证方式而不是复用目标的：`SES-024` 行为规格第 4 条要求凭据不继承，
 /// 跳板机与目标机往往是两套账号——继承只会让人在认证失败时找错方向。
@@ -187,13 +184,18 @@ fn parse_local(rest: &[String]) -> Result<Command, String> {
     })
 }
 
-/// `--jump` 一族参数的暂存区（`G14`）。
+/// 跳板机最多几跳。与 `wt_core::Session::validate_jump_chain` 的上限保持一致，
+/// 免得界面能存 5 跳、命令行却只认 3 跳。
+const MAX_JUMPS: usize = 5;
+
+/// `--jump` 一族参数的暂存区（`G14` / `SES-025`）。
 ///
 /// 先攒再算，是因为「给了 `--jump-password` 却没给 `--jump`」这种半截配置
 /// 必须在解析期就报错——静默忽略会让人以为跳板机配上了，实际在直连。
 #[derive(Default)]
 struct JumpArgs {
-    spec: Option<String>,
+    /// 可重复：按「离本机由近到远」排列
+    specs: Vec<String>,
     password: Option<String>,
     key: Option<std::path::PathBuf>,
     passphrase: Option<String>,
@@ -205,7 +207,7 @@ impl JumpArgs {
     fn take(&mut self, args: &[String], i: usize) -> Result<Option<usize>, String> {
         match args[i].as_str() {
             "--jump" | "-J" => {
-                self.spec = Some(need(args, i, "--jump")?);
+                self.specs.push(need(args, i, "--jump")?);
                 Ok(Some(2))
             }
             "--jump-password" => {
@@ -228,18 +230,26 @@ impl JumpArgs {
         }
     }
 
-    /// 收尾校验，产出跳板机描述。
-    fn finish(self) -> Result<Option<JumpTarget>, String> {
-        let Some(spec) = self.spec else {
+    /// 收尾校验，产出跳板机链（`SES-025` 最多 5 跳，与 `wt_core` 的校验保持一致）。
+    ///
+    /// 凭据只给一套、全链共用：命令行上逐跳配不同口令会让参数含义变得难猜，
+    /// 真正需要逐跳不同凭据时先别用 CLI（界面侧按会话各存各的）。
+    fn finish(self) -> Result<Vec<JumpTarget>, String> {
+        if self.specs.is_empty() {
             if self.password.is_some() || self.key.is_some() || self.agent {
                 return Err("给了跳板机的凭据（--jump-password / --jump-key / --jump-agent）\
                     但没给 --jump：跳板机是哪一台？"
                     .into());
             }
-            return Ok(None);
-        };
+            return Ok(Vec::new());
+        }
+        if self.specs.len() > MAX_JUMPS {
+            return Err(format!(
+                "--jump 最多 {MAX_JUMPS} 跳，收到 {} 个",
+                self.specs.len()
+            ));
+        }
 
-        let (user, host, port) = parse_jump_spec(&spec)?;
         let auth = match (self.agent, self.key, self.password) {
             (true, _, _) => SshAuth::Agent,
             (false, Some(path), _) => SshAuth::Key {
@@ -248,18 +258,23 @@ impl JumpArgs {
             },
             (false, None, Some(pw)) => SshAuth::Password(pw),
             (false, None, None) => {
-                return Err(format!(
-                    "跳板机 {host} 需要自己的认证方式：--jump-password、--jump-key 或 --jump-agent\
+                return Err("跳板机需要自己的认证方式：--jump-password、--jump-key 或 --jump-agent\
                      （跳板机的凭据不继承目标机的）"
-                ))
+                    .into())
             }
         };
-        Ok(Some(JumpTarget {
-            host,
-            port,
-            user,
-            auth,
-        }))
+
+        let mut hops = Vec::with_capacity(self.specs.len());
+        for spec in &self.specs {
+            let (user, host, port) = parse_jump_spec(spec)?;
+            hops.push(JumpTarget {
+                host,
+                port,
+                user,
+                auth: auth.clone(),
+            });
+        }
+        Ok(hops)
     }
 }
 
@@ -407,7 +422,7 @@ fn parse_ssh(rest: &[String]) -> Result<Command, String> {
         user: user.ok_or_else(|| "缺少 --user".to_string())?,
         auth,
         insecure_host_key: insecure,
-        jump: jump.finish()?,
+        jumps: jump.finish()?,
     };
 
     if sub == "shell" {
@@ -540,7 +555,7 @@ fn parse_sftp(rest: &[String]) -> Result<Command, String> {
             user: user.ok_or_else(|| "缺少 --user".to_string())?,
             auth,
             insecure_host_key: insecure,
-            jump: jump.finish()?,
+            jumps: jump.finish()?,
         },
         action,
     })
@@ -810,27 +825,13 @@ fn host_key_policy(target: &SshTarget) -> wt_ssh::HostKeyPolicy {
     wt_ssh::HostKeyPolicy::Known(Box::new(kh))
 }
 
-/// 在一条**直连**的传输层上完成认证。
-async fn connect_direct(
-    cfg: &wt_ssh::SshConfig,
-    auth: &PreparedAuth,
-    policy: wt_ssh::HostKeyPolicy,
-) -> Result<wt_ssh::SshConnection, String> {
-    use wt_ssh::SshConnection;
-    match auth {
-        PreparedAuth::Password(pw) => SshConnection::connect_password(cfg, pw, policy).await,
-        PreparedAuth::Key(src) => SshConnection::connect_publickey(cfg, src, policy).await,
-        PreparedAuth::Agent => SshConnection::connect_agent(cfg, policy).await,
-    }
-    .map_err(|e| e.to_string())
-}
 
-/// 按 `SshTarget` 建连（密码 / 私钥 / agent），有跳板机时走两跳。
+/// 按 `SshTarget` 建连（密码 / 私钥 / agent），有跳板机时逐跳穿透（`SES-025`）。
 ///
 /// `ssh exec`、`ssh shell` 与 `sftp` 共用：三处各写一遍迟早会出现
 /// 「一个校验主机密钥、一个不校验」或「一个走跳板、一个忘了走」。
 async fn connect_target(target: &SshTarget) -> Result<wt_ssh::SshConnection, String> {
-    use wt_ssh::SshConfig;
+    use wt_ssh::{Hop, SshConfig};
 
     let cfg = SshConfig {
         host: target.host.clone(),
@@ -838,28 +839,30 @@ async fn connect_target(target: &SshTarget) -> Result<wt_ssh::SshConnection, Str
         user: target.user.clone(),
         ..Default::default()
     };
+    // 认证参数的预处理结果要活到握手结束，所以先各准备一份再借用
+    let mut prepared = Vec::with_capacity(target.jumps.len() + 1);
+    for jump in &target.jumps {
+        prepared.push(PreparedAuth::load(&jump.auth)?);
+    }
     let auth = PreparedAuth::load(&target.auth)?;
 
-    let Some(jump) = &target.jump else {
-        return connect_direct(&cfg, &auth, host_key_policy(target)).await;
-    };
+    let hooks: Vec<Hop<'_>> = target
+        .jumps
+        .iter()
+        .zip(&prepared)
+        .map(|(jump, a)| Hop {
+            cfg: SshConfig {
+                host: jump.host.clone(),
+                port: jump.port,
+                user: jump.user.clone(),
+                ..Default::default()
+            },
+            auth: a.as_auth(),
+        })
+        .collect();
 
-    let jump_cfg = SshConfig {
-        host: jump.host.clone(),
-        port: jump.port,
-        user: jump.user.clone(),
-        ..Default::default()
-    };
-    let jump_link = format!("{}:{}", jump_cfg.host, jump_cfg.port);
-    let jump_auth = PreparedAuth::load(&jump.auth)?;
-    // 跳板机自己的主机密钥也照同一套策略校验：不因为「它只是路过」就放宽
-    let jump_conn = connect_direct(&jump_cfg, &jump_auth, host_key_policy(target))
-        .await
-        .map_err(|e| format!("跳板机 {jump_link} 建连失败：{e}"))?;
-
-    // 第 2 跳：让跳板机开一条到目标的 direct-tcpip，在它上面做第二次 SSH 握手。
-    // 目标主机名由**跳板机侧**解析，本机不需要能访问它。
-    wt_ssh::connect_via(&jump_conn, &jump_link, &cfg, &auth.as_auth(), host_key_policy(target))
+    // 每跳各自校验主机密钥：不因为「它只是路过」就放宽
+    wt_ssh::connect_chain(&hooks, &cfg, &auth.as_auth(), host_key_policy(target))
         .await
         .map_err(|e| e.to_string())
 }
@@ -1487,7 +1490,7 @@ mod ssh_tests {
             user: "tester".into(),
             auth: SshAuth::Password("secret".into()),
             insecure_host_key: true,
-            jump: None,
+            jumps: Vec::new(),
         };
 
         let mut out: Vec<u8> = Vec::new();
@@ -1509,7 +1512,7 @@ mod ssh_tests {
             user: "tester".into(),
             auth: SshAuth::Password("wrong".into()),
             insecure_host_key: true,
-            jump: None,
+            jumps: Vec::new(),
         };
 
         let mut out: Vec<u8> = Vec::new();
@@ -1533,7 +1536,7 @@ mod ssh_tests {
                 passphrase: None,
             },
             insecure_host_key: true,
-            jump: None,
+            jumps: Vec::new(),
         };
 
         let mut out: Vec<u8> = Vec::new();
@@ -1558,7 +1561,7 @@ mod ssh_tests {
         let Command::SshExec { target, .. } = cmd else {
             panic!("应解析成 ssh exec");
         };
-        let jump = target.jump.expect("应带跳板机");
+        let jump = target.jumps.into_iter().next().expect("应带跳板机");
         assert_eq!(jump.host, "bastion");
         assert_eq!(jump.port, 2222);
         assert_eq!(jump.user, "admin");
@@ -1577,7 +1580,7 @@ mod ssh_tests {
         let Command::SshShell { target } = cmd else {
             panic!("应解析成 ssh shell");
         };
-        let jump = target.jump.expect("应带跳板机");
+        let jump = target.jumps.into_iter().next().expect("应带跳板机");
         assert_eq!((jump.host.as_str(), jump.port), ("b", 22));
         assert_eq!(jump.auth, SshAuth::Agent);
     }
@@ -1592,7 +1595,7 @@ mod ssh_tests {
         let Command::Sftp { target, .. } = cmd else {
             panic!("应解析成 sftp");
         };
-        let jump = target.jump.expect("sftp 也应带跳板机");
+        let jump = target.jumps.into_iter().next().expect("sftp 也应带跳板机");
         assert_eq!(jump.auth, SshAuth::Key {
             path: std::path::PathBuf::from("C:/k/id_ed25519"),
             passphrase: None,
@@ -1641,8 +1644,38 @@ mod ssh_tests {
         let Command::SshExec { target, .. } = cmd else {
             panic!("应解析成 ssh exec");
         };
-        let jump = target.jump.expect("应带跳板机");
+        let jump = target.jumps.into_iter().next().expect("应带跳板机");
         assert_eq!((jump.host.as_str(), jump.port), ("::1", 2200));
+    }
+
+    #[test]
+    fn parses_multiple_jumps_in_order() {
+        // `--jump` 可重复，顺序按「离本机由近到远」（`SES-025`）
+        let cmd = parse(&s(&[
+            "ssh", "exec", "--host", "t", "--user", "u", "--password", "p",
+            "--jump", "a@j1", "--jump", "a@j2:2200", "--jump-password", "jp", "--", "x",
+        ]))
+        .unwrap();
+        let Command::SshExec { target, .. } = cmd else {
+            panic!("应解析成 ssh exec");
+        };
+        assert_eq!(target.jumps.len(), 2);
+        assert_eq!((target.jumps[0].host.as_str(), target.jumps[0].port), ("j1", 22));
+        assert_eq!((target.jumps[1].host.as_str(), target.jumps[1].port), ("j2", 2200));
+    }
+
+    #[test]
+    fn rejects_more_than_five_jumps() {
+        // 与 wt_core 的上限保持一致：界面存得下 5 跳，命令行也不能更少
+        let mut argv = s(&["ssh", "exec", "--host", "t", "--user", "u", "--password", "p"]);
+        for i in 0..6 {
+            argv.push("--jump".into());
+            argv.push(format!("a@j{i}"));
+        }
+        argv.push("--jump-password".into());
+        argv.push("jp".into());
+        let err = parse(&argv).unwrap_err();
+        assert!(err.contains("最多 5 跳"), "实际: {err}");
     }
 
     #[test]

@@ -33,7 +33,7 @@ pub use forward::{
     exposes_to_lan, start_local, start_local_limited, start_remote, start_socks5,
     start_socks5_limited, ForwardStats, LocalForward, MAX_PER_TUNNEL, RemoteForward,
 };
-pub use jump::connect_via;
+pub use jump::{connect_chain, connect_via, Hop};
 pub use sftp::{RemoteEntry, SftpClient, SftpWriter};
 pub use term::{Keepalive, SshTermSession};
 pub use known_hosts::{

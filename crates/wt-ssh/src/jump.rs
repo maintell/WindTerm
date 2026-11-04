@@ -40,38 +40,97 @@ pub async fn connect_via(
     target_auth: &Auth<'_>,
     policy: HostKeyPolicy,
 ) -> Result<SshConnection, WtError> {
-    let target_link = format!("{}:{}", target.host, target.port);
+    hop_to(jump, 1, jump_link, target, target_auth, policy).await
+}
 
-    // 第 1 跳已经在线；这里要它开一条到目标的通道。失败发生在跳板机上。
-    let stream = match jump
-        .open_direct_tcpip_channel(&target.host, target.port, "127.0.0.1", 0)
-        .await
-    {
-        Ok(s) => s,
-        Err(russh::Error::ChannelOpenFailure(russh::ChannelOpenFailure::AdministrativelyProhibited)) => {
-            return Err(WtError::new(codes::SSH_FORWARD_DENIED).message(format!(
-                "第 1 跳（{jump_link}）禁止 TCP 转发（AllowTcpForwarding no），无法通过它连接 {target_link}"
-            )));
-        }
-        Err(e) => {
-            return Err(with_hop(
-                WtError::new(codes::TUN_CHANNEL_FAILED)
-                    .message(format!("无法从跳板机连接到 {target_link}"))
-                    .detail(e.to_string())
-                    .hint(
-                        "目标主机名由**跳板机侧**解析；确认跳板机能访问该地址与端口",
-                        HintAction::None,
-                    ),
-                1,
-                jump_link,
-            ));
-        }
+/// 一跳：怎么连它 + 它自己的凭据（`SES-025` 多跳）。
+///
+/// 凭据逐跳分开写，不做「继承上一跳」的默认——跳板机链上每台的账号往往不同，
+/// 猜错的代价是报错指向错误的机器（`SES-024` 行为规格第 4 条）。
+pub struct Hop<'a> {
+    pub cfg: SshConfig,
+    pub auth: Auth<'a>,
+}
+
+/// 经一串跳板机连接目标（`SES-025`）。
+///
+/// `hops` 按「离客户端由近到远」排列：`hops[0]` 是本机直连的那台，
+/// `hops.last()` 是目标的直接上一跳。空数组等于直连目标。
+///
+/// 每一跳都是**真的 SSH 会话**：上一跳开 `direct-tcpip` 到下一跳，在这条通道上
+/// 再做一次完整握手与认证。所以沿途每台机器都只看到「它的上一跳」，
+/// 这是 `SES-024` AC-1 要的现象，也是它比「本地 -L 逐段转发」更正确的地方——
+/// 后者会让主机密钥校验、agent 转发、审计全部错位。
+pub async fn connect_chain(
+    hops: &[Hop<'_>],
+    target: &SshConfig,
+    target_auth: &Auth<'_>,
+    policy: HostKeyPolicy,
+) -> Result<SshConnection, WtError> {
+    let Some((first, rest)) = hops.split_first() else {
+        // 没有跳板机就是直连：调用方不必自己分支
+        return SshConnection::connect(target, target_auth, policy).await;
     };
 
-    // 第 2 跳：在通道上做真正的 SSH 握手与认证
-    SshConnection::connect_over(stream, target, target_auth, policy)
+    let mut link = format!("{}:{}", first.cfg.host, first.cfg.port);
+    // 第 1 跳由本机直接建连（它自己也是一台要认证的机器）
+    let mut conn = SshConnection::connect(&first.cfg, &first.auth, policy.clone())
         .await
-        .map_err(|e| with_hop(e, 2, &target_link))
+        .map_err(|e| with_hop(e, 1, &link))?;
+
+    for (i, hop) in rest.iter().enumerate() {
+        let next_link = format!("{}:{}", hop.cfg.host, hop.cfg.port);
+        // 上一跳把 TCP 打到下一跳，第 i+2 跳就在这条通道上握手
+        conn = hop_to(&conn, i + 1, &link, &hop.cfg, &hop.auth, policy.clone()).await?;
+        link = next_link;
+    }
+
+    // 最后一段：从最后一跳连到目标
+    hop_to(&conn, hops.len(), &link, target, target_auth, policy).await
+}
+
+/// 从 `from` 这台（第 `from_hop` 跳）开通道到 `to`，并在通道上完成握手与认证。
+///
+/// 抽出来是为了让单跳（`connect_via`）与多跳（`connect_chain`）共用同一段：
+/// 两处各写一遍，错误文案与跳号迟早会分叉。
+async fn hop_to(
+    from: &SshConnection,
+    from_hop: usize,
+    from_link: &str,
+    to: &SshConfig,
+    to_auth: &Auth<'_>,
+    policy: HostKeyPolicy,
+) -> Result<SshConnection, WtError> {
+    let to_link = format!("{}:{}", to.host, to.port);
+    let stream = from
+        .open_direct_tcpip_channel(&to.host, to.port, "127.0.0.1", 0)
+        .await
+        .map_err(|e| forward_error(e, from_hop, from_link, &to_link))?;
+    SshConnection::connect_over(stream, to, to_auth, policy)
+        .await
+        .map_err(|e| with_hop(e, from_hop + 1, &to_link))
+}
+
+/// 「从这一跳到下一跳打不通」的错误：受管跳禁止转发要点名 `AllowTcpForwarding`。
+fn forward_error(e: russh::Error, hop: usize, from_link: &str, to_link: &str) -> WtError {
+    match e {
+        russh::Error::ChannelOpenFailure(russh::ChannelOpenFailure::AdministrativelyProhibited) => {
+            WtError::new(codes::SSH_FORWARD_DENIED).message(format!(
+                "第 {hop} 跳（{from_link}）禁止 TCP 转发（AllowTcpForwarding no），无法通过它连接 {to_link}"
+            ))
+        }
+        other => with_hop(
+            WtError::new(codes::TUN_CHANNEL_FAILED)
+                .message(format!("无法从跳板机连接到 {to_link}"))
+                .detail(other.to_string())
+                .hint(
+                    "目标主机名由**跳板机侧**解析；确认跳板机能访问该地址与端口",
+                    HintAction::None,
+                ),
+            hop,
+            from_link,
+        ),
+    }
 }
 
 #[cfg(test)]
