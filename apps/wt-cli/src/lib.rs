@@ -885,8 +885,6 @@ async fn connect_target(target: &SshTarget) -> Result<wt_ssh::SshConnection, Str
 /// Ctrl+C 不在这里处理——它作为 `0x03` 发给远端，由远端的 shell 决定含义，
 /// 这才是终端该有的行为。
 pub async fn run_ssh_shell(target: &SshTarget) -> Result<(), String> {
-    use std::io::{Read, Write};
-
     let conn = connect_target(target).await?;
 
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
@@ -900,13 +898,35 @@ pub async fn run_ssh_shell(target: &SshTarget) -> Result<(), String> {
     // 无论怎么退出都要恢复终端，否则用户的 shell 会留在 raw 模式里
     let _guard = RawModeGuard;
 
-    // stdin 读取是阻塞的，放独立线程；主循环只管 select
+    let mut out = std::io::stdout();
+    let result = pump_shell(&mut channel, Box::new(std::io::stdin()), &mut out).await;
+
+    // 恢复终端后再断开，让最后的输出正常落到屏幕上
+    drop(_guard);
+    conn.disconnect().await;
+    result
+}
+
+/// shell 通道的双向泵：本端输入 → 远端，远端输出 → 本端。
+///
+/// 抽出来是为了**能测**：`run_ssh_shell` 还要接管本机终端（raw 模式、窗口尺寸），
+/// 那部分在自动化环境里跑不了；而「字节有没有真的过去、回来、有没有丢尾巴」是纯逻辑。
+///
+/// 输入读到 EOF 时**先告诉远端**（`Ctrl+D`）再继续收输出。直接 break 会把远端
+/// 最后吐的那几行丢掉——退出时看不到结果，比卡住还难查。
+pub async fn pump_shell(
+    channel: &mut wt_ssh::SshChannel,
+    mut input: Box<dyn std::io::Read + Send>,
+    out: &mut dyn std::io::Write,
+) -> Result<(), String> {
+    use std::io::Read;
+
+    // 输入读取是阻塞的，放独立线程；主循环只管 select
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
     std::thread::spawn(move || {
-        let mut stdin = std::io::stdin();
         let mut buf = [0u8; 4096];
         loop {
-            match stdin.read(&mut buf) {
+            match input.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     if tx.blocking_send(buf[..n].to_vec()).is_err() {
@@ -917,17 +937,21 @@ pub async fn run_ssh_shell(target: &SshTarget) -> Result<(), String> {
         }
     });
 
-    let mut out = std::io::stdout();
+    let mut input_open = true;
     loop {
         tokio::select! {
-            input = rx.recv() => {
+            input = rx.recv(), if input_open => {
                 match input {
                     Some(bytes) => {
                         if channel.write(&bytes).await.is_err() {
                             break;
                         }
                     }
-                    None => break,
+                    None => {
+                        // 本端不再输入：告诉远端，然后专心收它的输出
+                        input_open = false;
+                        let _ = channel.eof().await;
+                    }
                 }
             }
             msg = channel.next() => {
@@ -945,10 +969,6 @@ pub async fn run_ssh_shell(target: &SshTarget) -> Result<(), String> {
             }
         }
     }
-
-    // 恢复终端后再断开，让最后的输出正常落到屏幕上
-    drop(_guard);
-    conn.disconnect().await;
     Ok(())
 }
 
@@ -1550,6 +1570,40 @@ mod ssh_tests {
     // ─────────────────────────────────────────────────────────
     // `--jump`（`G14`）
     // ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn shell_pump_sends_input_and_keeps_the_tail() {
+        // `wt ssh shell` 的交互部分要接管本机终端（raw 模式），自动化里跑不了；
+        // 但「键入了什么、远端回了什么」是纯逻辑，这里用内存输入输出验一遍。
+        let server = wt_ssh::testing::MockSshServer::start().await;
+        let target = SshTarget {
+            host: "127.0.0.1".into(),
+            port: server.port,
+            user: "tester".into(),
+            auth: SshAuth::Password("secret".into()),
+            insecure_host_key: true,
+            jumps: Vec::new(),
+        };
+        let conn = connect_target(&target).await.expect("建连");
+        let mut channel = conn
+            .open_shell("xterm-256color", 80, 24)
+            .await
+            .expect("开 shell");
+
+        let mut out: Vec<u8> = Vec::new();
+        // 输入以 EOF 结束：泵必须先把 EOF 告诉远端，再把它最后的输出收完
+        let input = Box::new(std::io::Cursor::new(b"hello\n".to_vec()));
+        pump_shell(&mut channel, input, &mut out)
+            .await
+            .expect("泵应正常收尾");
+
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.contains("WELCOME"), "少了服务端横幅：{text:?}");
+        assert!(
+            text.contains("echo:hello"),
+            "输入没有真的过去，或回显被 EOF 之后丢掉了：{text:?}"
+        );
+    }
 
     #[test]
     fn parses_jump_into_the_target() {

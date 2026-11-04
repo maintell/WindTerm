@@ -469,6 +469,17 @@ impl russh::server::Handler for MockHandler {
         Ok(())
     }
 
+    async fn channel_eof(
+        &mut self,
+        channel: ChannelId,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        // 客户端说「不再输入了」（`Ctrl+D`）：真实 sshd 会让会话收尾退出，
+        // 这里直接关通道，客户端的主循环才能结束（否则它会一直等下去）
+        session.close(channel)?;
+        Ok(())
+    }
+
     async fn exec_request(
         &mut self,
         channel: ChannelId,

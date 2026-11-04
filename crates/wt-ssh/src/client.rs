@@ -804,6 +804,14 @@ impl SshChannel {
             .map_err(map_channel_error)
     }
 
+    /// 告诉远端「本端不会再来数据了」（用户按 `Ctrl+D`）。
+    ///
+    /// 少了这一步，关掉本端 stdin 只等于**本端**停手，远端仍以为会话还在：
+    /// 它最后吐出来的输出会被一起丢掉，用户看到的是「退出时什么都没打印」。
+    pub async fn eof(&self) -> Result<(), WtError> {
+        self.inner.eof().await.map_err(map_channel_error)
+    }
+
     /// 读下一条消息。返回 `None` 表示通道关闭。
     pub async fn next(&mut self) -> Option<ChannelData> {
         loop {
