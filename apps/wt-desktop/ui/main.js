@@ -1121,7 +1121,17 @@ function sftpReq() {
   };
 }
 
+/**
+ * 最近一次列目录请求的序号。
+ *
+ * 切会话 / 换目录会各发一次请求，它们的返回顺序**不保证**：旧请求晚到会把
+ * 新视图覆盖掉（表现为「明明切到好会话了，却显示上一个端口连不上」）。
+ * 只让最新那一次写界面。
+ */
+let filesGen = 0;
+
 async function loadDir(path) {
+  const gen = ++filesGen;
   setFilesMsg("读取中…");
   // 换目录后旧选中项已经不属于当前列表
   clearSelection();
@@ -1133,6 +1143,8 @@ async function loadDir(path) {
       20000,
       "列目录",
     );
+    // 期间又换过目录或会话：这份结果已经过期，写进去就是覆盖正确视图
+    if (gen !== filesGen) return;
     sftpPath = r.path || path;
     // 每个会话各自记住浏览位置：切换会话回来还在原处
     filesPaths.set(filesSessionId, sftpPath);
@@ -1166,6 +1178,8 @@ async function loadDir(path) {
     }
     setFilesMsg("");
   } catch (e) {
+    // 旧请求的失败同样不该覆盖新视图
+    if (gen !== filesGen) return;
     filesList.textContent = "";
     setFilesMsg(`列目录失败：${e}`);
   }
@@ -1497,6 +1511,8 @@ const tunnelTarget = document.getElementById("tunnel-target");
 const tunnelLan = document.getElementById("tunnel-lan");
 const tunnelSocksUser = document.getElementById("tunnel-socks-user");
 const tunnelSocksPass = document.getElementById("tunnel-socks-pass");
+const tunnelAuto = document.getElementById("tunnel-auto");
+const tunnelAutoRow = document.getElementById("tunnel-auto-row");
 const tunnelAdd = document.getElementById("tunnel-add");
 
 /** 最近一次取到的隧道状态（验收与脚本读它，避免去解析 DOM 文本） */
@@ -1519,82 +1535,121 @@ function formatBytes(n) {
   return `${v.toFixed(1)} ${units[i]}`;
 }
 
+/**
+ * 每条隧道对应的 DOM 节点。
+ *
+ * **必须复用，不能每次整表重建**：统计每秒刷新一次，重建意味着按钮每秒被换成
+ * 新节点——鼠标悬停会闪，点击落在「重建的那一帧」就落空（验收里删掉隧道删不掉
+ * 就是这么来的，而且从面板提示看不出任何异常）。
+ */
+const tunnelNodes = new Map();
+
+/** 建一行（只在第一次见到这条隧道时调用）。事件里读 `lastTunnels`，避免闭包持有旧状态 */
+function buildTunnelRow(id) {
+  const box = document.createElement("div");
+  box.className = "tunnel";
+  box.dataset.id = id;
+  const line1 = document.createElement("div");
+  line1.className = "line1";
+  const dot = document.createElement("span");
+  dot.className = "dot";
+  dot.textContent = "●";
+  const route = document.createElement("span");
+  const startBtn = document.createElement("button");
+  startBtn.addEventListener("click", () => {
+    const cur = lastTunnels.find((x) => x.id === id);
+    if (!cur) return;
+    if (cur.running) void stopTunnel(cur.id);
+    else void startSavedTunnel(cur.id);
+  });
+  const delBtn = document.createElement("button");
+  delBtn.textContent = "删除";
+  delBtn.addEventListener("click", () => void deleteTunnel(id));
+  line1.append(dot, route, startBtn, delBtn);
+  const line2 = document.createElement("div");
+  line2.className = "line2";
+  box.append(line1, line2);
+  return { box, dot, route, startBtn, delBtn, line2 };
+}
+
+/** 把一条隧道的最新状态画到它已有的节点上 */
+function paintTunnelRow(n, t) {
+  if (!t.running) {
+    // 灰灯：配置在库里，但当前没跑
+    n.dot.style.color = "#8a8a92";
+    n.dot.title = "已停止";
+  } else if (t.last_error) {
+    // 有上次错误就变红：承载连接断了以后监听还在，但每个连接都会失败，
+    // 这时候继续显示绿灯等于骗人
+    n.dot.style.color = "#e5534b";
+    n.dot.title = `最近一次转发失败：${t.last_error}`;
+  } else {
+    n.dot.style.color = "";
+    n.dot.title = "运行中";
+  }
+  // 动态代理没有固定目标：路由由客户端每次请求决定
+  n.route.textContent =
+    t.kind === "D" ? `${t.kind} ${t.listen}` : `${t.kind} ${t.listen} → ${t.target}`;
+  n.route.title = t.name ? `${t.name}（via ${t.via || "手填参数"}）` : "";
+  n.startBtn.textContent = t.running ? "停止" : "启动";
+  n.startBtn.title = t.running ? `停止 ${t.listen}` : `用保存的配置启动 ${t.listen}`;
+  n.delBtn.title = `删除 ${t.listen}`;
+  if (!t.running) {
+    // autoStart 必须在**停止**状态下也看得见，否则「我明明勾了」只能靠记忆
+    n.line2.textContent = t.auto_start
+      ? "未运行 · 配置已保存 · 解锁保险库后自动拉起"
+      : "未运行 · 配置已保存";
+    n.line2.title = "";
+  } else {
+    const parts = [
+      `${t.active} 连接`,
+      `累计 ${t.total}`,
+      `↑${formatBytes(t.up_bytes)} ↓${formatBytes(t.down_bytes)}`,
+      `via ${t.via}`,
+    ];
+    // 被拒的连接要单独说出来：看到「拒绝 30」才知道是撞上限，而不是网络抖
+    if (t.rejected) parts.push(`拒绝 ${t.rejected}`);
+    if (t.auto_start) parts.push("自动拉起");
+    if (t.last_error) parts.push(`上次错误：${t.last_error}`);
+    n.line2.textContent = parts.join(" · ");
+    n.line2.title = t.last_error ?? "";
+  }
+}
+
 function renderTunnels(rows) {
   lastTunnels = rows;
-  tunnelList.textContent = "";
+  const alive = new Set(rows.map((r) => r.id));
+  // 已经不在列表里的隧道（或空状态占位）先摘掉
+  for (const [id, n] of tunnelNodes) {
+    if (!alive.has(id)) {
+      n.box.remove();
+      tunnelNodes.delete(id);
+    }
+  }
+  for (const el of [...tunnelList.children]) {
+    if (!el.dataset.id) el.remove();
+  }
   if (!rows.length) {
     const empty = document.createElement("div");
     empty.className = "tunnel";
+    empty.dataset.empty = "1";
     // 空状态要说清「这东西解决什么问题」，否则用户不知道要不要建
     empty.textContent =
       "还没有隧道。隧道把远端端口映射到本地，用来连只允许从服务器访问的服务（数据库、Redis 等）。";
     tunnelList.appendChild(empty);
     return;
   }
-  for (const t of rows) {
-    const box = document.createElement("div");
-    box.className = "tunnel";
-
-    const line1 = document.createElement("div");
-    line1.className = "line1";
-    const dot = document.createElement("span");
-    dot.className = "dot";
-    dot.textContent = "●";
-    if (!t.running) {
-      // 灰灯：配置在库里，但当前没跑
-      dot.style.color = "#8a8a92";
-      dot.title = "已停止";
-    } else if (t.last_error) {
-      // 有上次错误就变红：承载连接断了以后监听还在，但每个连接都会失败，
-      // 这时候继续显示绿灯等于骗人
-      dot.style.color = "#e5534b";
-      dot.title = `最近一次转发失败：${t.last_error}`;
-    } else {
-      dot.title = "运行中";
+  rows.forEach((t, i) => {
+    let n = tunnelNodes.get(t.id);
+    if (!n) {
+      n = buildTunnelRow(t.id);
+      tunnelNodes.set(t.id, n);
     }
-    const route = document.createElement("span");
-    // 动态代理没有固定目标：路由由客户端每次请求决定
-    route.textContent =
-      t.kind === "D" ? `${t.kind} ${t.listen}` : `${t.kind} ${t.listen} → ${t.target}`;
-    route.title = t.name ? `${t.name}（via ${t.via || "手填参数"}）` : "";
-    line1.append(dot, route);
-
-    const startBtn = document.createElement("button");
-    startBtn.textContent = t.running ? "停止" : "启动";
-    startBtn.title = t.running ? `停止 ${t.listen}` : `用保存的配置启动 ${t.listen}`;
-    startBtn.addEventListener("click", () =>
-      t.running ? void stopTunnel(t.id) : void startSavedTunnel(t.id),
-    );
-    line1.append(startBtn);
-
-    const delBtn = document.createElement("button");
-    delBtn.textContent = "删除";
-    delBtn.title = `删除 ${t.listen}`;
-    delBtn.addEventListener("click", () => void deleteTunnel(t.id));
-    line1.append(delBtn);
-
-    const line2 = document.createElement("div");
-    line2.className = "line2";
-    if (!t.running) {
-      line2.textContent = "未运行 · 配置已保存";
-      line2.title = "";
-    } else {
-      const parts = [
-        `${t.active} 连接`,
-        `累计 ${t.total}`,
-        `↑${formatBytes(t.up_bytes)} ↓${formatBytes(t.down_bytes)}`,
-        `via ${t.via}`,
-      ];
-      // 被拒的连接要单独说出来：看到「拒绝 30」才知道是撞上限，而不是网络抖
-      if (t.rejected) parts.push(`拒绝 ${t.rejected}`);
-      if (t.last_error) parts.push(`上次错误：${t.last_error}`);
-      line2.textContent = parts.join(" · ");
-      line2.title = t.last_error ?? "";
+    paintTunnelRow(n, t);
+    if (tunnelList.children[i] !== n.box) {
+      tunnelList.insertBefore(n.box, tunnelList.children[i] ?? null);
     }
-
-    box.append(line1, line2);
-    tunnelList.appendChild(box);
-  }
+  });
 }
 
 /** 刷新「承载会话」下拉（只有 SSH 能承载隧道）。 */
@@ -1698,6 +1753,7 @@ async function startTunnel() {
           // 只有动态代理才带代理认证；其它类型后端会拒绝
           socksUser: dynamic ? tunnelSocksUser.value.trim() || null : null,
           socksPassword: dynamic ? tunnelSocksPass.value || null : null,
+          autoStart: tunnelAuto.checked,
           viaSessionId: tunnelSessionSelect.value || null,
           jump: jumpReq(),
         },
@@ -1732,9 +1788,27 @@ function syncTunnelKind() {
       ? "本机目标 host:port"
       : "目标主机:端口";
   if (dynamic) tunnelTarget.value = "";
+  syncTunnelPersistable();
+}
+
+/**
+ * 带代理认证的隧道不落库（口令不写配置库），所以「自动拉起」对它没意义——
+ * 库里没有可拉起的配置。这里直接禁用并说明原因，而不是留个勾了也不生效的控件。
+ */
+function syncTunnelPersistable() {
+  const auth = tunnelSocksUser.value.trim() !== "" || tunnelSocksPass.value !== "";
+  const blocked = !tunnelSocksUser.hidden && auth;
+  tunnelAuto.disabled = blocked;
+  tunnelAutoRow.classList.toggle("disabled", blocked);
+  tunnelAutoRow.title = blocked
+    ? "带代理认证的隧道不保存配置（口令不写盘），重启后无法自动拉起"
+    : "解锁保险库后自动把它拉起来（承载会话的密码要存在保险库里）";
+  if (blocked) tunnelAuto.checked = false;
 }
 
 tunnelKind.addEventListener("change", syncTunnelKind);
+tunnelSocksUser.addEventListener("input", syncTunnelPersistable);
+tunnelSocksPass.addEventListener("input", syncTunnelPersistable);
 
 function syncTunnelTimer() {
   if (tunnelTimer !== null) {
@@ -1960,7 +2034,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-22",
+  ui: "wt-ui-25",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";

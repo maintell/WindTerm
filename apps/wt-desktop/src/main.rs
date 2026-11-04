@@ -93,6 +93,9 @@ struct TunnelMeta {
     via: String,
     /// 配置是否已落库（带代理认证的隧道不落库）
     persisted: bool,
+    /// 解锁保险库后是否自动拉起（`NET-005`）。**没落库的隧道这个值没意义**，
+    /// 所以它跟着 `persisted` 一起为 `false`
+    auto_start: bool,
 }
 
 /// 前端拉取单次上限：64 KB（`design/02` §5.2）。
@@ -1279,6 +1282,9 @@ struct TunnelDto {
     /// 配置是否落库。带 SOCKS5 认证的隧道**不落库**（凭据不写配置文件），
     /// 界面据此说明「重启后要重填」
     persisted: bool,
+    /// 解锁保险库后是否自动拉起。停止状态下界面也要显示它，
+    /// 否则「我明明勾了」只能靠记忆（`NET-005`）
+    auto_start: bool,
     active: usize,
     total: usize,
     /// 因为超过并发上限被拒的连接数
@@ -1319,7 +1325,8 @@ struct TunnelStartArg {
     socks_user: Option<String>,
     #[serde(default)]
     socks_password: Option<String>,
-    /// 应用启动后自动拉起（`NET-005`）。界面暂未提供开关，先落库保证语义不掉
+    /// 解锁保险库后自动拉起（`NET-005`）。界面表单里有勾选框；
+    /// 带代理认证的隧道不落库，勾选框会被禁用（勾了也没有可拉起的配置）
     #[serde(default)]
     auto_start: Option<bool>,
     /// `SES-024`：经跳板机建承载连接
@@ -1342,6 +1349,7 @@ fn tunnel_dto(meta: &TunnelMeta, fwd: &RunningTunnel) -> TunnelDto {
         via: meta.via.clone(),
         running: true,
         persisted: meta.persisted,
+        auto_start: meta.auto_start,
         active: s.active,
         total: s.total,
         rejected: s.rejected,
@@ -1377,6 +1385,7 @@ fn tunnel_dto_from_spec(spec: &wt_core::TunnelSpec) -> TunnelDto {
             .unwrap_or_default(),
         running: false,
         persisted: true,
+        auto_start: spec.auto_start,
         active: 0,
         total: 0,
         rejected: 0,
@@ -1552,6 +1561,8 @@ async fn tunnel_start(
         via,
         // 带代理认证的隧道不落库：口令不写进配置库
         persisted: socks_auth.is_none(),
+        // 没落库就没有「下次启动」，autoStart 一律为假（界面也会据此禁用勾选框）
+        auto_start: socks_auth.is_none() && arg.auto_start.unwrap_or(false),
     };
     let dto = tunnel_dto(&meta, &fwd);
 
@@ -1787,6 +1798,7 @@ async fn start_spec(state: &AppState, spec: &wt_core::TunnelSpec) -> Result<Tunn
         target_port: spec.target_port.unwrap_or(0),
         via: session.name.clone(),
         persisted: true,
+        auto_start: spec.auto_start,
     };
     let dto = tunnel_dto(&meta, &fwd);
     state
@@ -1844,9 +1856,16 @@ async fn tunnel_delete(state: State<'_, AppState>, id: String) -> Result<bool, S
             .map_err(|_| "[INTERNAL] 隧道表状态异常".to_string())?
             .remove(&id)
     };
+    // 埋点：删除是「先停再删」，任何一步挂住都会表现成「点了删除没反应、也不报错」
+    trace(&format!("[tunnel_delete] id={id} 运行中={}", taken.is_some()));
     if let Some((_, fwd)) = taken {
+        trace("[tunnel_delete] 等待转发停止…");
         fwd.stop().await;
+        trace("[tunnel_delete] 转发已停止");
+    } else {
+        trace("[tunnel_delete] 没有运行中的实例");
     }
+    trace("[tunnel_delete] 删除配置…");
     if let Ok(mut store) = wt_store::Store::open(&sessions_db_path()) {
         match store.delete_tunnel(&id) {
             Ok(()) => {}
@@ -1862,6 +1881,7 @@ async fn tunnel_delete(state: State<'_, AppState>, id: String) -> Result<bool, S
     if let Ok(mut specs) = state.tunnel_specs.lock() {
         specs.retain(|s| s.id != id);
     }
+    trace("[tunnel_delete] 完成");
     Ok(true)
 }
 

@@ -292,9 +292,13 @@ async function clickElement(selector) {
   const box = await cdp.eval(`(() => {
     const el = document.querySelector(${JSON.stringify(selector)});
     if (!el) return null;
+    // 面板可能是可滚动的（隧道面板就是）：先滚进可视区，量到的位置才可点
+    el.scrollIntoView({ block: "nearest" });
     const r = el.getBoundingClientRect();
+    if (r.bottom > innerHeight || r.top < 0) return { offscreen: true, y: r.y };
     return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
   })()`);
+  if (box?.offscreen) throw new Error(`${selector} 在可视区外（y=${box.y}）`);
   if (!box) throw new Error(`找不到元素 ${selector}`);
   await clickAt(box);
 }
@@ -570,11 +574,59 @@ async function clickTunnelButton(kind, which) {
     );
     const btn = row?.querySelectorAll("button")[${idx}];
     if (!btn) return null;
+    // 先滚进可视区再量：表单多一行就可能把列表挤到可视范围外，
+    // 那时 rect 仍是「几何位置」，点下去落在别的元素上，表现为「点了没反应」
+    btn.scrollIntoView({ block: "nearest" });
     const r = btn.getBoundingClientRect();
-    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    if (r.bottom > innerHeight || r.top < 0) return { offscreen: true, y: r.y };
+    const cx = r.x + r.width / 2;
+    const cy = r.y + r.height / 2;
+    // 命中测试：点的位置到底是谁？覆盖层/溢出会让「点上去」变成「点空」
+    const hitEl = document.elementFromPoint(cx, cy);
+    // 这里不要再套一层模板字符串：外层 eval 本身就是模板，嵌套反引号会把整段截断
+    const hit = hitEl ? hitEl.tagName + ":" + (hitEl.textContent ?? "").slice(0, 10) : "null";
+    // 几何一起带回来：挡住按钮的到底是谁、以及各自的位置，事后不用再猜
+    const box = (el) => {
+      if (!el) return null;
+      const b = el.getBoundingClientRect();
+      return [Math.round(b.x), Math.round(b.y), Math.round(b.width), Math.round(b.height)];
+    };
+    const rects = {
+      btn: box(btn),
+      hit: box(hitEl),
+      list: box(document.getElementById("tunnel-list")),
+      foot: box(document.getElementById("tunnel-foot")),
+      panel: box(document.getElementById("tunnels")),
+    };
+    return { x: cx, y: cy, hit, hits: hitEl === btn, rects };
   })()`);
+  if (box?.offscreen) {
+    throw new Error(`${kind} 类型隧道的 ${which} 按钮在可视区外（y=${box.y}），点击会落空`);
+  }
   if (!box) throw new Error(`找不到 ${kind} 类型隧道的 ${which} 按钮`);
+  if (box.hits === false) {
+    throw new Error(
+      `${kind} 的 ${which} 按钮被 ${box.hit} 挡住（几何 ${JSON.stringify(box.rects)}）`,
+    );
+  }
   await clickAt(box);
+}
+
+/**
+ * 点一个按钮直到状态变化（最多三次）。
+ *
+ * WebView2 会偶发吞掉**第一次**可信点击（`#open`、`Ctrl+Shift+V` 都踩过），
+ * 所以「点一次 + 等状态」在某些步骤上不稳：等不到就再点一次。
+ * 先在循环开头探一次，避免「第一次就成功」时又去点一个已经不存在的按钮。
+ */
+async function clickUntil(clickFn, probeFn, { timeout = 8000, tries = 3, label = "操作" } = {}) {
+  for (let i = 0; i < tries; i++) {
+    if (await probeFn()) return true;
+    await clickFn();
+    const ok = await waitFor(probeFn, { timeout }).catch(() => null);
+    if (ok) return true;
+  }
+  throw new Error(`${label}：点了 ${tries} 次仍未生效`);
 }
 
 /**
@@ -719,7 +771,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-22",
+    uiVersion === "wt-ui-25",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -1912,6 +1964,23 @@ try {
     return true;
   })()`);
   await clickElement("#files-up");
+  // 刚才那次「跟随表单」的请求用的是被改坏的端口（1），它的失败可能**晚到**：
+  // 晚到还写界面就会把这次正确结果覆盖掉——这条断言就是盯它
+  const afterUp = await waitFor(
+    async () => {
+      const f = await cdp.eval(`window.__wt.files`);
+      return f.rows.includes("sub/") && f.msg === "" ? f : null;
+    },
+    { timeout: 15000, label: "回到根目录" },
+  ).catch(async () => {
+    const f = await cdp.eval(`window.__wt.files`);
+    throw new Error(`回到根目录失败：rows=${f.rows.join("、")} msg=${f.msg}`);
+  });
+  check(
+    "旧请求的失败不会覆盖新视图",
+    afterUp.rows.includes("sub/") && afterUp.msg === "",
+    afterUp.msg || "rows 正常、无残留错误",
+  );
   await clickFileRow("sub/");
   await clickElement("#files-remove");
   await clickElement("#files-remove");
@@ -2126,14 +2195,17 @@ try {
   ).catch((e) => `失败：${e.message}`);
   check("带凭据的 SOCKS5 能穿过隧道", viaAuth === "socks-auth-ok", JSON.stringify(viaAuth));
 
-  await clickTunnelButton("D", "delete");
-  await waitFor(
-    async () => {
-      const list = await cdp.eval(`window.__wt.tunnels`);
-      return list.some((x) => x.kind === "D") ? null : true;
-    },
-    { timeout: 15000, label: "删除带认证的动态代理" },
-  );
+  await clickUntil(
+    () => clickTunnelButton("D", "delete"),
+    async () =>
+      (await cdp.eval(`window.__wt.tunnels`)).some((x) => x.kind === "D") ? null : true,
+    { timeout: 10000, label: "删除带认证的动态代理" },
+  ).catch(async (e) => {
+    // 失败时把面板自己的话带出来：「点了没反应」和「后端报了错」是两件事
+    const msg = await cdp.eval(`document.getElementById("tunnel-msg").textContent`);
+    const rows = await cdp.eval(`[...document.querySelectorAll("#tunnel-list .tunnel")].map((r) => r.textContent)`);
+    throw new Error(`${e.message}；面板提示「${msg}」；列表=${JSON.stringify(rows)}`);
+  });
 
   // 16g. 远程转发（-R，NET-002）：监听在**服务器**上，连接进来后被转到本机
   await cdp.eval(`(() => {
@@ -2359,17 +2431,75 @@ try {
     const dto = await window.__TAURI__.core.invoke("sessions_load");
     return dto.sessions.find((s) => s.name === "mock-ssh")?.id ?? null;
   })()`);
-  const autoSpec = await cdp.eval(`window.__TAURI__.core.invoke("tunnel_start", { arg: {
-    host: "127.0.0.1", port: ${sshPort}, user: "tester", password: "secret",
-    keyPem: null, keyPassphrase: null, useAgent: false, cols: 80, rows: 24,
-    kind: "dynamic", listenHost: "127.0.0.1", listenPort: 0,
-    targetHost: "", targetPort: 0, allowLan: false,
-    autoStart: true, viaSessionId: ${JSON.stringify(mocksshId)},
-  } })`);
+  // 走界面而不是直接 invoke：这个开关以前只在后端存在、界面上根本没有入口，
+  // 「后端支持」与「用户能用」是两件事（G8 的教训）。
+  // 面板是开关：已经开着就别再点一下（会把它关掉）
+  if (await cdp.eval(`document.getElementById("tunnels").hidden`)) {
+    await clickElement("#tunnels-toggle");
+  }
+  await waitFor(
+    async () => ((await cdp.eval(`document.getElementById("tunnels").hidden`)) ? null : true),
+    { timeout: 10000, label: "打开隧道面板" },
+  );
+  const autoUi = await cdp.eval(`(() => {
+    const box = document.getElementById("tunnel-auto");
+    const before = box.checked;
+    const kind = document.getElementById("tunnel-kind");
+    kind.value = "dynamic";
+    kind.dispatchEvent(new Event("change", { bubbles: true }));
+    document.getElementById("tunnel-listen").value = "0";
+    const sel = document.getElementById("tunnel-session");
+    sel.value = ${JSON.stringify(mocksshId ?? "")};
+    // 承载会话是自动拉起的前提（要从保险库取它的密码）：拿不到就当场说清楚，
+    // 否则后面只会看到一个含义模糊的 TUN_NO_SESSION
+    if (!sel.value) throw new Error("承载会话下拉里没有 mock-ssh");
+    box.checked = true;
+    return { before, existed: !!box, checked: box.checked };
+  })()`);
   check(
-    "能建一条「自动启动」的动态代理",
-    autoSpec?.kind === "D" && autoSpec.running === true,
-    `${autoSpec?.kind} ${autoSpec?.listen}`,
+    "隧道表单有「解锁保险库后自动拉起」开关且默认不勾",
+    autoUi.existed === true && autoUi.before === false,
+    `existed=${autoUi.existed} before=${autoUi.before}`,
+  );
+
+  // 带代理认证的隧道不落库，勾了也拉不起来——控件必须禁用并说明原因，
+  // 而不是留个勾了不生效的开关
+  const authBlocksAuto = await cdp.eval(`(() => {
+    const u = document.getElementById("tunnel-socks-user");
+    const p = document.getElementById("tunnel-socks-pass");
+    const box = document.getElementById("tunnel-auto");
+    u.value = "u";
+    p.value = "p";
+    u.dispatchEvent(new Event("input", { bubbles: true }));
+    const blocked = { disabled: box.disabled, checked: box.checked };
+    u.value = "";
+    p.value = "";
+    u.dispatchEvent(new Event("input", { bubbles: true }));
+    // 清空代理认证后要能重新勾上：否则「禁用」看起来像永久关掉了这个能力
+    box.checked = true;
+    return { blocked, restored: box.disabled, rechecked: box.checked };
+  })()`);
+  check(
+    "填了代理认证时「自动拉起」被禁用并清掉勾选",
+    authBlocksAuto.blocked.disabled === true &&
+      authBlocksAuto.blocked.checked === false &&
+      authBlocksAuto.restored === false &&
+      authBlocksAuto.rechecked === true,
+    JSON.stringify(authBlocksAuto),
+  );
+
+  await clickElement("#tunnel-add");
+  const autoSpec = await waitFor(
+    async () => {
+      const list = await cdp.eval(`window.__wt.tunnels`);
+      return list.find((x) => x.kind === "D" && x.auto_start === true) ?? null;
+    },
+    { timeout: 30000, label: "勾了自动拉起的动态代理" },
+  );
+  check(
+    "勾选后启动的隧道带自动拉起标记",
+    autoSpec.running === true && autoSpec.auto_start === true,
+    `${autoSpec.kind} ${autoSpec.listen} auto_start=${autoSpec.auto_start}`,
   );
 
   // 停掉它：配置留在库里，auto_start 标记还在
@@ -2383,6 +2513,12 @@ try {
     { timeout: 10000, label: "自动启动隧道已停止" },
   );
   check("停止后配置仍在（auto_start 保留）", parked !== null);
+  const parkedText = await cdp.eval(`document.querySelector("#tunnel-list").textContent`);
+  check(
+    "停止状态下界面显示「解锁保险库后自动拉起」",
+    parkedText.includes("自动拉起"),
+    parkedText.slice(0, 80),
+  );
 
   // 触发自动启动：应当只用保险库里的凭据就把它拉起来
   const autoErrors = await cdp.eval(`window.__TAURI__.core.invoke("tunnel_autostart")`);

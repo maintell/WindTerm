@@ -317,7 +317,11 @@
         flex-direction: column;
         border-top: 1px solid #2a2a30;
         max-height: 45%;
+        /* 面板自己滚动：内容超出时不能让页脚溢出压在下方的面板上——
+           之前它正好盖住最后一行的「删除」按钮，点上去什么也不会发生 */
+        overflow-y: auto;
       }
+      #tunnels > * { flex: none; }
       #tunnels[hidden] { display: none; }
       #tunnel-form {
         display: flex;
@@ -344,6 +348,14 @@
         color: var(--muted);
       }
       #tunnel-lan-row[hidden] { display: none; }
+      #tunnel-auto-row {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        color: var(--muted);
+      }
+      #tunnel-auto-row[hidden] { display: none; }
+      #tunnel-auto-row.disabled { opacity: 0.45; }
       #tunnel-add {
         background: #2a2a30;
         color: var(--fg);
@@ -353,7 +365,7 @@
         font: inherit;
         cursor: pointer;
       }
-      #tunnel-list { flex: 1; overflow: auto; font-size: 12px; }
+      #tunnel-list { font-size: 12px; }
       #tunnel-list .tunnel { padding: 4px 8px; border-bottom: 1px solid #1f1f24; }
       #tunnel-list .line1 { display: flex; align-items: baseline; gap: 6px; }
       #tunnel-list .dot { font-size: 10px; color: #4caf50; }
@@ -519,6 +531,9 @@
             <input id="tunnel-socks-pass" type="password" placeholder="代理密码" hidden />
             <label id="tunnel-lan-row"
               ><input type="checkbox" id="tunnel-lan" />允许局域网访问</label
+            >
+            <label id="tunnel-auto-row" title="解锁保险库后自动把它拉起来（承载会话的密码要存在保险库里）"
+              ><input type="checkbox" id="tunnel-auto" />解锁保险库后自动拉起</label
             >
             <button id="tunnel-add">启动</button>
           </div>
