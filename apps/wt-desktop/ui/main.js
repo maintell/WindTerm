@@ -3272,6 +3272,13 @@ function paintTunnelRow(n, t) {
   }
 }
 
+/** 隧道分组（`NET-004`）：顺序就是面板里的显示顺序 */
+const TUNNEL_GROUPS = [
+  ["L", "本地转发 -L"],
+  ["R", "远程转发 -R"],
+  ["D", "动态代理 -D"],
+];
+
 function renderTunnels(rows) {
   lastTunnels = rows;
   const alive = new Set(rows.map((r) => r.id));
@@ -3282,9 +3289,8 @@ function renderTunnels(rows) {
       tunnelNodes.delete(id);
     }
   }
-  for (const el of [...tunnelList.children]) {
-    if (!el.dataset.id) el.remove();
-  }
+  // 分组容器每次重建：空组不显示，重建比维护增删简单，隧道数量本来就不多
+  for (const el of [...tunnelList.children]) el.remove();
   if (!rows.length) {
     const empty = document.createElement("div");
     empty.className = "tunnel";
@@ -3295,17 +3301,28 @@ function renderTunnels(rows) {
     tunnelList.appendChild(empty);
     return;
   }
-  rows.forEach((t, i) => {
-    let n = tunnelNodes.get(t.id);
-    if (!n) {
-      n = buildTunnelRow(t.id);
-      tunnelNodes.set(t.id, n);
+  // 按类型分组（`NET-004`）：本地/远程/动态混在一起时，得一行行看端点才知道是哪类
+  for (const [kind, title] of TUNNEL_GROUPS) {
+    const inGroup = rows.filter((t) => t.kind === kind);
+    if (!inGroup.length) continue;
+    const group = document.createElement("div");
+    group.className = "tun-group";
+    group.dataset.kind = kind;
+    const h = document.createElement("h4");
+    h.className = "tun-group-title";
+    h.textContent = `${title}（${inGroup.length}）`;
+    group.appendChild(h);
+    for (const t of inGroup) {
+      let n = tunnelNodes.get(t.id);
+      if (!n) {
+        n = buildTunnelRow(t.id);
+        tunnelNodes.set(t.id, n);
+      }
+      paintTunnelRow(n, t);
+      group.appendChild(n.box);
     }
-    paintTunnelRow(n, t);
-    if (tunnelList.children[i] !== n.box) {
-      tunnelList.insertBefore(n.box, tunnelList.children[i] ?? null);
-    }
-  });
+    tunnelList.appendChild(group);
+  }
 }
 
 /** 刷新「承载会话」下拉（只有 SSH 能承载隧道）。 */
@@ -4348,7 +4365,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-70",
+  ui: "wt-ui-71",
   /** 「本次记住」存了几条（验收用：只回数量，不回口令） */
   sessionPasswords() {
     return sessionPasswords.size;

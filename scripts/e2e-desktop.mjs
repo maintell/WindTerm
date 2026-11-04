@@ -2346,6 +2346,21 @@ try {
     listenPort > 0 && started.kind === "L" && started.target === `127.0.0.1:${echo.port}`,
     `${started.kind} ${started.listen} → ${started.target}`,
   );
+  // 分组（`NET-004`）：本地/远程/动态混在一起时，得一行行看端点才知道是哪类
+  const groupL = await cdp.eval(`(() => {
+    const g = document.querySelector('#tunnel-list .tun-group[data-kind="L"]');
+    return g
+      ? {
+          title: g.querySelector(".tun-group-title")?.textContent ?? "",
+          rows: g.querySelectorAll("[data-id]").length,
+        }
+      : null;
+  })()`);
+  check(
+    "隧道按类型分组（NET-004）",
+    groupL !== null && groupL.title.includes("本地转发") && groupL.rows === 1,
+    JSON.stringify(groupL),
+  );
 
   // AC-1：经隧道传的字节必须原样回来
   const echoed = await tunnelExchange(listenPort, "tunnel-ok").catch((e) => `失败：${e.message}`);
@@ -2442,6 +2457,15 @@ try {
     "动态代理启动并回填端口",
     proxyPort > 0 && dyn.listen.endsWith(`:${proxyPort}`),
     dyn.listen,
+  );
+  const groupD = await cdp.eval(`(() => {
+    const g = document.querySelector('#tunnel-list .tun-group[data-kind="D"]');
+    return g ? g.querySelector(".tun-group-title")?.textContent ?? null : null;
+  })()`);
+  check(
+    "动态代理落在自己的分组里（NET-004）",
+    typeof groupD === "string" && groupD.includes("动态代理"),
+    `${groupD}`,
   );
 
   // 经 SOCKS5 访问 echo（用域名形式发地址：印证「目标由服务端解析」）
