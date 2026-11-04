@@ -10,8 +10,10 @@
 //! - 密码认证：用户 `tester` / 密码 `secret`
 //! - 公钥认证：接受任意公钥
 //! - `shell_request`：先发 `WELCOME\r\n`
-//! - 收到数据：回 `echo:<原文>`；输入含 `__gbk__` 回 GBK 字节的「中文」（验编码）、
-//!   `__truecolor__` 回 24 位色序列（验 Truecolor）、`__wide__` 回两个 CJK 字符（验宽字符）
+//! - 收到数据：回 `echo:<原文>`；以 `\e[M` 开头的鼠标报文回 `MOUSE`（验鼠标上报）、
+//!   输入含 `__gbk__` 回 GBK 字节的「中文」（验编码）、
+//!   `__truecolor__` 回 24 位色序列（验 Truecolor）、`__wide__` 回两个 CJK 字符（验宽字符）、
+//!   `__mouseon__` 回开启鼠标上报的序列（验鼠标模式）
 //! - `exec_request`：回 `ran:<命令>\r\n`，退出码 0
 
 use std::collections::HashMap;
@@ -478,6 +480,13 @@ impl russh::server::Handler for MockHandler {
         if self.subsystems.lock().await.contains(&channel) {
             return Ok(());
         }
+        // 鼠标上报（`TER-022`）：X10 编码的报文是 `\e[M` 后跟三个原始字节，
+        // 原样回显会被终端当成控制序列执行（`CSI M` 是删行），所以回一行纯文本，
+        // 让验收能确认「字节真的到服务端了」，而不是只看前端有没有发。
+        if data.starts_with(b"\x1b[M") {
+            session.data(channel, b"MOUSE\r\n".to_vec())?;
+            return Ok(());
+        }
         // 验收要验「编码切换」（`TER-006`）：输入里带 `__gbk__` 时回一段 **GBK 字节**
         // 的中文。只有按 GBK 解码才看得见「中文」，按 UTF-8 解是一串替换符——
         // 这比断言「下拉框变了」有意义得多。
@@ -487,12 +496,19 @@ impl russh::server::Handler for MockHandler {
         }
         // Truecolor（`TER-024`）：回一个 24 位前景色，验收去读单元格的实际颜色
         if String::from_utf8_lossy(data).contains("__truecolor__") {
-            session.data(channel, b"\x1b[38;2;18;52;86mX\x1b[0m\r\n".to_vec())?;
+            // 三字符标记：单字符 `X` 会和主机密钥指纹里的随机字符撞车，
+            // 验收按行找会找到指纹那一行去
+            session.data(channel, b"\x1b[38;2;18;52;86mXTC\x1b[0m\r\n".to_vec())?;
             return Ok(());
         }
         // 宽字符（`TER-025`）：两个 CJK 字符各占两列，验收读单元格宽度与光标列
         if String::from_utf8_lossy(data).contains("__wide__") {
             session.data(channel, "中文\r\n".as_bytes().to_vec())?;
+            return Ok(());
+        }
+        // 鼠标上报（`TER-022`）：让客户端开启 1000 模式，之后的点击会变成鼠标序列
+        if String::from_utf8_lossy(data).contains("__mouseon__") {
+            session.data(channel, b"\x1b[?1000h".to_vec())?;
             return Ok(());
         }
         let echo = format!("echo:{}", String::from_utf8_lossy(data)).into_bytes();

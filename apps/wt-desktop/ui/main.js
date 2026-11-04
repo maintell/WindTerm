@@ -333,6 +333,23 @@ function createView(label) {
     );
   });
 
+  // 鼠标上报（TER-022）：xterm 在 X10 编码（默认，`\e[M` 后跟三个原始字节）下
+  // 走**二进制**事件，不进 `onData`。只接 `onData` 的话，远端开了 `?1000h`
+  // 却没要 SGR 时，点击会被静默丢掉——界面上什么也不发生，远端一个字节都收不到。
+  //
+  // `data` 是「一字符一字节」的串（码位 0~255），不能当 UTF-8 文本发：坐标
+  // 字节一旦 >0x7F 就会被重新编码成两字节，远端收到的是错的坐标。所以单独走
+  // 按字节写入的通道。
+  term.onBinary((data) => {
+    if (!view.handle) return;
+    view.dataEvents += 1;
+    if (view.inputLog.length < 64) view.inputLog.push(data);
+    invoke("term_write_bytes", {
+      handle: view.handle,
+      data: Array.from(data, (c) => c.charCodeAt(0)),
+    }).catch((e) => setStatus(`写入失败：${e}`));
+  });
+
   // 选中即复制（TER-011）。防抖是因为拖选会连续触发，每次都写剪贴板既浪费
   // 又会让剪贴板里短暂出现半截内容。
   let autoCopyTimer = null;
@@ -3760,7 +3777,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-48",
+  ui: "wt-ui-51",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";
@@ -3878,7 +3895,24 @@ window.__wt = {
     if (!buf) return null;
     for (let i = 0; i < buf.length; i += 1) {
       const line = buf.getLine(i);
-      if (line && line.translateToString(true).includes(text)) return i;
+      if (!line) continue;
+      // 返回行列**两个**：只给行号的话，断言会隐含假设「文字从第 0 列开始」，
+      // 前面的输出一变就假失败。
+      //
+      // 列号必须逐格算，不能用 `translateToString` 的下标：CJK 在 buffer 里占
+      // **两列**但只是**一个**字符，下标会比真实列号小，拿去 `cellAt` 读到的
+      // 是别的格子（症状：屏幕明明白白有那串字，断言却一直超时）。
+      let plain = "";
+      const cols = [];
+      for (let x = 0; x < line.length; x += 1) {
+        const cell = line.getCell(x);
+        if (!cell) break;
+        if (cell.getWidth() === 0) continue; // 宽字符的续列不产生字符
+        plain += cell.getChars() || " ";
+        cols.push(x);
+      }
+      const at = plain.indexOf(text);
+      if (at >= 0) return { row: i, col: cols[at] };
     }
     return null;
   },

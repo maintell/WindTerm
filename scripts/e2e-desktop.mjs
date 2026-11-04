@@ -901,10 +901,16 @@ try {
     () => cdp.eval(`window.__wt?.ui ?? null`),
     { timeout: 10000, label: "前端版本标记" },
   );
+  // 期望值不写死：直接读磁盘上那份 `main.js` 的版本号。写死的话每次改前端都要
+  // 记得回来同步这里，忘一次就是一条假失败——而它本来就是用来防假结论的。
+  const expectedUi =
+    /ui:\s*"(wt-ui-\d+)"/.exec(
+      readFileSync(join(root, "apps", "wt-desktop", "ui", "main.js"), "utf8"),
+    )?.[1] ?? null;
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-48",
-    `__wt.ui=${uiVersion}`,
+    expectedUi !== null && uiVersion === expectedUi,
+    `__wt.ui=${uiVersion} / 磁盘 ${expectedUi}`,
   );
 
   // 2b. 每次运行都从默认键位开始。
@@ -1264,15 +1270,10 @@ try {
     },
     { timeout: 8000, label: "右键粘贴反馈" },
   );
-  // 断言的是「一定有明确反馈」，而不是「一定粘贴成功」：
-  // WebView2 里 `navigator.clipboard.readText()` 要剪贴板读权限，当前构建拿不到，
-  // 右键只能退化。这一条守住的是「点了不能没反应」——成功与不可用都必须说出来。
-  // 拿到剪贴板读权限后（见 README 的 G11），这里应当收紧成「已粘贴」。
-  check(
-    "右键粘贴有明确反馈（成功或说明为何不可用）",
-    /^(已粘贴|读剪贴板)/.test(rightStatus),
-    rightStatus,
-  );
+  // 这条**已经收紧成「必须真的粘上」**：早先 WebView2 里 `readText()` 拿不到权限，
+  // 右键只能退化，断言才放成「有反馈就算过」。现在右键是真的粘上了（连续多轮都是
+  // 「已粘贴 N 字符」），继续容忍退化就等于把回归放过去。
+  check("右键粘贴真的把剪贴板内容送进终端", /^已粘贴/.test(rightStatus), rightStatus);
 
   // 10. 尺寸变化 → 重新 fit → 后端收到 resize（TER-012）
   //     CDP 造不出真正的窗口拖拽，这里改侧栏宽度让终端变窄，再派发 resize 事件，
@@ -2285,7 +2286,13 @@ try {
     document.getElementById("tunnel-lan").checked = false;
     return true;
   })()`);
-  await clickElement("#tunnel-add");
+  // 面板刚展开时第一次点击可能被吞（`#tree-head`、`#files-head` 都踩过）：
+  // 点一次没反应就再点，而不是点一次就干等 30 秒
+  await clickUntil(
+    () => clickElement("#tunnel-add"),
+    async () => (await cdp.eval(`window.__wt.tunnels.length`)) === 1,
+    { timeout: 8000, tries: 3, label: "隧道启动" },
+  ).catch(() => {});
   const started = await waitFor(
     async () => {
       const list = await cdp.eval(`window.__wt.tunnels`);
@@ -2301,6 +2308,14 @@ try {
       listen: document.getElementById("tunnel-listen").value,
       target: document.getElementById("tunnel-target").value,
       list: window.__wt.tunnels.length,
+      // 命中测试：点空了（被别的元素盖住）和点到了但处理没跑，要能一眼分开
+      hit: (() => {
+        const el = document.getElementById("tunnel-add");
+        if (!el) return "找不到按钮";
+        const r = el.getBoundingClientRect();
+        const top = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+        return top === el ? "self" : (top ? top.id || top.tagName : "null");
+      })(),
     })`);
     throw new Error(`${e.message}；${JSON.stringify(dbg)}`);
   });
@@ -3346,13 +3361,23 @@ try {
   const tcCell = await waitFor(
     async () => {
       const c = await cdp.eval(`(() => {
-        const row = window.__wt.findRow("X");
-        return row === null ? null : window.__wt.cellAt(row, 0);
+        const at = window.__wt.findRow("XTC");
+        return at === null ? null : window.__wt.cellAt(at.row, at.col);
       })()`);
       return c && c.text === "X" ? c : null;
     },
     { timeout: 15000, label: "真彩色输出" },
-  );
+  ).catch(async (e) => {
+    const dbg = await cdp.eval(`(() => {
+      const at = window.__wt.findRow("XTC");
+      return {
+        at,
+        cell: at ? window.__wt.cellAt(at.row, at.col) : null,
+        tail: window.__wt.screen().slice(-160),
+      };
+    })()`);
+    throw new Error(`${e.message}；${JSON.stringify(dbg)}`);
+  });
   check(
     "24 位色真的落到单元格上（TER-024）",
     tcCell.fgIsRgb === true && tcCell.fg === 0x123456,
@@ -3365,12 +3390,12 @@ try {
   const wideCells = await waitFor(
     async () => {
       const c = await cdp.eval(`(() => {
-        const row = window.__wt.findRow("中文");
-        if (row === null) return null;
+        const at = window.__wt.findRow("中文");
+        if (at === null) return null;
         return {
-          first: window.__wt.cellAt(row, 0),
-          cont: window.__wt.cellAt(row, 1),
-          second: window.__wt.cellAt(row, 2),
+          first: window.__wt.cellAt(at.row, at.col),
+          cont: window.__wt.cellAt(at.row, at.col + 1),
+          second: window.__wt.cellAt(at.row, at.col + 2),
         };
       })()`);
       return c && c.first?.text === "中" ? c : null;
@@ -3384,6 +3409,83 @@ try {
       wideCells.second.text === "文" &&
       wideCells.second.width === 2,
     JSON.stringify(wideCells),
+  );
+  await closeAllTabs();
+
+  // 19m. 鼠标上报（`TER-022`）：远端开启 1000 模式后，点击应变成鼠标序列
+  await closeAllDialogs();
+  await closeAllTabs();
+  await clickSessionNode("mock-ssh");
+  await fillInput("#port", String(sshPort));
+  await clickElement("#ssh");
+  await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      return s.startsWith("已连接") ? s : null;
+    },
+    { timeout: 30000, label: "鼠标用例建会话" },
+  );
+  await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.screen()`);
+      return t.includes("WELCOME") ? true : null;
+    },
+    { timeout: 15000, label: "会话横幅" },
+  );
+
+  const mouseHandle = await cdp.eval(`window.__wt.handle`);
+  const termBox = await cdp.eval(`(() => {
+    const r = document.getElementById("term-a").getBoundingClientRect();
+    return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+  })()`);
+  const clickTerm = async (modifiers) => {
+    const base = { x: termBox.x, y: termBox.y, button: "left", modifiers };
+    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...base, clickCount: 1 });
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...base, clickCount: 1 });
+  };
+
+  await cdp.eval(`window.__TAURI__.core.invoke("term_write", {
+    handle: ${JSON.stringify(mouseHandle)}, data: "__mouseon__",
+  })`);
+  // 远端回 `\e[?1000h` 之后才进鼠标模式；点一次看看有没有序列出来（最多三次）
+  let mouseSeq = null;
+  for (let i = 0; i < 3 && mouseSeq === null; i += 1) {
+    await clickTerm(0);
+    mouseSeq = await waitFor(
+      async () => {
+        const log = await cdp.eval(`window.__wt.inputLog`);
+        return log.find((d) => d.startsWith("\u001b[M")) ?? null;
+      },
+      { timeout: 3000, label: "鼠标序列" },
+    ).catch(() => null);
+  }
+  check("远端开启鼠标上报后，点击变成鼠标序列（TER-022）", mouseSeq !== null, mouseSeq);
+
+  // 光「前端发了」不算数：还要证明这串字节到了服务端（mock 收到后回 MOUSE）。
+  // 少了这一条，`term_write_bytes` 注册漏了、参数名对不上这类问题都测不出来。
+  const mouseArrived = await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.screen()`);
+      return t.includes("MOUSE") ? true : null;
+    },
+    { timeout: 6000, label: "鼠标字节到达服务端" },
+  ).catch(() => null);
+  check("鼠标序列真的发到了服务端（不是只在前端记了一笔）", mouseArrived === true, mouseArrived === true);
+
+  // Shift+点击应强制本地选择：不产生鼠标序列，inputLog 长度不变
+  const beforeShift = await cdp.eval(`window.__wt.inputLog.length`);
+  await clickTerm(8);
+  const afterShift = await waitFor(
+    async () => {
+      const n = await cdp.eval(`window.__wt.inputLog.length`);
+      return n > beforeShift ? n : null;
+    },
+    { timeout: 1500, label: "Shift 点击是否发出数据" },
+  ).catch(() => beforeShift);
+  check(
+    "Shift+点击不发送鼠标序列（强制本地选择）",
+    afterShift === beforeShift,
+    `${beforeShift} → ${afterShift}`,
   );
   await closeAllTabs();
 

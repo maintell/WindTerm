@@ -144,6 +144,21 @@ fn term_write(state: State<'_, AppState>, handle: String, data: String) -> Resul
         .map_err(|e| e.to_string())
 }
 
+/// 按字节写入。
+///
+/// 给鼠标上报这类**二进制**输入用（`TER-022`）：X10 编码的序列是 `\e[M` 后跟
+/// 三个原始字节，坐标字节可以 >0x7F。走 `String` 的话会被当 UTF-8 重新编码成
+/// 两字节，远端收到的坐标就错了。
+#[tauri::command]
+fn term_write_bytes(
+    state: State<'_, AppState>,
+    handle: String,
+    data: Vec<u8>,
+) -> Result<(), String> {
+    let h = SessionHandle::from(handle.as_str());
+    state.registry.write(&h, &data).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn term_resize(
     state: State<'_, AppState>,
@@ -1239,7 +1254,7 @@ fn purge_vault_for(state: &AppState, id: &str) -> Result<(), String> {
                     .entries()
                     .iter()
                     .filter(|e| {
-                        matches!(e, wt_crypto::Entry::Password { session_id: Some(s), .. } if s == &id)
+                        matches!(e, wt_crypto::Entry::Password { session_id: Some(s), .. } if s == id)
                     })
                     .map(|e| e.id().to_string())
                     .collect();
@@ -1869,7 +1884,7 @@ async fn open_sftp(
     trace("[open_sftp] 认证方式已定");
 
     // 主机密钥与 `ssh_open` 走完全相同的 accept-new 路径（见 `connect_accept_new`）
-    let jumps = resolve_jumps(&state, jump.as_ref())?;
+    let jumps = resolve_jumps(state, jump.as_ref())?;
     let (conn, _added) = connect_accept_new(&cfg, &auth, &jumps).await?;
     trace("[open_sftp] ← 连接就绪");
 
@@ -2888,6 +2903,7 @@ fn main() {
             term_read,
             term_ack,
             term_write,
+            term_write_bytes,
             term_resize,
             term_stats,
             term_close,
