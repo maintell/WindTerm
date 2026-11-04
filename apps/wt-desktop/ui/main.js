@@ -984,6 +984,29 @@ async function moveSelectedSessions() {
   }
 }
 
+/** 批量删除（`SES-013`）：破坏性动作，先把「删几个、删谁」摆在确认框里 */
+async function deleteSelectedSessions() {
+  if (!multiSel.size) return;
+  const names = [...multiSel]
+    .map((id) => lastTree?.sessions?.find((s) => s.id === id)?.name ?? id)
+    .slice(0, 5);
+  const more = multiSel.size > names.length ? ` 等 ${multiSel.size} 个` : "";
+  const ok = await askConfirm(
+    `删除 ${multiSel.size} 个会话？`,
+    `${names.join("、")}${more}\n\n会话与保险库里属于它们的密码都会被删掉，不可撤销。`,
+    "确认删除",
+  );
+  if (!ok) return;
+  try {
+    const n = await invoke("session_delete_many", { ids: [...multiSel] });
+    multiSel.clear();
+    await loadTree();
+    setStatus(`已删除 ${n} 个会话`);
+  } catch (e) {
+    setStatus(`批量删除失败：${e}`);
+  }
+}
+
 /** 折叠/展开一个文件夹（`SES-013`）：状态落库，重启后还是这个形状 */
 async function toggleFolder(f) {
   try {
@@ -1097,7 +1120,10 @@ treeBody.addEventListener("contextmenu", (ev) => {
     if (!s) return;
     showCtxMenu(ev.clientX, ev.clientY, [
       ...(multiSel.size > 1
-        ? [{ label: `移动 ${multiSel.size} 项到…`, run: () => moveSelectedSessions() }]
+        ? [
+            { label: `移动 ${multiSel.size} 项到…`, run: () => moveSelectedSessions() },
+            { label: `删除 ${multiSel.size} 项…`, run: () => deleteSelectedSessions() },
+          ]
         : [{ label: "移动到…", run: () => moveSession(s) }]),
       { label: "重命名", run: () => renameSession(s) },
       { label: "复制", run: () => duplicateSession(s) },
@@ -2651,9 +2677,11 @@ function broadcastTargets() {
 /** 最近一次广播的结果（验收读它） */
 let lastBroadcast = null;
 
-function askConfirm(title, body) {
+function askConfirm(title, body, okLabel = "确认发送") {
   askTitle.textContent = title;
   askBody.textContent = body;
+  // 按钮文案跟着场景走：删除写「确认发送」会让人以为是发命令
+  document.getElementById("ask-ok").textContent = okLabel;
   askDialog.returnValue = "";
   askDialog.showModal();
   return new Promise((resolve) => {
@@ -3614,7 +3642,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-44",
+  ui: "wt-ui-45",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";

@@ -895,7 +895,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-44",
+    uiVersion === "wt-ui-45",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -3477,6 +3477,49 @@ try {
     Array.isArray(movedAll) && movedAll.length === 2,
     JSON.stringify(movedAll),
   );
+
+  // 19e-4. 批量删除（`SES-013`）：确认框要说清删几个，删完两条都没了
+  await clickElement("#refresh");
+  await waitFor(
+    async () => ((await cdp.eval(`window.__wt.sessions()`)).length ? true : null),
+    { timeout: 10000, label: "刷新会话树" },
+  );
+  await ctrlClickTreeNode("mock-ssh 副本");
+  await ctrlClickTreeNode("ui-imported");
+  await waitFor(
+    async () => {
+      const n = await cdp.eval(`document.querySelectorAll("#tree-body .node.multi").length`);
+      return n === 2 ? n : null;
+    },
+    { timeout: 8000, label: "批量删除前多选" },
+  );
+  await rightClickNode("ui-imported");
+  await clickCtxItem("删除 2 项…");
+  const delBody = await waitFor(
+    async () => {
+      const open = await cdp.eval(`document.getElementById("ask-dialog").open`);
+      if (!open) return null;
+      return cdp.eval(`document.getElementById("ask-body").textContent`);
+    },
+    { timeout: 5000, label: "批量删除确认框" },
+  );
+  check(
+    "批量删除前确认框写清删几个与不可撤销",
+    delBody.includes("mock-ssh 副本") && delBody.includes("不可撤销"),
+    delBody.split("\n").filter(Boolean)[0],
+  );
+  await clickElement("#ask-ok");
+  const goneAll = await waitFor(
+    async () => {
+      const snap = await cdp.eval(`window.__TAURI__.core.invoke("sessions_load")`);
+      const left = snap.sessions.filter(
+        (s) => s.name === "mock-ssh 副本" || s.name === "ui-imported",
+      );
+      return left.length === 0 ? true : null;
+    },
+    { timeout: 10000, label: "批量删除生效" },
+  ).catch(() => null);
+  check("批量删除后两条会话都不在了", goneAll === true);
 
   // 19f. 外观与回滚（`TER-005` / `TER-008`）：主题要真的落到 xterm 上，
   //      只改下拉框不算（把 theme 传空也能骗过那种断言）

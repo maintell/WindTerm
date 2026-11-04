@@ -1144,8 +1144,11 @@ fn session_save(req: SessionSaveReq) -> Result<String, String> {
 ///
 /// 顺序是「先清保险库、再删会话」：前者失败就整体报错、什么都不动，
 /// 免得出现「会话没了、密码还在库里」这种更难收拾的中间态。
-#[tauri::command]
-fn session_delete(state: State<'_, AppState>, id: String) -> Result<(), String> {
+/// 清掉保险库里属于某个会话的密码。失败会把错误抛回去，由调用方决定是否继续。
+///
+/// 抽出来是因为单条删除与批量删除都要做同一件事：两处各写一遍，
+/// 迟早出现「批量删了会话、保险库里的密码还留着」。
+fn purge_vault_for(state: &AppState, id: &str) -> Result<(), String> {
     {
         let mut st = state.vault.lock().unwrap();
         if let Some(master) = st.password.clone() {
@@ -1169,12 +1172,42 @@ fn session_delete(state: State<'_, AppState>, id: String) -> Result<(), String> 
             }
         }
     }
+    Ok(())
+}
 
+#[tauri::command]
+fn session_delete(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    // 顺序是「先清保险库、再删会话」：前者失败就整体报错、什么都不动，
+    // 免得出现「会话没了、密码还在库里」这种更难收拾的中间态。
+    purge_vault_for(&state, &id)?;
     let mut store = wt_store::Store::open(&sessions_db_path()).map_err(|e| e.to_string())?;
     store
         .delete_session(&wt_core::SessionId::from(id.as_str()))
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// 批量删除（`SES-013` 多选）。
+///
+/// 逐条做「清保险库 → 删会话」；中途失败会报出**哪一条**失败、以及已经删掉几条——
+/// 破坏性批量操作最忌讳「报了个笼统的错，用户不知道删到哪了」。
+#[tauri::command]
+fn session_delete_many(state: State<'_, AppState>, ids: Vec<String>) -> Result<usize, String> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let mut store = wt_store::Store::open(&sessions_db_path()).map_err(|e| e.to_string())?;
+    let mut done = 0;
+    for id in &ids {
+        if let Err(e) = purge_vault_for(&state, id) {
+            return Err(format!("删除中断：已删 {done} 条，清保险库时失败（{id}）：{e}"));
+        }
+        if let Err(e) = store.delete_session(&wt_core::SessionId::from(id.as_str())) {
+            return Err(format!("删除中断：已删 {done} 条，{id} 删除失败：{e}"));
+        }
+        done += 1;
+    }
+    Ok(done)
 }
 
 // ── SSH ─────────────────────────────────────────────────────
@@ -2807,6 +2840,7 @@ fn main() {
             credential_delete,
             session_save,
             session_delete,
+            session_delete_many,
             folder_save,
             folder_move,
             session_move,
