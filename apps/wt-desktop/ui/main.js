@@ -3340,6 +3340,65 @@ lookScrollbackInput.addEventListener("change", () => {
   applyLook();
 });
 
+// ── 主密码管理（`SEC-001`）────────────────────────────────
+//
+// 改密码与移除保险库。移除是不可恢复的：先二次确认，确认文案里写明「里面的密码全没」。
+
+const masterDialog = document.getElementById("master-dialog");
+const masterOld = document.getElementById("master-old");
+const masterNew = document.getElementById("master-new");
+const masterNew2 = document.getElementById("master-new2");
+const masterMsg = document.getElementById("master-msg");
+
+document.getElementById("master-open").addEventListener("click", () => {
+  for (const el of [masterOld, masterNew, masterNew2]) el.value = "";
+  masterMsg.textContent = "";
+  masterDialog.showModal();
+});
+
+document.getElementById("master-close").addEventListener("click", () => masterDialog.close());
+
+document.getElementById("master-change").addEventListener("click", () => {
+  void (async () => {
+    if (masterNew.value !== masterNew2.value) {
+      // 两次输入不一致就别去猜用户想要哪个
+      masterMsg.textContent = "两次输入的新密码不一致";
+      return;
+    }
+    try {
+      await invoke("vault_change_password", {
+        oldPassword: masterOld.value,
+        newPassword: masterNew.value,
+      });
+      masterMsg.textContent = "已更换主密码（保险库内容不变）";
+      setStatus("已更换主密码");
+      masterOld.value = "";
+      masterNew.value = "";
+      masterNew2.value = "";
+    } catch (e) {
+      masterMsg.textContent = `失败：${e}`;
+    }
+  })();
+});
+
+document.getElementById("master-remove").addEventListener("click", () => {
+  void (async () => {
+    const ok = await askConfirm(
+      "移除保险库？",
+      "保险库里保存的所有密码会被删除，且**无法恢复**。\n\n移除后「记住密码」会退回未创建状态。",
+      "确认移除",
+    );
+    if (!ok) return;
+    try {
+      await invoke("vault_remove");
+      masterMsg.textContent = "保险库已移除";
+      setStatus("保险库已移除");
+    } catch (e) {
+      masterMsg.textContent = `移除失败：${e}`;
+    }
+  })();
+});
+
 // ── 已知主机（`SEC-005`）──────────────────────────────────
 //
 // 主机密钥变了的时候，用户唯一的出路是「忘掉旧记录」。没有这个界面，
@@ -3701,7 +3760,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-46",
+  ui: "wt-ui-47",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";

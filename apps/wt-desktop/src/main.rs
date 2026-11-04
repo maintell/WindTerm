@@ -385,6 +385,42 @@ fn vault_create(state: State<'_, AppState>, password: String) -> Result<VaultSta
     Ok(status_of(&st))
 }
 
+/// 改主密码（`SEC-001`）：旧密码解封校验 → 新密码重封 → 写盘 → 保持解锁状态。
+///
+/// 不用内存里那份：万一眼前这份是「解锁后又被外部改过」的，用旧密码重新解一次
+/// 才能确保改完之后**磁盘上的密文与内存里的条目是同一份**。
+#[tauri::command]
+fn vault_change_password(
+    state: State<'_, AppState>,
+    old_password: String,
+    new_password: String,
+) -> Result<VaultStatusDto, String> {
+    // 新口令也要过强度检查：改密码时把口令改弱是最容易被忽略的降级
+    wt_crypto::check_strength(&new_password).map_err(|e| e.to_string())?;
+    let bytes = std::fs::read(vault_path()).map_err(|e| format!("读取保险库失败：{e}"))?;
+    let mut vault =
+        wt_crypto::Vault::unlock(&bytes, &old_password).map_err(|e| e.to_string())?;
+    let sealed = vault.seal(&new_password).map_err(|e| e.to_string())?;
+    std::fs::write(vault_path(), sealed).map_err(|e| format!("写入保险库失败：{e}"))?;
+
+    let mut st = state.vault.lock().unwrap();
+    st.vault = Some(vault);
+    st.password = Some(zeroize::Zeroizing::new(new_password));
+    Ok(status_of(&st))
+}
+
+/// 移除保险库（`SEC-001`）：删文件 + 清内存。**不可恢复**，调用方必须先做二次确认。
+#[tauri::command]
+fn vault_remove(state: State<'_, AppState>) -> Result<VaultStatusDto, String> {
+    if vault_path().exists() {
+        std::fs::remove_file(vault_path()).map_err(|e| format!("删除保险库失败：{e}"))?;
+    }
+    let mut st = state.vault.lock().unwrap();
+    st.vault = None;
+    st.password = None;
+    Ok(status_of(&st))
+}
+
 #[tauri::command]
 fn vault_unlock(
     app: tauri::AppHandle,
@@ -2879,6 +2915,8 @@ fn main() {
             vault_status,
             vault_create,
             vault_unlock,
+            vault_change_password,
+            vault_remove,
             vault_lock,
             credential_save,
             credential_get,

@@ -502,6 +502,34 @@
         padding: 0;
         margin: 0;
       }
+      #master-dialog {
+        background: #24242a;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 8px;
+        padding: 12px 14px;
+        min-width: 420px;
+      }
+      #master-dialog .key-row { display: flex; gap: 8px; margin-bottom: 8px; }
+      #master-dialog input {
+        flex: 1;
+        background: #2a2a30;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 4px;
+        padding: 2px 8px;
+        font: inherit;
+      }
+      #master-dialog button {
+        background: #2a2a30;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 4px;
+        padding: 2px 10px;
+        font: inherit;
+        cursor: pointer;
+      }
+      #master-dialog pre { color: var(--muted); font-size: 12px; margin: 0; white-space: pre-wrap; }
       #known-dialog {
         background: #24242a;
         color: var(--fg);
@@ -1096,6 +1124,11 @@
           <span class="set-scope">全局</span>
           <select id="look-theme"></select>
         </div>
+        <div class="set-row" data-kw="主密码 master password 保险库 vault 改密码 移除">
+          <span class="set-name">主密码</span>
+          <span class="set-scope">全局</span>
+          <button type="button" id="master-open">管理…</button>
+        </div>
         <div class="set-row" data-kw="已知主机 known_hosts 主机密钥 指纹 host key 信任">
           <span class="set-name">已知主机</span>
           <span class="set-scope">全局</span>
@@ -1137,6 +1170,19 @@
     </dialog>
     <!-- 导入配色（TER-005）：Windows Terminal schemes JSON / iTerm2 .itermcolors -->
     <!-- 已知主机（SEC-005）：密钥变了要能在这忘掉旧记录，而不是手改 known_hosts -->
+    <!-- 主密码管理（SEC-001）：改密码 / 移除保险库 -->
+    <dialog id="master-dialog">
+      <p>主密码</p>
+      <div class="key-row"><input id="master-old" type="password" placeholder="当前主密码" /></div>
+      <div class="key-row"><input id="master-new" type="password" placeholder="新主密码" /></div>
+      <div class="key-row"><input id="master-new2" type="password" placeholder="再输一次新主密码" /></div>
+      <div class="key-row">
+        <button type="button" id="master-change">改主密码</button>
+        <button type="button" id="master-remove">移除保险库…</button>
+        <button type="button" id="master-close">关闭</button>
+      </div>
+      <pre id="master-msg"></pre>
+    </dialog>
     <dialog id="known-dialog">
       <p id="known-title">已记录的主机密钥</p>
       <div id="known-list"></div>

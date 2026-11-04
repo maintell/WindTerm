@@ -903,7 +903,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-46",
+    uiVersion === "wt-ui-47",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -3685,6 +3685,55 @@ try {
   );
   check("第三跳拿到的是目标机的 shell，不是跳板机的", hop3Screen !== null);
   await closeAllTabs();
+
+  // 19k. 主密码管理（`SEC-001`）：改密码后旧密码失效、移除后保险库没了
+  await closeAllDialogs();
+  await cdp.eval(`document.getElementById("settings").showModal()`);
+  await clickElement("#master-open");
+  const MASTER2 = "WindTerm-E2E-Passw0rd#2";
+  await fillInput("#master-old", MASTER);
+  await fillInput("#master-new", MASTER2);
+  await fillInput("#master-new2", MASTER2);
+  await clickElement("#master-change");
+  const changed = await waitFor(
+    async () => {
+      const t = await cdp.eval(`document.getElementById("master-msg").textContent`);
+      return t.includes("已更换主密码") ? t : null;
+    },
+    { timeout: 20000, label: "更换主密码" },
+  );
+  check("改主密码成功且提示说清内容不变", changed.includes("保险库内容不变"), changed);
+
+  // 锁定后：旧密码必须解不开，新密码能解开
+  await cdp.eval(`window.__TAURI__.core.invoke("vault_lock")`);
+  const oldRejected = await cdp.eval(`(async () => {
+    try {
+      await window.__TAURI__.core.invoke("vault_unlock", { password: ${JSON.stringify(MASTER)} });
+    } catch (e) {
+      return String(e);
+    }
+  })()`);
+  check(
+    "改密码后旧主密码解不开保险库",
+    String(oldRejected).length > 0,
+    String(oldRejected).slice(0, 60),
+  );
+  const newWorks = await cdp.eval(`(async () => {
+    try {
+      const s = await window.__TAURI__.core.invoke("vault_unlock", { password: ${JSON.stringify(MASTER2)} });
+      return s;
+    } catch (e) {
+      return "ERR:" + String(e);
+    }
+  })()`);
+  check(
+    "新主密码能解开保险库",
+    typeof newWorks === "object" && newWorks !== null,
+    JSON.stringify(newWorks)?.slice(0, 60),
+  );
+  // 关掉对话框：模态框会挡住后面「连接失败」那一段的点击，
+  // 表现是它一直等不到报错——报错点离真正原因隔了好几步
+  await closeAllDialogs();
 
   // 20. 连不上的错误路径：必须给出稳定错误码，不能静默失败
   await closeAllTabs();
