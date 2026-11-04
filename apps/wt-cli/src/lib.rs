@@ -100,6 +100,23 @@ pub struct SshTarget {
     pub auth: SshAuth,
     /// 跳过 known_hosts 校验（危险，仅调试用）
     pub insecure_host_key: bool,
+    /// 跳板机（`G14`）。`None` 表示直连。
+    pub jump: Option<JumpTarget>,
+}
+
+/// 跳板机（`G14`，单跳）。
+///
+/// 刻意只支持一层：多跳（`SES-025`）要先补 `StreamProvider` 抽象，
+/// 否则参数会变成「`--jump a --jump b` 谁在外谁在内」这种没法校验的形态。
+///
+/// 它**自带**认证方式而不是复用目标的：`SES-024` 行为规格第 4 条要求凭据不继承，
+/// 跳板机与目标机往往是两套账号——继承只会让人在认证失败时找错方向。
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct JumpTarget {
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub auth: SshAuth,
 }
 
 /// 解析 argv（不含程序名）。
@@ -170,6 +187,140 @@ fn parse_local(rest: &[String]) -> Result<Command, String> {
     })
 }
 
+/// `--jump` 一族参数的暂存区（`G14`）。
+///
+/// 先攒再算，是因为「给了 `--jump-password` 却没给 `--jump`」这种半截配置
+/// 必须在解析期就报错——静默忽略会让人以为跳板机配上了，实际在直连。
+#[derive(Default)]
+struct JumpArgs {
+    spec: Option<String>,
+    password: Option<String>,
+    key: Option<std::path::PathBuf>,
+    passphrase: Option<String>,
+    agent: bool,
+}
+
+impl JumpArgs {
+    /// 尝试把这个参数当跳板机参数消费掉。返回 `None` 表示不归它管。
+    fn take(&mut self, args: &[String], i: usize) -> Result<Option<usize>, String> {
+        match args[i].as_str() {
+            "--jump" | "-J" => {
+                self.spec = Some(need(args, i, "--jump")?);
+                Ok(Some(2))
+            }
+            "--jump-password" => {
+                self.password = Some(need(args, i, "--jump-password")?);
+                Ok(Some(2))
+            }
+            "--jump-key" => {
+                self.key = Some(std::path::PathBuf::from(need(args, i, "--jump-key")?));
+                Ok(Some(2))
+            }
+            "--jump-passphrase" => {
+                self.passphrase = Some(need(args, i, "--jump-passphrase")?);
+                Ok(Some(2))
+            }
+            "--jump-agent" => {
+                self.agent = true;
+                Ok(Some(1))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// 收尾校验，产出跳板机描述。
+    fn finish(self) -> Result<Option<JumpTarget>, String> {
+        let Some(spec) = self.spec else {
+            if self.password.is_some() || self.key.is_some() || self.agent {
+                return Err("给了跳板机的凭据（--jump-password / --jump-key / --jump-agent）\
+                    但没给 --jump：跳板机是哪一台？"
+                    .into());
+            }
+            return Ok(None);
+        };
+
+        let (user, host, port) = parse_jump_spec(&spec)?;
+        let auth = match (self.agent, self.key, self.password) {
+            (true, _, _) => SshAuth::Agent,
+            (false, Some(path), _) => SshAuth::Key {
+                path,
+                passphrase: self.passphrase,
+            },
+            (false, None, Some(pw)) => SshAuth::Password(pw),
+            (false, None, None) => {
+                return Err(format!(
+                    "跳板机 {host} 需要自己的认证方式：--jump-password、--jump-key 或 --jump-agent\
+                     （跳板机的凭据不继承目标机的）"
+                ))
+            }
+        };
+        Ok(Some(JumpTarget {
+            host,
+            port,
+            user,
+            auth,
+        }))
+    }
+}
+
+/// 解析 `[user@]host[:port]`。用户名是必须的——跳板机上用哪个账号没法猜。
+fn parse_jump_spec(spec: &str) -> Result<(String, String, u16), String> {
+    let Some((user, rest)) = spec.rsplit_once('@') else {
+        return Err(format!(
+            "--jump 要写成 `user@host[:port]`（跳板机的用户名不能省），收到 `{spec}`"
+        ));
+    };
+    let user = user.trim();
+    if user.is_empty() {
+        return Err(format!("--jump 的用户名是空的：`{spec}`"));
+    }
+    let (host, port) = split_host_port(rest.trim())?;
+    Ok((user.to_string(), host, port))
+}
+
+/// `host[:port]`，支持 `[::1]:22` 这种方括号写法。
+///
+/// 不方括号的裸 IPv6（`::1`）会与「主机:端口」撞车，直接拒绝并要求加方括号——
+/// 猜错的代价是连到 `::1` 的 1 端口，报错会指向完全无关的方向。
+fn split_host_port(s: &str) -> Result<(String, u16), String> {
+    if s.is_empty() {
+        return Err("--jump 的主机名是空的".into());
+    }
+    if let Some(rest) = s.strip_prefix('[') {
+        let (host, tail) = rest
+            .split_once(']')
+            .ok_or_else(|| format!("--jump 的 IPv6 地址缺少 `]`：`{s}`"))?;
+        if host.is_empty() {
+            return Err(format!("--jump 的主机名是空的：`{s}`"));
+        }
+        let port = match tail.strip_prefix(':') {
+            Some(p) => parse_port(p, s)?,
+            None if tail.is_empty() => 22,
+            None => return Err(format!("--jump 的 `]` 后面只能跟 `:端口`，收到 `{tail}`")),
+        };
+        return Ok((host.to_string(), port));
+    }
+    match s.rsplit_once(':') {
+        Some((host, port)) => {
+            if host.contains(':') {
+                return Err(format!(
+                    "--jump 的 IPv6 地址要用方括号：`[{host}]:{port}`，收到 `{s}`"
+                ));
+            }
+            if host.is_empty() {
+                return Err(format!("--jump 的主机名是空的：`{s}`"));
+            }
+            Ok((host.to_string(), parse_port(port, s)?))
+        }
+        None => Ok((s.to_string(), 22)),
+    }
+}
+
+fn parse_port(raw: &str, whole: &str) -> Result<u16, String> {
+    raw.parse()
+        .map_err(|_| format!("--jump 的端口要写成数字，收到 `{raw}`（完整值 `{whole}`）"))
+}
+
 fn parse_ssh(rest: &[String]) -> Result<Command, String> {
     let sub = rest
         .first()
@@ -187,9 +338,14 @@ fn parse_ssh(rest: &[String]) -> Result<Command, String> {
     let mut passphrase = None;
     let mut insecure = false;
     let mut use_agent = false;
+    let mut jump = JumpArgs::default();
 
     let mut i = 1;
     while i < rest.len() {
+        if let Some(consumed) = jump.take(rest, i)? {
+            i += consumed;
+            continue;
+        }
         match rest[i].as_str() {
             "--" => {
                 i += 1;
@@ -251,6 +407,7 @@ fn parse_ssh(rest: &[String]) -> Result<Command, String> {
         user: user.ok_or_else(|| "缺少 --user".to_string())?,
         auth,
         insecure_host_key: insecure,
+        jump: jump.finish()?,
     };
 
     if sub == "shell" {
@@ -290,9 +447,14 @@ fn parse_sftp(rest: &[String]) -> Result<Command, String> {
     let mut path = None;
     let mut remote = None;
     let mut local = None;
+    let mut jump = JumpArgs::default();
 
     let mut i = 1;
     while i < rest.len() {
+        if let Some(consumed) = jump.take(rest, i)? {
+            i += consumed;
+            continue;
+        }
         match rest[i].as_str() {
             "--host" | "-h" => {
                 host = Some(need(rest, i, "--host")?);
@@ -378,6 +540,7 @@ fn parse_sftp(rest: &[String]) -> Result<Command, String> {
             user: user.ok_or_else(|| "缺少 --user".to_string())?,
             auth,
             insecure_host_key: insecure,
+            jump: jump.finish()?,
         },
         action,
     })
@@ -604,11 +767,70 @@ pub async fn run_ssh_exec(
     Ok(result.exit_code.unwrap_or(0) as i32)
 }
 
-/// 按 `SshTarget` 建连（密码或私钥），并套用 known_hosts 策略。
+/// 预处理过的认证方式。
 ///
-/// `ssh exec` 与 `sftp` 共用：两处各写一遍迟早会出现「一个校验主机密钥、一个不校验」。
+/// 抽出来的原因：经跳板时要**同时**握着一份跳板机的 `Auth<'_>` 和一份目标的，
+/// 而 `Auth` 借用私钥源——直接写在 `match` 里，两个引用的生命周期会在
+/// `connect_via` 调用点多绕一圈，很容易写成「先用后丢」。
+enum PreparedAuth {
+    Password(String),
+    Key(wt_ssh::PrivateKeySource),
+    Agent,
+}
+
+impl PreparedAuth {
+    fn load(auth: &SshAuth) -> Result<Self, String> {
+        Ok(match auth {
+            SshAuth::Password(pw) => Self::Password(pw.clone()),
+            SshAuth::Key { path, passphrase } => {
+                let pem = std::fs::read(path)
+                    .map_err(|e| format!("读取私钥失败 {}: {e}", path.display()))?;
+                Self::Key(wt_ssh::PrivateKeySource::new(pem, passphrase.clone()))
+            }
+            SshAuth::Agent => Self::Agent,
+        })
+    }
+
+    fn as_auth(&self) -> wt_ssh::Auth<'_> {
+        match self {
+            Self::Password(pw) => wt_ssh::Auth::Password(pw),
+            Self::Key(src) => wt_ssh::Auth::Key(src),
+            Self::Agent => wt_ssh::Auth::Agent,
+        }
+    }
+}
+
+/// 主机密钥策略。每跳各自算一份：`Known` 里装着 `KnownHosts`，不能两跳共用一份。
+fn host_key_policy(target: &SshTarget) -> wt_ssh::HostKeyPolicy {
+    if target.insecure_host_key {
+        return wt_ssh::HostKeyPolicy::AcceptAll;
+    }
+    let text = std::fs::read_to_string(known_hosts_path()).unwrap_or_default();
+    let (kh, _warnings) = wt_ssh::KnownHosts::parse(&text);
+    wt_ssh::HostKeyPolicy::Known(Box::new(kh))
+}
+
+/// 在一条**直连**的传输层上完成认证。
+async fn connect_direct(
+    cfg: &wt_ssh::SshConfig,
+    auth: &PreparedAuth,
+    policy: wt_ssh::HostKeyPolicy,
+) -> Result<wt_ssh::SshConnection, String> {
+    use wt_ssh::SshConnection;
+    match auth {
+        PreparedAuth::Password(pw) => SshConnection::connect_password(cfg, pw, policy).await,
+        PreparedAuth::Key(src) => SshConnection::connect_publickey(cfg, src, policy).await,
+        PreparedAuth::Agent => SshConnection::connect_agent(cfg, policy).await,
+    }
+    .map_err(|e| e.to_string())
+}
+
+/// 按 `SshTarget` 建连（密码 / 私钥 / agent），有跳板机时走两跳。
+///
+/// `ssh exec`、`ssh shell` 与 `sftp` 共用：三处各写一遍迟早会出现
+/// 「一个校验主机密钥、一个不校验」或「一个走跳板、一个忘了走」。
 async fn connect_target(target: &SshTarget) -> Result<wt_ssh::SshConnection, String> {
-    use wt_ssh::{HostKeyPolicy, KnownHosts, PrivateKeySource, SshConfig, SshConnection};
+    use wt_ssh::SshConfig;
 
     let cfg = SshConfig {
         host: target.host.clone(),
@@ -616,27 +838,30 @@ async fn connect_target(target: &SshTarget) -> Result<wt_ssh::SshConnection, Str
         user: target.user.clone(),
         ..Default::default()
     };
+    let auth = PreparedAuth::load(&target.auth)?;
 
-    let policy = if target.insecure_host_key {
-        HostKeyPolicy::AcceptAll
-    } else {
-        let path = known_hosts_path();
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
-        let (kh, _warnings) = KnownHosts::parse(&text);
-        HostKeyPolicy::Known(Box::new(kh))
+    let Some(jump) = &target.jump else {
+        return connect_direct(&cfg, &auth, host_key_policy(target)).await;
     };
 
-    match &target.auth {
-        SshAuth::Password(pw) => SshConnection::connect_password(&cfg, pw, policy).await,
-        SshAuth::Key { path, passphrase } => {
-            let pem =
-                std::fs::read(path).map_err(|e| format!("读取私钥失败 {}: {e}", path.display()))?;
-            let src = PrivateKeySource::new(pem, passphrase.clone());
-            SshConnection::connect_publickey(&cfg, &src, policy).await
-        }
-        SshAuth::Agent => SshConnection::connect_agent(&cfg, policy).await,
-    }
-    .map_err(|e| e.to_string())
+    let jump_cfg = SshConfig {
+        host: jump.host.clone(),
+        port: jump.port,
+        user: jump.user.clone(),
+        ..Default::default()
+    };
+    let jump_link = format!("{}:{}", jump_cfg.host, jump_cfg.port);
+    let jump_auth = PreparedAuth::load(&jump.auth)?;
+    // 跳板机自己的主机密钥也照同一套策略校验：不因为「它只是路过」就放宽
+    let jump_conn = connect_direct(&jump_cfg, &jump_auth, host_key_policy(target))
+        .await
+        .map_err(|e| format!("跳板机 {jump_link} 建连失败：{e}"))?;
+
+    // 第 2 跳：让跳板机开一条到目标的 direct-tcpip，在它上面做第二次 SSH 握手。
+    // 目标主机名由**跳板机侧**解析，本机不需要能访问它。
+    wt_ssh::connect_via(&jump_conn, &jump_link, &cfg, &auth.as_auth(), host_key_policy(target))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// 文件传输：`ls` / `get` / `put`。
@@ -911,6 +1136,10 @@ pub fn usage() -> String {
         "  wt ssh shell --host <H> --user <U> (--password <PW> | --key <PATH> | --agent)",
         "              [--port <P>] [--insecure-host-key]",
         "                                 远端交互式 shell（接管本机终端，Ctrl+C 发给远端）",
+        "  wt ssh exec|shell / wt sftp ... 都可加 --jump user@host[:port]",
+        "              (--jump-password <PW> | --jump-key <PATH> [--jump-passphrase <PP>] | --jump-agent)",
+        "                                 先登录跳板机，再经它连目标（单跳；目标由跳板机侧解析）",
+        "                                 跳板机的凭据必须另给，不继承目标机的",
         "  wt session import --file <MobaXterm.ini> [--db <path>]",
         "                                 导入 MobaXterm 会话（结构优先，密码需重输）",
         "  wt session list [--db <path>] [--json]",
@@ -1258,6 +1487,7 @@ mod ssh_tests {
             user: "tester".into(),
             auth: SshAuth::Password("secret".into()),
             insecure_host_key: true,
+            jump: None,
         };
 
         let mut out: Vec<u8> = Vec::new();
@@ -1279,6 +1509,7 @@ mod ssh_tests {
             user: "tester".into(),
             auth: SshAuth::Password("wrong".into()),
             insecure_host_key: true,
+            jump: None,
         };
 
         let mut out: Vec<u8> = Vec::new();
@@ -1302,6 +1533,7 @@ mod ssh_tests {
                 passphrase: None,
             },
             insecure_host_key: true,
+            jump: None,
         };
 
         let mut out: Vec<u8> = Vec::new();
@@ -1310,6 +1542,118 @@ mod ssh_tests {
         assert!(String::from_utf8_lossy(&out).contains("ran:id"));
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // `--jump`（`G14`）
+    // ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn parses_jump_into_the_target() {
+        let cmd = parse(&s(&[
+            "ssh", "exec", "--host", "10.0.3.44", "--user", "root", "--password", "pw",
+            "--jump", "admin@bastion:2222", "--jump-password", "jp", "--", "uptime",
+        ]))
+        .expect("应能解析");
+        let Command::SshExec { target, .. } = cmd else {
+            panic!("应解析成 ssh exec");
+        };
+        let jump = target.jump.expect("应带跳板机");
+        assert_eq!(jump.host, "bastion");
+        assert_eq!(jump.port, 2222);
+        assert_eq!(jump.user, "admin");
+        assert_eq!(jump.auth, SshAuth::Password("jp".into()));
+        // 目标的凭据不受影响——两边各一份
+        assert_eq!(target.auth, SshAuth::Password("pw".into()));
+    }
+
+    #[test]
+    fn jump_port_defaults_to_22() {
+        let cmd = parse(&s(&[
+            "ssh", "shell", "--host", "h", "--user", "u", "--agent", "--jump", "a@b",
+            "--jump-agent",
+        ]))
+        .unwrap();
+        let Command::SshShell { target } = cmd else {
+            panic!("应解析成 ssh shell");
+        };
+        let jump = target.jump.expect("应带跳板机");
+        assert_eq!((jump.host.as_str(), jump.port), ("b", 22));
+        assert_eq!(jump.auth, SshAuth::Agent);
+    }
+
+    #[test]
+    fn jump_is_available_for_sftp_too() {
+        let cmd = parse(&s(&[
+            "sftp", "ls", "--host", "h", "--user", "u", "--password", "p",
+            "--jump", "a@b", "--jump-key", "C:/k/id_ed25519",
+        ]))
+        .unwrap();
+        let Command::Sftp { target, .. } = cmd else {
+            panic!("应解析成 sftp");
+        };
+        let jump = target.jump.expect("sftp 也应带跳板机");
+        assert_eq!(jump.auth, SshAuth::Key {
+            path: std::path::PathBuf::from("C:/k/id_ed25519"),
+            passphrase: None,
+        });
+    }
+
+    #[test]
+    fn jump_without_its_own_auth_is_rejected() {
+        // 不能悄悄用目标的凭据：跳板机与目标机往往是两套账号
+        let err = parse(&s(&[
+            "ssh", "exec", "--host", "h", "--user", "u", "--password", "p", "--jump", "a@b",
+            "--", "x",
+        ]))
+        .unwrap_err();
+        assert!(err.contains("不继承"), "实际: {err}");
+    }
+
+    #[test]
+    fn jump_credentials_without_jump_are_rejected() {
+        // 半截配置必须报错，否则用户以为配上了、实际在直连
+        let err = parse(&s(&[
+            "ssh", "exec", "--host", "h", "--user", "u", "--password", "p",
+            "--jump-password", "jp", "--", "x",
+        ]))
+        .unwrap_err();
+        assert!(err.contains("--jump"), "实际: {err}");
+    }
+
+    #[test]
+    fn jump_spec_needs_a_user() {
+        let err = parse(&s(&[
+            "ssh", "exec", "--host", "h", "--user", "u", "--password", "p",
+            "--jump", "bastion", "--jump-password", "jp", "--", "x",
+        ]))
+        .unwrap_err();
+        assert!(err.contains("user@host"), "实际: {err}");
+    }
+
+    #[test]
+    fn jump_spec_accepts_bracketed_ipv6() {
+        let cmd = parse(&s(&[
+            "ssh", "exec", "--host", "h", "--user", "u", "--password", "p",
+            "--jump", "a@[::1]:2200", "--jump-password", "jp", "--", "x",
+        ]))
+        .unwrap();
+        let Command::SshExec { target, .. } = cmd else {
+            panic!("应解析成 ssh exec");
+        };
+        let jump = target.jump.expect("应带跳板机");
+        assert_eq!((jump.host.as_str(), jump.port), ("::1", 2200));
+    }
+
+    #[test]
+    fn jump_spec_rejects_bare_ipv6() {
+        // `::1` 与「主机:端口」撞车，猜错会连到 `::` 的 1 端口
+        let err = parse(&s(&[
+            "ssh", "exec", "--host", "h", "--user", "u", "--password", "p",
+            "--jump", "a@::1", "--jump-password", "jp", "--", "x",
+        ]))
+        .unwrap_err();
+        assert!(err.contains("方括号"), "实际: {err}");
     }
 }
 #[cfg(test)]

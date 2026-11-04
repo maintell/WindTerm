@@ -99,7 +99,7 @@ UI 渲染为：
 | 每跳错误定位（§2.3） | ✅ 错误统一加「第 N 跳（host:port）：」前缀，**保留原错误码** | 换码会让「认证失败」被归成网络问题，界面就分不清该改密码还是改网络 |
 | `AllowTcpForwarding no` 专项报错 | ✅ `SSH_FORWARD_DENIED`，消息直接点名原因 | — |
 | `jump.sessionId` 落库 | ✅ 已做（存在 `options.jumpSessionId`，保存时环检测 + 最多 5 跳） | 键名只在 `wt_core::Session::set_jump/jump` 一处定义，界面不直接碰 `options` |
-| CLI 入口（`--jump`） | ❌ 未做 | 见 `README` 的 `G14` |
+| CLI 入口（`--jump`） | ✅ 已做（`wt ssh exec|shell` / `wt sftp` 都可加，`user@host[:port]`，跳板机凭据 `--jump-password`/`--jump-key`/`--jump-agent` 必须另给） | 只支持单跳；不自动 TOFU，主机密钥要预先信任或用 `--insecure-host-key` |
 
 认证：`SshConnection::connect` / `connect_over` 共用同一段 `authenticate`，
 三条路径（密码 / 密钥 / agent）只有一份实现，直连与经跳板的错误文案因此完全一致。
