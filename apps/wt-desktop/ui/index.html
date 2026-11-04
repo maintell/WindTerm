@@ -125,6 +125,11 @@
       }
       #tree-body .node.folder.collapsed::before { content: "▸"; }
       #tree-body .node.drop-target { background: #2f4f7f; }
+      /* 多选（SES-013）：与「当前会话」的选中态区分开——一个是蓝底，一个是左侧竖条 */
+      #tree-body .node.multi {
+        background: #2f4f7f44;
+        box-shadow: inset 2px 0 0 var(--accent);
+      }
       #tree-body .node[draggable="true"] { cursor: grab; }
       #tree-body { flex: 1; overflow: auto; padding: 4px 0; }
       #tree-filter-row { padding: 4px 6px; }

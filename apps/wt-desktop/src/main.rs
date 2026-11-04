@@ -567,6 +567,36 @@ fn folder_save(req: FolderSaveReq) -> Result<String, String> {
     Ok(id)
 }
 
+/// 批量把会话移到某个文件夹（`SES-013` 多选）。
+///
+/// 一次开库改多条：逐个调用 `session_move` 会重复打开数据库，条数一多就明显变慢，
+/// 而且中途失败会留下「移了一半」的状态——这里要么全成、要么报错并说明哪条失败。
+#[tauri::command]
+fn session_move_many(session_ids: Vec<String>, folder_id: Option<String>) -> Result<usize, String> {
+    if session_ids.is_empty() {
+        return Ok(0);
+    }
+    let mut store = wt_store::Store::open(&sessions_db_path()).map_err(|e| e.to_string())?;
+    let snapshot = store.load_snapshot().map_err(|e| e.to_string())?;
+    let target = folder_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
+    let mut moved = 0;
+    for id in &session_ids {
+        let Some(mut session) = snapshot.sessions.iter().find(|s| s.id.as_str() == id).cloned()
+        else {
+            return Err(format!("[SESSION_NOT_FOUND] 会话 {id} 不存在（可能已被删除）"));
+        };
+        session.folder_id = target.as_deref().map(wt_core::FolderId::from);
+        store.upsert_session(&session).map_err(|e| e.to_string())?;
+        moved += 1;
+    }
+    Ok(moved)
+}
+
 /// 重排会话（`SES-013` 拖拽排序）：放到同层第 `index` 位。
 ///
 /// 只重写**同一层**的 `sort_order`（0, 1000, 2000…），不碰别的行——全表重排会让
@@ -2764,6 +2794,7 @@ fn main() {
             folder_save,
             folder_move,
             session_move,
+            session_move_many,
             session_reorder,
             session_export,
             prefs_load,

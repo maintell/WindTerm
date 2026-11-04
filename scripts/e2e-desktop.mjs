@@ -672,6 +672,23 @@ async function confirmName(text) {
   await clickElement("#name-ok");
 }
 
+/** Ctrl+点击会话树节点（多选用） */
+async function ctrlClickTreeNode(name) {
+  const box = await cdp.eval(`(() => {
+    const el = [...document.querySelectorAll("#tree-body .node.session")].find(
+      (n) => n.textContent === ${JSON.stringify(name)},
+    );
+    if (!el) return null;
+    el.scrollIntoView({ block: "nearest" });
+    const r = el.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  })()`);
+  if (!box) throw new Error(`会话树里找不到 ${name}`);
+  const base = { x: box.x, y: box.y, button: "left", modifiers: 2 };
+  await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...base, clickCount: 1 });
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...base, clickCount: 1 });
+}
+
 async function clickTunnelButton(kind, which) {
   const idx = which === "delete" ? 1 : 0;
   const box = await cdp.eval(`(() => {
@@ -878,7 +895,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-42",
+    uiVersion === "wt-ui-43",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -3362,6 +3379,62 @@ try {
   check("取消后没有发出任何命令", cancelled.last.sent === 0, cancelled.result || "未发送");
   await clickElement("#bc-toggle");
   await closeAllTabs();
+
+  // 19e-3. 多选与批量移动（`SES-013`）
+  await clickElement("#refresh");
+  await waitFor(
+    async () => ((await cdp.eval(`window.__wt.sessions()`)).length ? true : null),
+    { timeout: 10000, label: "刷新会话树" },
+  );
+  await ctrlClickTreeNode("mock-ssh 副本");
+  await ctrlClickTreeNode("ui-imported");
+  const multiOn = await waitFor(
+    async () => {
+      const n = await cdp.eval(`document.querySelectorAll("#tree-body .node.multi").length`);
+      return n === 2 ? n : null;
+    },
+    { timeout: 8000, label: "多选两个会话" },
+  );
+  check("Ctrl+点击能多选会话", multiOn === 2, `${multiOn} 个`);
+
+  await rightClickNode("ui-imported");
+  const multiMenu = await cdp.eval(`[...document.querySelectorAll("#ctx-menu button")].map((b) => b.textContent)`);
+  check(
+    "多选时右键菜单给出批量移动",
+    multiMenu.some((t) => t.includes("移动 2 项到")),
+    JSON.stringify(multiMenu),
+  );
+  await clickCtxItem(multiMenu.find((t) => t.includes("移动 2 项到")));
+  await waitFor(
+    async () => ((await cdp.eval(`document.getElementById("pick-dialog").open`)) ? true : null),
+    { timeout: 5000, label: "选目标文件夹" },
+  );
+  const targetFolder = await cdp.eval(`(async () => {
+    const snap = await window.__TAURI__.core.invoke("sessions_load");
+    const f = snap.folders.find((x) => x.name === "sub-net");
+    const sel = document.getElementById("pick-select");
+    sel.value = f.id;
+    return f.id;
+  })()`);
+  await cdp.eval(`[...document.querySelectorAll("#pick-dialog button")].find((b) => b.textContent === "确定").click()`);
+  const movedAll = await waitFor(
+    async () => {
+      const snap = await cdp.eval(`window.__TAURI__.core.invoke("sessions_load")`);
+      const picked = snap.sessions.filter(
+        (s) => s.name === "mock-ssh 副本" || s.name === "ui-imported",
+      );
+      // 读后端真值：两个都在目标文件夹里才算成功
+      return picked.length === 2 && picked.every((s) => s.folder_id === targetFolder)
+        ? picked.map((s) => s.name)
+        : null;
+    },
+    { timeout: 10000, label: "批量移动" },
+  ).catch(() => null);
+  check(
+    "批量移动把两个会话都挪进目标文件夹",
+    Array.isArray(movedAll) && movedAll.length === 2,
+    JSON.stringify(movedAll),
+  );
 
   // 19f. 外观与回滚（`TER-005` / `TER-008`）：主题要真的落到 xterm 上，
   //      只改下拉框不算（把 theme 传空也能骗过那种断言）

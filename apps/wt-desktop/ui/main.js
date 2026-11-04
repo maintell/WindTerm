@@ -769,9 +769,25 @@ function renderTree(dto) {  lastTree = dto;
     }
     for (const s of byFolder.get(key) ?? []) {
       if (query && !s.name.toLowerCase().includes(query)) continue;
-      const sNode = addNode(s.name, "session", depth, () => selectSession(s), {
-        sessionId: s.id,
-      });
+      const sNode = addNode(
+        s.name,
+        "session",
+        depth,
+        (ev) => {
+          // Ctrl/Cmd + 点击＝增减多选；普通点击＝单选并填表单
+          if (ev?.ctrlKey || ev?.metaKey) {
+            if (multiSel.has(s.id)) multiSel.delete(s.id);
+            else multiSel.add(s.id);
+            paintMulti();
+            return;
+          }
+          multiSel.clear();
+          paintMulti();
+          selectSession(s);
+        },
+        { sessionId: s.id },
+      );
+      if (multiSel.has(s.id)) sNode.classList.add("multi");
       // 拖到另一条会话上＝插到它前面（同层排序，`SES-013`）
       sNode.addEventListener("dragover", (ev) => {
         ev.preventDefault();
@@ -921,6 +937,46 @@ async function exportSession(s) {
   }
 }
 
+// ── 多选（`SES-013`）────────────────────────────────────
+//
+// 只做「选中 + 批量移动」：批量删除是破坏性动作，需要先把确认流程定下来，
+// 在那之前不提供——给一个能一次删十条的按钮而不谈确认，是给自己挖坑。
+
+/** 多选的会话 id（与「当前会话」是两回事：后者决定表单填什么） */
+const multiSel = new Set();
+
+function paintMulti() {
+  for (const node of document.querySelectorAll("#tree-body .node.session")) {
+    const id = node.dataset.sessionId;
+    if (id) node.classList.toggle("multi", multiSel.has(id));
+  }
+  if (multiSel.size > 1) {
+    setStatus(`已选 ${multiSel.size} 个会话（Ctrl+点击增减，右键可批量移动）`);
+  }
+}
+
+/** 批量移动：一次开库改多条，失败要说清是哪一条 */
+async function moveSelectedSessions() {
+  if (!multiSel.size) return;
+  const folders = lastTree?.folders ?? [];
+  const options = [{ value: "", label: "（根目录）" }].concat(
+    folders.map((f) => ({ value: f.id, label: f.name })),
+  );
+  const pick = await askPick(`移动 ${multiSel.size} 个会话到`, options, "");
+  if (pick === null) return;
+  try {
+    const n = await invoke("session_move_many", {
+      sessionIds: [...multiSel],
+      folderId: pick || null,
+    });
+    multiSel.clear();
+    await loadTree();
+    setStatus(`已移动 ${n} 个会话`);
+  } catch (e) {
+    setStatus(`批量移动失败：${e}`);
+  }
+}
+
 /** 折叠/展开一个文件夹（`SES-013`）：状态落库，重启后还是这个形状 */
 async function toggleFolder(f) {
   try {
@@ -1033,9 +1089,11 @@ treeBody.addEventListener("contextmenu", (ev) => {
     const s = (lastTree?.sessions ?? []).find((x) => x.id === sessionId);
     if (!s) return;
     showCtxMenu(ev.clientX, ev.clientY, [
+      ...(multiSel.size > 1
+        ? [{ label: `移动 ${multiSel.size} 项到…`, run: () => moveSelectedSessions() }]
+        : [{ label: "移动到…", run: () => moveSession(s) }]),
       { label: "重命名", run: () => renameSession(s) },
       { label: "复制", run: () => duplicateSession(s) },
-      { label: "移动到…", run: () => moveSession(s) },
       { label: "导出", run: () => exportSession(s) },
     ]);
   } else if (folderId) {
@@ -3402,7 +3460,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-42",
+  ui: "wt-ui-43",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";
