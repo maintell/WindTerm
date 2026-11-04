@@ -734,7 +734,20 @@ function renderTree(dto) {  lastTree = dto;
     }
     for (const s of byFolder.get(key) ?? []) {
       if (query && !s.name.toLowerCase().includes(query)) continue;
-      addNode(s.name, "session", depth, () => selectSession(s), { sessionId: s.id });
+      const sNode = addNode(s.name, "session", depth, () => selectSession(s), {
+        sessionId: s.id,
+      });
+      // 拖到另一条会话上＝插到它前面（同层排序，`SES-013`）
+      sNode.addEventListener("dragover", (ev) => {
+        ev.preventDefault();
+        sNode.classList.add("drop-target");
+      });
+      sNode.addEventListener("dragleave", () => sNode.classList.remove("drop-target"));
+      sNode.addEventListener("drop", (ev) => {
+        ev.preventDefault();
+        sNode.classList.remove("drop-target");
+        void dropBefore(ev.dataTransfer?.getData("text/plain") ?? "", s);
+      });
     }
   };
   walk("", 0);
@@ -911,6 +924,35 @@ async function dropInto(raw, folderId) {
     setStatus("已移动");
   } catch (e) {
     setStatus(`移动失败：${e}`);
+  }
+}
+
+/**
+ * 把拖来的会话插到 `target` 前面（同层排序）。
+ *
+ * 位置按 `lastTree` 里同层会话的顺序算：那正是渲染顺序，也是用户看到的顺序。
+ */
+async function dropBefore(raw, target) {
+  let payload = null;
+  try {
+    payload = JSON.parse(raw);
+  } catch {
+    return;
+  }
+  const movingId = payload?.sessionId;
+  if (!movingId || movingId === target.id) return;
+  const folder = target.folder_id ?? null;
+  const siblings = (lastTree?.sessions ?? []).filter(
+    (s) => (s.folder_id ?? null) === folder && s.id !== movingId,
+  );
+  const index = siblings.findIndex((s) => s.id === target.id);
+  if (index < 0) return;
+  try {
+    await invoke("session_reorder", { sessionId: movingId, folderId: folder, index });
+    await loadTree();
+    setStatus("已调整顺序");
+  } catch (e) {
+    setStatus(`排序失败：${e}`);
   }
 }
 
@@ -2686,7 +2728,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-33",
+  ui: "wt-ui-34",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";

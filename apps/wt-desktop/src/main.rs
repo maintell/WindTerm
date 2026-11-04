@@ -567,6 +567,50 @@ fn folder_save(req: FolderSaveReq) -> Result<String, String> {
     Ok(id)
 }
 
+/// 重排会话（`SES-013` 拖拽排序）：放到同层第 `index` 位。
+///
+/// 只重写**同一层**的 `sort_order`（0, 1000, 2000…），不碰别的行——全表重排会让
+/// 两条无关记录的相对顺序莫名变化，用户会觉得「我什么都没动，它自己换了位置」。
+#[tauri::command]
+fn session_reorder(
+    session_id: String,
+    folder_id: Option<String>,
+    index: usize,
+) -> Result<(), String> {
+    let mut store = wt_store::Store::open(&sessions_db_path()).map_err(|e| e.to_string())?;
+    let snapshot = store.load_snapshot().map_err(|e| e.to_string())?;
+    let target = folder_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
+    let mut moved = snapshot
+        .sessions
+        .iter()
+        .find(|s| s.id.as_str() == session_id)
+        .cloned()
+        .ok_or_else(|| "[SESSION_NOT_FOUND] 会话不存在（可能已被删除）".to_string())?;
+
+    // 同层其它会话（按当前 sort_order 顺序），把目标摘出来再插进去
+    let mut siblings: Vec<wt_core::Session> = snapshot
+        .sessions
+        .iter()
+        .filter(|s| s.id.as_str() != session_id)
+        .filter(|s| s.folder_id.as_ref().map(|f| f.as_str()) == target.as_deref())
+        .cloned()
+        .collect();
+    let at = index.min(siblings.len());
+    moved.folder_id = target.map(wt_core::FolderId::from);
+    siblings.insert(at, moved);
+
+    for (i, mut s) in siblings.into_iter().enumerate() {
+        s.sort_order = (i as i64) * 1000;
+        store.upsert_session(&s).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// 移动文件夹（`SES-013` 拖拽）。
 ///
 /// **必须做环检测**：把 A 挪进 A/B 会让 A 变成自己的子孙，整棵子树从树上消失——
@@ -2381,6 +2425,7 @@ fn main() {
             folder_save,
             folder_move,
             session_move,
+            session_reorder,
             session_export
         ])
         .run(tauri::generate_context!())

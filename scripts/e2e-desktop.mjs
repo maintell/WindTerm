@@ -841,7 +841,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-33",
+    uiVersion === "wt-ui-34",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -2830,6 +2830,47 @@ try {
     { timeout: 10000, label: "拖拽移动会话" },
   ).catch(() => null);
   check("把会话拖进文件夹后 folder_id 变了", movedOk === true, JSON.stringify(moved));
+
+  // 同层排序：把 ui-imported 拖到「mock-ssh 副本」前面
+  const orderBefore = await cdp.eval(`(async () => {
+    const snap = await window.__TAURI__.core.invoke("sessions_load");
+    return snap.sessions.filter((s) => !s.folder_id).map((s) => s.name);
+  })()`);
+  const reordered = await cdp.eval(`(async () => {
+    const snap = await window.__TAURI__.core.invoke("sessions_load");
+    const root = snap.sessions.filter((s) => !s.folder_id);
+    const src = [...document.querySelectorAll("#tree-body .node.session")].find(
+      (n) => n.textContent === "ui-imported",
+    );
+    const dst = [...document.querySelectorAll("#tree-body .node.session")].find(
+      (n) => n.textContent === "mock-ssh 副本",
+    );
+    if (!src || !dst) return { ok: false, why: "找不到节点", root: root.map((s) => s.name) };
+    const dt = new DataTransfer();
+    src.dispatchEvent(new DragEvent("dragstart", { bubbles: true, dataTransfer: dt }));
+    dst.dispatchEvent(new DragEvent("dragover", { bubbles: true, dataTransfer: dt }));
+    dst.dispatchEvent(new DragEvent("drop", { bubbles: true, dataTransfer: dt }));
+    return { ok: true };
+  })()`);
+  const reorderedOk = await waitFor(
+    async () => {
+      const names = await cdp.eval(
+        `(async () => {
+          const snap = await window.__TAURI__.core.invoke("sessions_load");
+          return snap.sessions.filter((s) => !s.folder_id).map((s) => s.name);
+        })()`,
+      );
+      const a = names.indexOf("ui-imported");
+      const b = names.indexOf("mock-ssh 副本");
+      return a >= 0 && b >= 0 && a < b ? names : null;
+    },
+    { timeout: 10000, label: "拖拽排序" },
+  ).catch(() => null);
+  check(
+    "同层拖到另一条会话上会调整顺序",
+    reorderedOk !== null,
+    `${JSON.stringify(orderBefore)} → ${JSON.stringify(reorderedOk ?? reordered)}`,
+  );
 
   // 环检测：把 Lab 挪进它自己的子文件夹 sub-net，必须被拒
   const cycleErr = await cdp.eval(`(async () => {
