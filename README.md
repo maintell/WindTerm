@@ -17,7 +17,7 @@
 | MobaXterm 迁移（`SES-020`） | ✅ 可用 | `wt session import/list`：树结构还原、Rlogin 跳过并说明、重复导入按 name+host+port 与会话/文件夹去重 |
 | SFTP（列目录 / 下载 / 上传 / 文件管理） | ✅ CLI + 界面 | `wt sftp ls/get/put` + `wt-ssh::SftpClient`（含 `create_dir` / `rename` / `remove_dir` / `remove_file`）；用例覆盖报文级（内存管道）、真实 SSH 通道、CLI 真实执行路径。界面文件面板：**顶部可切「对着哪台机器」**（跟随连接表单或选某个会话，各自记住浏览位置）、单击选中、双击进入目录或下载、同名自动改名不覆盖、上传本地文件（**前端按 64 KB `File.slice` 逐块发送，写句柄跨命令存活——整文件不再进内存**，进度来自真实写入）、**拖拽文件进面板即上传**、**新建目录 / 改名 / 删除**（删除二次确认；非空目录由服务端拒绝并说明原因）。**拖出去下载**需要额外插件，见 `G10` |
 | 终端剪贴板（`TER-011` / `TER-013` / `TER-023`） | ✅ 可用 | 双击选整词（含 `user@host:/var/log` 这种串）、选中即复制、`Ctrl+Shift+C` / `Ctrl+Insert` 复制、`Ctrl+Shift+V` / `Shift+Insert` 粘贴、多行粘贴确认（取消后零字节）、bracketed paste 遵守 `?2004`；右键粘贴见 `G11` |
-| 终端外观与编码（`TER-005` / `TER-006` / `TER-008`） | ✅ 可用 | 底部工具条切换 UTF-8 / GBK / GB18030 / Big5 / Shift-JIS / Latin-1；**切换只影响之后的输出，已显示内容不动**（规格明确要求，省得为了改编码把历史刷掉）。多字节字符跨块用流式解码器拼，不会在分块边界裂开。`UTF-8` 时把字节直接交给 xterm（它自己的增量解码最稳），其它编码才过 `TextDecoder`。**内置 20 套配色**（Solarized / Dracula / Nord / Gruvbox / One Dark / Monokai / Tokyo Night / Catppuccin 等）、字体族、字号、行高、**回滚行数（默认 10 000，可配到 1 000 000）**全部在底栏可调，改完立刻作用于已开会话并重新 fit。偏好写在 `config.toml`（与会话库同目录，`WT_DATA_DIR` 可覆盖）：人可读、可进 Git，`SET-006` 的存储要求算是落地了。多执行广播（`TER-004`）仍未做，见下面「未实现的 P0」 |
+| 终端外观与编码（`TER-005` / `TER-006` / `TER-008`） | ✅ 可用 | 底部工具条切换 UTF-8 / GBK / GB18030 / Big5 / Shift-JIS / Latin-1；**切换只影响之后的输出，已显示内容不动**（规格明确要求，省得为了改编码把历史刷掉）。多字节字符跨块用流式解码器拼，不会在分块边界裂开。`UTF-8` 时把字节直接交给 xterm（它自己的增量解码最稳），其它编码才过 `TextDecoder`。**内置 20 套配色**（Solarized / Dracula / Nord / Gruvbox / One Dark / Monokai / Tokyo Night / Catppuccin 等）、字体族、字号、行高、**回滚行数（默认 10 000，可配到 1 000 000）**全部在底栏可调，改完立刻作用于已开会话并重新 fit。偏好写在 `config.toml`（与会话库同目录）：人可读、可进 Git。位置优先级 `--config-dir` > `--portable` > `WT_DATA_DIR` > `%APPDATA%\WindTerm`；`--config-dir` 少了值会直接报错，不会悄悄退回默认目录。多执行广播（`TER-004`）仍未做，见下面「未实现的 P0」 |
 | 多执行广播（`TER-004`） | ✅ 可用（两种模式） | 底栏「广播」打开一条输入栏：同一命令发给**所有已连接会话**，按输出分组收起——输出一致的折成「N 台一致：…」，不一致的按组展开并标红，鼠标悬停能看每组的完整输出。「一行一发」与「发送前确认」两种模式；**危险命令**（`rm -rf /`、`mkfs`、`dd of=/dev/`、`shutdown`、fork 炸弹等）无论哪种模式都强制弹确认，框里写明命令原文与目标会话数（还有几个未就绪会被跳过）。**尚未做**：逐键实时广播（`broadcast-live`）与结果导出 CSV |
 | 远端文件编辑（`FIL-005`） | ✅ 可用（外部编辑器） | 文件面板选中文件 →「编辑」：下载到下载目录下的 `wt-edit/`，给「用系统程序打开」（Windows `start` / macOS `open` / Linux `xdg-open`）与「写回远端」。写回前**比一次远端大小**：期间被别人改过就报 `SFTP_CONFLICT` 拒绝覆盖，文件被删则拒绝重建。**不是原子写**（SFTP v3 的 rename 覆盖语义不可靠），**内嵌编辑器（`FIL-011`）仍未做** |
 | SSH 密钥生成器（`LOC-014`） | ✅ 可用 | 底栏「密钥」：选 ed25519 / RSA 3072 / ECDSA P-256 生成，**可选口令加密**（口令不给就落明文私钥，界面上写明「已加密」与否）；生成后同时给出 SHA256 指纹、可贴进 `authorized_keys` 的公钥行与私钥落盘路径（下载目录，名字冲突自动加序号）。「导入已有密钥」读文件后只显示算法与指纹——**私钥内容不回传界面**。测试与生产的生成走同一条 `wt_ssh::generate_key`，不再各写一份 |
@@ -30,7 +30,7 @@
 实现按 [`docs/spec/14-roadmap-acceptance.md`](docs/spec/14-roadmap-acceptance.md) 的里程碑推进。
 
 ```bash
-cargo test --workspace      # 289 个测试
+cargo test --workspace      # 298 个测试
 cargo clippy --workspace --all-targets   # 零告警
 
 # 跑一下 CLI（真实 PTY）
@@ -115,7 +115,6 @@ cargo run -p wt-cli -- session list
 | `FIL-011` 内嵌文本编辑器 | 多标签、语法高亮、行号、编码与换行符切换、正则查找替换 | 未做 |
 | `SEC-015` 离线模式 | 默认零外发（**已满足**）+ 可一键阻断全部非目标主机流量 | 缺开关 |
 | `SET-001` 设置体系 | 分组（常规/外观/终端/文件/图形/网络/安全/高级）+ 每项可搜索 + 显示生效范围 | 未做（本轮编码切换放在终端底栏，没有设置中心） |
-| `SET-006` 剩余 | `--config-dir` 命令行开关与 `--portable`（程序目录模式） | 设置已用 TOML（`config.toml`，外观/编码/键位）、会话已用 SQLite；位置目前只能靠 `WT_DATA_DIR` 环境变量改 |
 | `SET-012` 国际化 | zh-CN / en-US 完整覆盖、可切换不重启 | 未做（界面中文硬编码） |
 | `SET-013` MobaXterm 设置导入 | 与 `SES-020` 同入口，导入配色/字体/快捷键/全局开关 | 只导会话树 |
 | `SYS-008` 多平台打包 | Windows（MSI/便携 zip）、macOS（DMG，公证）、Linux（AppImage/deb/rpm） | 仓库里**没有 CI 工作流**，目前只有本地 `cargo build` |

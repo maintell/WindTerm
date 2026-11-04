@@ -1090,11 +1090,65 @@ fn session_delete(state: State<'_, AppState>, id: String) -> Result<(), String> 
 
 // ── SSH ─────────────────────────────────────────────────────
 
+/// 从命令行参数里取数据目录覆盖（`SET-006`）。
+///
+/// 单独抽出来是为了能测：`--config-dir` 少了值必须报错，而不是悄悄退回默认目录——
+/// 用户以为数据写到了 U 盘，实际落在 `%APPDATA%`，这种「静默失效」最难查。
+fn parse_data_dir_arg<I: Iterator<Item = String>>(
+    args: I,
+    exe_dir: Option<std::path::PathBuf>,
+) -> Result<Option<std::path::PathBuf>, String> {
+    let mut it = args.peekable();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--config-dir" => {
+                let Some(v) = it.next() else {
+                    return Err("--config-dir 需要一个目录".into());
+                };
+                if v.trim().is_empty() {
+                    return Err("--config-dir 的目录不能为空".into());
+                }
+                return Ok(Some(std::path::PathBuf::from(v)));
+            }
+            // 便携模式：数据跟着可执行文件走（U 盘、免安装）
+            "--portable" => {
+                return exe_dir.map(Some).ok_or_else(|| {
+                    "--portable 取不到程序所在目录，请改用 --config-dir".to_string()
+                });
+            }
+            _ => {}
+        }
+    }
+    Ok(None)
+}
+
+/// 命令行覆盖只解析一次：数据目录在一次运行里必须稳定。
+static DATA_DIR_OVERRIDE: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+
+fn data_dir_override() -> &'static Option<std::path::PathBuf> {
+    DATA_DIR_OVERRIDE.get_or_init(|| {
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+        match parse_data_dir_arg(std::env::args().skip(1), exe_dir) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("参数错误：{e}");
+                None
+            }
+        }
+    })
+}
+
 /// 应用数据目录。
 ///
-/// `WT_DATA_DIR` 供便携模式与端到端验收覆盖——验收必须用干净目录，
+/// 优先级：`--config-dir` / `--portable` > `WT_DATA_DIR` > `%APPDATA%\WindTerm`。
+/// `WT_DATA_DIR` 供端到端验收覆盖——验收必须用干净目录，
 /// 否则上一轮记下的主机密钥会让 TOFU 分支测不到。
 fn data_dir() -> std::path::PathBuf {
+    if let Some(dir) = data_dir_override() {
+        return dir.clone();
+    }
     if let Ok(dir) = std::env::var("WT_DATA_DIR") {
         if !dir.trim().is_empty() {
             return std::path::PathBuf::from(dir);
@@ -2749,3 +2803,45 @@ fn start_mock_ssh_if_requested() {
 
 #[cfg(not(feature = "e2e-mock"))]
 fn start_mock_ssh_if_requested() {}
+
+#[cfg(test)]
+mod data_dir_tests {
+    use super::*;
+
+    fn args(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn no_flag_means_no_override() {
+        assert_eq!(parse_data_dir_arg(args(&[]).into_iter(), None).unwrap(), None);
+    }
+
+    #[test]
+    fn config_dir_is_taken_verbatim() {
+        let got = parse_data_dir_arg(args(&["--config-dir", "D:/wt-data"]).into_iter(), None).unwrap();
+        assert_eq!(got, Some(std::path::PathBuf::from("D:/wt-data")));
+    }
+
+    #[test]
+    fn config_dir_without_value_is_an_error() {
+        // 不能悄悄退回默认目录：用户以为写到了 U 盘，实际落在 %APPDATA%
+        assert!(parse_data_dir_arg(args(&["--config-dir"]).into_iter(), None).is_err());
+    }
+
+    #[test]
+    fn portable_uses_the_exe_dir() {
+        let got = parse_data_dir_arg(
+            args(&["--portable"]).into_iter(),
+            Some(std::path::PathBuf::from("E:/app")),
+        )
+        .unwrap();
+        assert_eq!(got, Some(std::path::PathBuf::from("E:/app")));
+    }
+
+    #[test]
+    fn portable_without_exe_dir_is_an_error() {
+        assert!(parse_data_dir_arg(args(&["--portable"]).into_iter(), None).is_err());
+    }
+}
+
