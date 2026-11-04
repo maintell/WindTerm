@@ -107,6 +107,40 @@ function frame() {
 /** 当前字号；Ctrl+= / Ctrl+- 调整，对所有会话生效 */
 let fontSize = 13;
 
+/**
+ * 终端输出编码（`TER-006`）。
+ *
+ * 全终端统一一个口径：MobaXterm 那里是会话属性，但用户换编码通常是在
+
+ * 「这台机器的输出全是乱码」的时候，统一口径能少点一次。
+ *
+ * 切编码**只影响之后的输出**：已经显示的内容不动（规格明确要求不丢已显示内容）。
+ */
+let encoding = "utf-8";
+
+/** 每个编码一个解码器：`stream: true` 才能让多字节字符跨块拼接正确 */
+const decoders = new Map();
+
+function decoderFor(name) {
+  let d = decoders.get(name);
+  if (!d) {
+    d = new TextDecoder(name);
+    decoders.set(name, d);
+  }
+  return d;
+}
+
+/** 把远端字节变成 xterm 能写的东西：UTF-8 直接交给 xterm（它自己跨块解码最稳） */
+function decodeOutput(bytes) {
+  if (encoding === "utf-8") return bytes;
+  try {
+    return decoderFor(encoding).decode(bytes, { stream: true });
+  } catch {
+    // 浏览器不认这个编码名时退回 UTF-8，而不是让整个 pump 停下来
+    return bytes;
+  }
+}
+
 function createView(label) {
   const el = document.createElement("div");
   el.className = "term-view";
@@ -254,6 +288,7 @@ function setActive(view) {
   }
   renderTabs();
   refreshButtons();
+  termFoot.hidden = !view;
   if (!view) {
     setStatus("已关闭");
     return;
@@ -291,7 +326,7 @@ async function pump(view) {
     }
     const n = bytes.length;
     // ack 在 xterm 消费完之后才发，否则后端算出的「未确认字节」是假的
-    view.term.write(bytes, () => {
+    view.term.write(decodeOutput(bytes), () => {
       view.pending += n;
       if (view.pending >= ACK_BATCH) void ackView(view);
     });
@@ -1511,6 +1546,8 @@ const tunnelTarget = document.getElementById("tunnel-target");
 const tunnelLan = document.getElementById("tunnel-lan");
 const tunnelSocksUser = document.getElementById("tunnel-socks-user");
 const tunnelSocksPass = document.getElementById("tunnel-socks-pass");
+const termFoot = document.getElementById("term-foot");
+const encodingSelect = document.getElementById("encoding");
 const tunnelAuto = document.getElementById("tunnel-auto");
 const tunnelAutoRow = document.getElementById("tunnel-auto-row");
 const tunnelAdd = document.getElementById("tunnel-add");
@@ -1921,6 +1958,13 @@ function jumpReq() {
   };
 }
 
+encodingSelect.addEventListener("change", () => {
+  encoding = encodingSelect.value;
+  // 换编码时丢掉旧的流式状态：上一个编码留下的半截字符不该混进新口径
+  decoders.clear();
+  setStatus(`终端编码：${encodingSelect.selectedOptions[0]?.textContent ?? encoding}`);
+});
+
 useJumpBox.addEventListener("change", syncAuthUi);
 
 // 从下拉里选一个会话当跳板机：把它的地址/用户带出来，密码仍走保险库
@@ -2037,7 +2081,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-26",
+  ui: "wt-ui-27",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";
@@ -2137,6 +2181,10 @@ window.__wt = {
   },
   get fontSize() {
     return fontSize;
+  },
+  /** 终端输出编码（`TER-006`，验收读它而不是去解析下拉框） */
+  get encoding() {
+    return encoding;
   },
   /** 在激活会话里查找（验收与脚本用），返回是否命中与当前计数文本 */
   find(query) {

@@ -271,6 +271,26 @@
         flex: none;
       }
       #find-bar[hidden] { display: none; }
+      /* 终端底部一条极窄的工具条：只放当前会话要用的选择器，不占正文空间 */
+      #term-foot {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 2px 6px;
+        border-top: 1px solid #2a2a30;
+        font-size: 12px;
+        color: var(--muted);
+        flex: none;
+      }
+      #term-foot[hidden] { display: none; }
+      #term-foot select {
+        background: #2a2a30;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 4px;
+        padding: 1px 4px;
+        font: inherit;
+      }
       #paste-confirm {
         background: #202024;
         color: var(--fg);
@@ -544,6 +564,16 @@
       </aside>
       <div id="right">
         <div id="tabs"></div>
+        <div id="term-foot">
+          <select id="encoding" title="终端输出编码（只影响之后的输出，已显示的内容不动）">
+            <option value="utf-8">UTF-8</option>
+            <option value="gbk">GBK</option>
+            <option value="gb18030">GB18030</option>
+            <option value="big5">Big5</option>
+            <option value="shift_jis">Shift-JIS</option>
+            <option value="iso-8859-1">Latin-1</option>
+          </select>
+        </div>
         <div id="find-bar" hidden>
           <input id="find-input" placeholder="查找（Ctrl+F）" spellcheck="false" />
           <span id="find-count"></span>

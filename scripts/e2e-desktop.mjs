@@ -785,7 +785,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-26",
+    uiVersion === "wt-ui-27",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -2613,6 +2613,49 @@ try {
     panelCleared.includes("没有密码") && vaultAfterDelete.includes("0 条"),
     vaultAfterDelete,
   );
+
+  // 19c. 终端编码（`TER-006`）：mock 在输入含 `__gbk__` 时回 GBK 字节的中文，
+  //      只有编码切对了才看得见「中文」。
+  await closeAllTabs();
+  await clickSessionNode("mock-ssh");
+  await fillInput("#port", String(sshPort));
+  await clickElement("#ssh");
+  await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      return s.startsWith("已连接") ? s : null;
+    },
+    { timeout: 30000, label: "编码用例建会话" },
+  );
+  const encUi = await cdp.eval(`(() => {
+    const sel = document.getElementById("encoding");
+    const before = sel.value;
+    const hidden = document.getElementById("term-foot").hidden;
+    sel.value = "gbk";
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    return { before, hidden, after: window.__wt.encoding };
+  })()`);
+  check(
+    "有终端时底部出现编码选择，默认 UTF-8",
+    encUi.hidden === false && encUi.before === "utf-8" && encUi.after === "gbk",
+    JSON.stringify(encUi),
+  );
+
+  // 一次性把触发词写下去：逐键输入会让 mock 收到「一次一个字符」，
+  // 它那边的触发条件是整串出现——这和真实用户快速粘贴的形态也更接近
+  const encHandle = await cdp.eval(`window.__wt.handle`);
+  await cdp.eval(`window.__TAURI__.core.invoke("term_write", {
+    handle: ${JSON.stringify(encHandle)}, data: "__gbk__",
+  })`);
+  const gbkText = await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.screen()`);
+      return t.includes("中文") ? t : null;
+    },
+    { timeout: 15000, label: "按 GBK 解码出中文" },
+  );
+  check("切到 GBK 后能把 GBK 字节解成中文", gbkText !== null);
+  await closeAllTabs();
 
   // 19b. 多跳（`SES-025`）：目标 ← bastion ← bastion2。
   //      界面只选「用哪条会话当跳板机」，它自己的跳板由会话属性决定，

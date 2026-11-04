@@ -10,7 +10,7 @@
 //! - 密码认证：用户 `tester` / 密码 `secret`
 //! - 公钥认证：接受任意公钥
 //! - `shell_request`：先发 `WELCOME\r\n`
-//! - 收到数据：回 `echo:<原文>`
+//! - 收到数据：回 `echo:<原文>`；输入里含 `__gbk__` 时改回 GBK 字节的 `中文`（验编码切换）
 //! - `exec_request`：回 `ran:<命令>\r\n`，退出码 0
 
 use std::collections::HashMap;
@@ -502,6 +502,13 @@ impl russh::server::Handler for MockHandler {
         // 子系统通道上的数据由子系统自己处理（如 echo 原样回写），
         // 再回显一遍会污染协议流
         if self.subsystems.lock().await.contains(&channel) {
+            return Ok(());
+        }
+        // 验收要验「编码切换」（`TER-006`）：输入里带 `__gbk__` 时回一段 **GBK 字节**
+        // 的中文。只有按 GBK 解码才看得见「中文」，按 UTF-8 解是一串替换符——
+        // 这比断言「下拉框变了」有意义得多。
+        if String::from_utf8_lossy(data).contains("__gbk__") {
+            session.data(channel, b"\xd6\xd0\xce\xc4\r\n".to_vec())?;
             return Ok(());
         }
         let echo = format!("echo:{}", String::from_utf8_lossy(data)).into_bytes();
