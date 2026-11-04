@@ -39,6 +39,7 @@ const portInput = document.getElementById("port");
 const userInput = document.getElementById("user");
 const passInput = document.getElementById("password");
 const nameInput = document.getElementById("session-name");
+const kindSelect = document.getElementById("kind");
 const saveSessionBtn = document.getElementById("save-session");
 const deleteSessionBtn = document.getElementById("delete-session");
 const useKeyBox = document.getElementById("use-key");
@@ -739,8 +740,35 @@ const sessionPasswords = new Map();
 const sessionKey = (host, port, user) =>
   `${String(host ?? "").trim()}:${Number.parseInt(port, 10) || 22}:${String(user ?? "").trim()}`;
 
+/**
+ * 选中会话时把能用上的口令填进来：先用「本次记住」的，其次保险库。
+ *
+ * 提到函数里是因为 SFTP 会话（`SES-009`）也要走同一套：它没有终端，但一样需要凭据。
+ */
+async function fillPasswordFor(s) {
+  const memo = sessionPasswords.get(sessionKey(s.host, s.port, s.username));
+  if (memo) {
+    passInput.value = memo;
+    setStatus(`已填入 ${s.name} 的密码（本次运行记住的）`);
+    return true;
+  }
+  if (!vaultUnlocked) return false;
+  try {
+    const saved = await invoke("credential_get", { sessionId: s.id });
+    if (saved) {
+      passInput.value = saved;
+      setStatus(`已从保险库填入 ${s.name} 的密码`);
+      return true;
+    }
+  } catch {
+    /* 取不到就当没存过，不打扰用户 */
+  }
+  return false;
+}
+
 async function selectSession(s) {
-  if (s.kind !== "ssh") {
+  // `ssh` 走终端，`sftp` 走文件面板（`SES-009`）；其余类型还没做，如实说
+  if (s.kind !== "ssh" && s.kind !== "sftp") {
     setStatus(`${s.name} 是 ${s.kind} 会话，暂不支持`);
     return;
   }
@@ -751,33 +779,24 @@ async function selectSession(s) {
   if (s.host) hostInput.value = s.host;
   if (s.port) portInput.value = String(s.port);
   if (s.username) userInput.value = s.username;
-  setStatus(`已选中 ${s.name}，填密码后连接`);
-  passInput.focus();
+  setStatus(s.kind === "sftp" ? `已选中 ${s.name}（SFTP），正在打开文件面板` : `已选中 ${s.name}，填密码后连接`);
+  if (s.kind !== "sftp") passInput.focus();
 
   // 跳板机是会话属性：选中会话就把它带出来（含密码，若保险库已解锁）
   await applyJumpFromSession(s);
 
-  // 「本次记住」的优先：它是刚用过的、肯定没过期
-  const memo = sessionPasswords.get(sessionKey(s.host, s.port, s.username));
-  if (memo) {
-    passInput.value = memo;
-    setStatus(`已填入 ${s.name} 的密码（本次运行记住的）`);
+  const filled = await fillPasswordFor(s);
+
+  if (s.kind === "sftp") {
+    // 独立 SFTP 会话：没有终端，文件面板直接对着它打开
+    filesPaths.set(filesSessionId, sftpPath);
+    filesSessionId = s.id;
+    filesSessionSelect.value = s.id;
+    openSidePanel(filesPanel);
+    await loadDir(filesPaths.get(s.id) ?? "/");
     return;
   }
-
-  // 保险库解锁时顺手把存过的密码填上，省掉每次手输
-  if (vaultUnlocked) {
-    try {
-      const saved = await invoke("credential_get", { sessionId: s.id });
-      if (saved) {
-        passInput.value = saved;
-        setStatus(`已从保险库填入 ${s.name} 的密码`);
-        return;
-      }
-    } catch {
-      /* 取不到就当没存过，不打扰用户 */
-    }
-  }
+  if (filled) return;
 }
 
 /** 上一次读到的会话树；过滤时直接复用，不重复查库 */
@@ -1034,6 +1053,8 @@ function sessionReqOf(s, name) {
     user: s.username ?? "",
     // 跳板是会话属性：这里传 null 会把它清掉，所以必须带原值
     jumpSessionId: s.options?.jumpSessionId ?? null,
+    // 类型同样不能丢：改名时把它写成 ssh，SFTP 会话就变成终端了
+    kind: s.kind ?? "ssh",
   };
 }
 
@@ -1334,11 +1355,12 @@ saveSessionBtn.addEventListener("click", async () => {
         port: Number.parseInt(portInput.value, 10) || 22,
         user: userInput.value.trim() || null,
         jumpSessionId: jumpSessionSelect.value || null,
+        kind: kindSelect.value,
       },
     });
     await loadTree();
     // 保存后按 id 重新选中，避免「刚存的会话在树里点不到」
-    selectedSession = { id, name, host, port: Number.parseInt(portInput.value, 10) || 22, username: userInput.value.trim(), kind: "ssh" };
+    selectedSession = { id, name, host, port: Number.parseInt(portInput.value, 10) || 22, username: userInput.value.trim(), kind: kindSelect.value };
     nameInput.value = name;
     deleteSessionBtn.disabled = false;
     setStatus(`已保存会话 ${name}`);
@@ -2369,7 +2391,8 @@ function refreshFilesSessionSelect() {
   follow.textContent = "跟随连接表单";
   filesSessionSelect.appendChild(follow);
   for (const s of lastTree?.sessions ?? []) {
-    if (s.kind !== "ssh") continue;
+    // SFTP 会话本来就只有文件面板（`SES-009`），当然也要能在这里选
+    if (s.kind !== "ssh" && s.kind !== "sftp") continue;
     const o = document.createElement("option");
     o.value = s.id;
     o.textContent = s.name;
@@ -4163,7 +4186,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-66",
+  ui: "wt-ui-67",
   /** 「本次记住」存了几条（验收用：只回数量，不回口令） */
   sessionPasswords() {
     return sessionPasswords.size;

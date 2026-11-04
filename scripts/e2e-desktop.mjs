@@ -4537,6 +4537,62 @@ try {
   })()`);
   await closeAllDialogs();
 
+  // 19v. 独立 SFTP 会话（`SES-009`）
+  //
+  // 这种会话没有终端：点它应当**直接**把文件面板对着它打开，不起标签页。
+  await closeAllDialogs();
+  await closeAllTabs();
+  await cdp.eval(`(() => {
+    const set = (id, v) => {
+      const el = document.getElementById(id);
+      el.value = v;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    set("host", "127.0.0.1");
+    set("port", ${JSON.stringify(String(sshPort))});
+    set("user", "tester");
+    set("password", "secret");
+    set("session-name", "sftp-only");
+    const k = document.getElementById("kind");
+    k.value = "sftp";
+    k.dispatchEvent(new Event("change", { bubbles: true }));
+    return k.value;
+  })()`);
+  await clickElement("#save-session");
+  const sftpSaved = await waitFor(
+    async () => {
+      const names = await cdp.eval(`
+        [...document.querySelectorAll("#tree-body .node.session")].map((n) => n.textContent)
+      `);
+      return names.includes("sftp-only") ? names : null;
+    },
+    { timeout: 15000, label: "保存 SFTP 会话" },
+  ).catch(() => null);
+  check("能建一条 SFTP 类型的会话（SES-009）", sftpSaved !== null, "sftp-only");
+
+  const tabsBefore = await cdp.eval(`document.querySelectorAll("#tabs .tab").length`);
+  await clickSessionNode("sftp-only");
+  const sftpOpened = await waitFor(
+    async () => {
+      const s = await cdp.eval(`({
+        hidden: document.getElementById("files").hidden,
+        msg: window.__wt.files.msg,
+        path: document.getElementById("files-path").textContent,
+        bound: document.getElementById("files-session").value,
+      })`);
+      return s.hidden === false && s.msg === "" && s.path.startsWith("/") ? s : null;
+    },
+    { timeout: 20000, label: "SFTP 会话打开文件面板" },
+  ).catch(() => null);
+  check(
+    "点 SFTP 会话直接打开文件面板（SES-009）",
+    sftpOpened !== null,
+    JSON.stringify(sftpOpened),
+  );
+  const tabsAfter = await cdp.eval(`document.querySelectorAll("#tabs .tab").length`);
+  check("SFTP 会话不创建终端标签（SES-009）", tabsAfter === tabsBefore, `${tabsBefore} → ${tabsAfter}`);
+  await ensureFilesPanel(false);
+
   // 18. 页面无未捕获异常
   check("页面无未捕获异常", cdp.exceptions.length === 0, cdp.exceptions.join(" | ") || "0 条");
 

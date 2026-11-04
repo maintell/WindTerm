@@ -610,6 +610,10 @@ struct SessionSaveReq {
     /// 跳板机会话（`SES-024`）：存进 `options.jumpSessionId`，保存时做环检测
     #[serde(default)]
     jump_session_id: Option<String>,
+    /// 会话类型（`SES-009`）：界面只提供 `ssh` 与 `sftp`。旧记录没有这一项，
+    /// 保持原样（更新时不覆盖）。
+    #[serde(default)]
+    kind: Option<String>,
 }
 
 /// 新建或重命名文件夹（`SES-014`）。
@@ -1263,6 +1267,20 @@ fn session_save(req: SessionSaveReq) -> Result<String, String> {
         last_cwd: None,
         rev: 1,
     });
+    // 类型：只接受界面真的提供的两种。其它值直接拒，别悄悄存成 ssh——
+    // 用户以为建了 RDP 会话、结果点开是个终端，这类静默替换最难查。
+    if let Some(kind) = req.kind.as_deref() {
+        match kind.trim() {
+            "" => {}
+            "ssh" => session.kind = wt_core::SessionKind::Ssh,
+            "sftp" => session.kind = wt_core::SessionKind::Sftp,
+            other => {
+                return Err(format!(
+                    "[SESSION_BAD_ARGUMENT] 界面只支持 ssh 与 sftp 两种会话类型，收到「{other}」"
+                ));
+            }
+        }
+    }
     session.name = name.to_string();
     session.host = Some(host.to_string());
     session.port = req.port;
