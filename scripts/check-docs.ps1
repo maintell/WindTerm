@@ -243,6 +243,33 @@ foreach ($f in ((Get-DocFiles 'spec') + (Get-DocFiles 'design') + (Get-DocFiles 
 # ─────────────────────────────────────────────────────────────
 # 输出
 # ─────────────────────────────────────────────────────────────
+# 12b. P0 覆盖表完整（docs/status/p0-coverage.md）
+#      「验收所有功能」得有一张能对账的表：每个 P0 都要在表里出现，
+#      表里也不许出现不是 P0 的 ID（写错 ID 等于悄悄漏掉一条）。
+# ─────────────────────────────────────────────────────────────
+$p0Ids = @($rows | Where-Object { $_.Prio -match 'P0' } | ForEach-Object { $_.Id })
+$statusPath = Join-Path $docsRoot 'status/p0-coverage.md'
+if (-not (Test-Path $statusPath)) {
+    Fail '缺少 docs/status/p0-coverage.md（P0 覆盖与验收状态表）'
+} else {
+    $statusText = Get-Content -Raw -Encoding UTF8 $statusPath
+    foreach ($id in $p0Ids) {
+        if ($statusText -notmatch [regex]::Escape($id)) {
+            Fail ("P0 覆盖表里没有 {0}" -f $id)
+        }
+    }
+    # 反向：表里出现的 ID 必须真的存在且是 P0
+    $p0Set = [System.Collections.Generic.HashSet[string]]::new()
+    foreach ($id in $p0Ids) { [void]$p0Set.Add($id) }
+    foreach ($m in [regex]::Matches($statusText, '\|\s*`([A-Z]{3}-\d{3})`\s*\|')) {
+        $id = $m.Groups[1].Value
+        if (-not $p0Set.Contains($id)) {
+            Fail ("P0 覆盖表里出现了不是 P0 的 ID：{0}" -f $id)
+        }
+    }
+}
+
+# ─────────────────────────────────────────────────────────────
 # 12. 相对链接可达（NFR-026）
 #     用户手册会随功能增长不断加页，链接断了没人发现。
 #     只查相对路径的 .md 链接；外链不查（离线环境查不了）
@@ -275,6 +302,7 @@ Write-Host ("需求条目：{0}（P0 {1} / P1 {2} / P2 {3} / P3 {4} / NO {5}）"
 Write-Host ("ADR：定义 {0} 条，引用 {1} 条" -f $definedAdr.Count, $referencedAdr.Count)
 Write-Host ("待验证标记：{0} 处（M0 结束前需清零）" -f $pending)
 Write-Host ("文档内相对链接：{0} 条" -f $linkCount)
+Write-Host ("P0 覆盖表：{0} 条需求逐条对账" -f $p0Ids.Count)
 Write-Host ''
 
 if ($warnings.Count -gt 0) {

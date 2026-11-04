@@ -6,6 +6,7 @@
 - **第二册 `design/` — 详细设计**：回答「怎么做、为什么这么做、边界在哪」。
 - **附录 `appendix/`**：决策记录、术语、事实来源。
 - **用户手册 `user/`**：面向使用者，按「我要做什么」组织，不含实现细节。
+- **状态 `status/`**：一张 [`p0-coverage.md`](status/p0-coverage.md) 对账表——44 条 P0 逐条标状态与验收依据。
 
 ## 阅读路径
 
@@ -21,6 +22,7 @@
 | 安全 / 合规 | `spec/11` `spec/13` `design/09` `design/14` `appendix/a` | `spec/01` 许可章节 |
 | 只想确认「MobaXterm 那个功能你们做不做」 | `spec/04` | — |
 | 使用者（不写代码） | [`user/00-index.md`](user/00-index.md) | `README.md` 的安装与构建段落 |
+| 想知道「到底做完了多少」 | [`status/p0-coverage.md`](status/p0-coverage.md) | `spec/04` 的完整 229 条 |
 
 ## 文档状态
 
