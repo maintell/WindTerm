@@ -30,6 +30,8 @@ pub struct RemoteEntry {
     pub link_target: Option<String>,
     /// 断链：链接在，但目标不存在——界面上要标出来，否则用户点进去才报错
     pub broken: bool,
+    /// 权限位（原始 `st_mode`，含 `S_IFMT` 类型位）。服务端不给就是 `None`
+    pub mode: Option<u32>,
 }
 
 /// 一条 SFTP 会话。
@@ -82,14 +84,20 @@ impl SftpClient {
 
     /// 列出目录内容，按「目录在前、然后按名字」排序。
     pub async fn list_dir(&self, path: &str) -> Result<Vec<RemoteEntry>, WtError> {
-        let raw: Vec<(String, bool, bool, u64)> = self
+        let raw: Vec<(String, bool, bool, u64, Option<u32>)> = self
             .inner
             .read_dir(path)
             .await
             .map_err(|e| sftp_error(&format!("无法列出目录 {path}"), e.to_string()))?
             .map(|f| {
                 let meta = f.metadata();
-                (f.file_name(), meta.is_dir(), meta.is_symlink(), meta.len())
+                (
+                    f.file_name(),
+                    meta.is_dir(),
+                    meta.is_symlink(),
+                    meta.len(),
+                    meta.permissions,
+                )
             })
             // 有的服务端会把 . 和 .. 也返回；界面上不需要
             .filter(|(name, ..)| name != "." && name != "..")
@@ -101,7 +109,7 @@ impl SftpClient {
             format!("{path}/")
         };
         let mut entries = Vec::with_capacity(raw.len());
-        for (name, is_dir, is_symlink, size) in raw {
+        for (name, is_dir, is_symlink, size, mode) in raw {
             let mut entry = RemoteEntry {
                 name,
                 is_dir,
@@ -109,6 +117,7 @@ impl SftpClient {
                 is_symlink,
                 link_target: None,
                 broken: false,
+                mode,
             };
             if is_symlink {
                 // 链接目标要单独问一次服务端（`read_dir` 只给属性，不给目标）。
@@ -595,6 +604,7 @@ mod tests {
             is_symlink: false,
             link_target: None,
             broken: false,
+            mode: None,
         }
     }
 

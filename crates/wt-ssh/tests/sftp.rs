@@ -221,6 +221,21 @@ async fn lists_symlinks_with_target_and_broken_flag() {
         .expect("dead.txt 应在列表里");
     assert!(dead.is_symlink);
     assert!(dead.broken, "目标不存在必须标成断链，否则用户点进去才报错");
+
+    // 权限位（`FIL-002`）：类型位要是 S_IFLNK，普通文件要是 S_IFREG
+    let mode = ok.mode.expect("服务端给了 permissions，不该是 None");
+    assert_eq!(
+        mode & 0o170000,
+        0o120000,
+        "链接的类型位要标成 S_IFLNK：{mode:o}"
+    );
+    let file = entries
+        .iter()
+        .find(|e| e.name == "real.txt")
+        .expect("real.txt 应在列表里");
+    let file_mode = file.mode.expect("普通文件也该有 mode");
+    assert_eq!(file_mode & 0o170000, 0o100000, "real.txt 应是普通文件");
+    assert_eq!(file_mode & 0o777, 0o644, "mock 给的权限是 0644");
 }
 
 #[tokio::test]

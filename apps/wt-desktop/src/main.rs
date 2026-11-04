@@ -1938,6 +1938,8 @@ struct RemoteEntryDto {
     link_target: Option<String>,
     /// 断链：链接在、目标没了，界面要标出来
     broken: bool,
+    /// 权限位（原始 `st_mode`，含类型位）；服务端不给就是 `None`
+    mode: Option<u32>,
 }
 
 #[derive(serde::Serialize)]
@@ -2038,6 +2040,7 @@ async fn sftp_list(
                 is_symlink: e.is_symlink,
                 link_target: e.link_target,
                 broken: e.broken,
+                mode: e.mode,
             })
             .collect(),
     };

@@ -140,7 +140,7 @@ def test_ssh_connect(server, wt):
 | DTO 没写 `rename_all` 时，字段名是 snake_case | `RemoteEntryDto` 没有 camelCase 重命名，序列化出来是 `is_symlink` / `link_target`；界面按 `e.isSymlink` 去读只会拿到 `undefined`，症状是「后端字段有值、界面就是没反应」，而且不报错。同一个仓库里 `PrefsDto` 是 camelCase、这个是 snake_case，**看 DTO 定义再写前端** |
 | `dataset` 里取出来永远是字符串 | 会话键是数字时，`dataset.id` 拿去 `indexOf` 一个都匹配不上。症状极具迷惑性：拖拽计数全对、`moved` 为真、目标也拿到了，**顺序就是不变**。比较前统一 `String()` |
 
-当前覆盖 197 项断言：
+当前覆盖 199 项断言：
 
 - 本地终端：页面加载与 Tauri 桥接、启动自检、点击建会话、句柄可取、首屏输出渲染、
   焦点在终端、键盘输入、命令输出、统计字段非零值、前后端行列一致、ack 回流归零、
@@ -196,6 +196,8 @@ def test_ssh_connect(server, wt):
   `.term-view` 数量，不靠视觉判断）、再点一次所有会话回到左 pane 且右 pane 隐藏；
 - 内嵌编辑器（`FIL-011`）：打开后显示文件内容、全部替换能改到内容并标记未保存、
   保存后**回读本地文件**确认内容真的变了（只看状态栏等于没验）；
+- 权限位（`FIL-002`）：普通文件那一列是 `-rw-r--r--`、链接以 `l` 开头——按 `st_mode` 的
+  类型位与 rwx 位算出来，不是硬编码；单测另验类型位（`S_IFLNK` / `S_IFREG`）与 0644；
 - 符号链接（`FIL-002` / `FIL-001` AC-2）：种一个正常链接与一个断链，面板里前者显示
   `ok.txt@` 且 tooltip 给出目标、后者 span 的 class 是 `link broken`（不靠「看着是红的」判断）；
   单测另验 `is_symlink` / `link_target` / `broken` 三个字段，其中相对目标必须按**链接所在

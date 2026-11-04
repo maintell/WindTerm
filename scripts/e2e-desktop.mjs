@@ -4434,6 +4434,25 @@ try {
     linkView ? linkView.deadClass : "没找到 dead.txt",
   );
 
+  // 权限位（`FIL-002`）：mock 给普通文件 0644、目录 0755、链接 0777
+  const modes = await cdp.eval(`(() => {
+    const pick = (name) =>
+      [...document.querySelectorAll("#files-list .row")]
+        .find((r) => r.textContent.startsWith(name))
+        ?.querySelector("span.mode")?.textContent ?? null;
+    return { file: pick("notes.txt"), link: pick("ok.txt") };
+  })()`);
+  check(
+    "普通文件显示权限位 -rw-r--r--（FIL-002）",
+    modes.file === "-rw-r--r--",
+    `${modes.file}`,
+  );
+  check(
+    "符号链接的权限位以 l 开头（FIL-002）",
+    typeof modes.link === "string" && modes.link.startsWith("l"),
+    `${modes.link}`,
+  );
+
   // 18. 页面无未捕获异常
   check("页面无未捕获异常", cdp.exceptions.length === 0, cdp.exceptions.join(" | ") || "0 条");
 

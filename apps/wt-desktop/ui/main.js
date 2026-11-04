@@ -2380,6 +2380,27 @@ function setFilesMsg(text) {
   filesMsg.textContent = text;
 }
 
+/**
+ * 把 `st_mode` 格式化成 `drwxr-xr-x`（`FIL-002`）。
+ *
+ * 类型位单独看：`S_IFDIR` 是 d、`S_IFLNK` 是 l、`S_IFSOCK` 是 s；其余按普通文件显示。
+ * 服务端没给 mode 就返回空串——显示一个 `-` 会让人误以为是个文件。
+ */
+function modeString(mode) {
+  if (!Number.isFinite(mode)) return "";
+  const type = mode & 0o170000;
+  const head =
+    type === 0o040000 ? "d" : type === 0o120000 ? "l" : type === 0o140000 ? "s" : "-";
+  const bits = ["r", "w", "x"];
+  let out = head;
+  for (let shift = 6; shift >= 0; shift -= 3) {
+    for (let i = 0; i < 3; i += 1) {
+      out += (mode >> (shift + (2 - i))) & 1 ? bits[i] : "-";
+    }
+  }
+  return out;
+}
+
 function joinPath(dir, name) {
   return dir.endsWith("/") ? `${dir}${name}` : `${dir}/${name}`;
 }
@@ -2458,10 +2479,15 @@ async function loadDir(path) {
       } else {
         label.textContent = e.is_dir ? `${e.name}/` : e.name;
       }
+      // 权限位（`FIL-002`）：`drwxr-xr-x` 这种十列串，等宽字体对齐。
+      // 服务端不给就留空，别显示一个 "-" 让人以为是文件
+      const perms = document.createElement("span");
+      perms.className = "mode";
+      perms.textContent = modeString(e.mode);
       const size = document.createElement("span");
       size.textContent = e.is_dir ? "" : `${e.size}`;
       size.style.color = "#8a8a92";
-      row.append(label, size);
+      row.append(label, perms, size);
       // 单击只选中，双击才动作：与文件管理器一致，也让「改名/删除」有明确的操作对象
       row.addEventListener("click", () => selectEntry(e, row));
       row.addEventListener("dblclick", () => {
@@ -4044,7 +4070,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-62",
+  ui: "wt-ui-63",
   /** 「本次记住」存了几条（验收用：只回数量，不回口令） */
   sessionPasswords() {
     return sessionPasswords.size;
