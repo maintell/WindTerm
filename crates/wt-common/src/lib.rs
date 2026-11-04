@@ -250,6 +250,8 @@ pub mod codes {
     pub const CRY_UNSUPPORTED_VERSION: &str = "CRY_UNSUPPORTED_VERSION";
 
     pub const SSH_AUTH_FAILED: &str = "SSH_AUTH_FAILED";
+    /// 服务端要求应答密码以外的二次验证（OTP / 验证码），我们不会去猜
+    pub const SSH_AUTH_INTERACTIVE: &str = "SSH_AUTH_INTERACTIVE";
     /// ssh-agent 不可用（没在跑、没设 SSH_AUTH_SOCK、管道连不上）
     pub const SSH_AGENT_UNAVAILABLE: &str = "SSH_AGENT_UNAVAILABLE";
     pub const SSH_HOSTKEY_CHANGED: &str = "SSH_HOSTKEY_CHANGED";

@@ -317,6 +317,38 @@ impl russh::server::Handler for MockHandler {
         Ok(Auth::Accept)
     }
 
+    /// keyboard-interactive（`SEC-002`）：用户 `kbd` **只走这条路**（`auth_password`
+    /// 只认 `tester`），用来验「这种认证方式下密码也能被保存」——规格点名的
+    /// MobaXterm 已知缺陷就是这里不保存、用户每次都要重输。
+    async fn auth_keyboard_interactive<'a>(
+        &'a mut self,
+        user: &str,
+        _submethods: &str,
+        response: Option<russh::server::Response<'a>>,
+    ) -> Result<Auth, Self::Error> {
+        if user != "kbd" {
+            return Ok(Auth::reject());
+        }
+        match response {
+            None => Ok(Auth::Partial {
+                name: "Keyboard-interactive".into(),
+                instructions: "".into(),
+                prompts: vec![("Password: ".into(), false)].into(),
+            }),
+            Some(mut r) => {
+                let answer = r
+                    .next()
+                    .map(|b| String::from_utf8_lossy(&b).to_string())
+                    .unwrap_or_default();
+                if answer == "secret" {
+                    Ok(Auth::Accept)
+                } else {
+                    Ok(Auth::reject())
+                }
+            }
+        }
+    }
+
     async fn channel_open_session(
         &mut self,
         channel: Channel<Msg>,

@@ -4319,6 +4319,57 @@ try {
   await closeAllTabs();
   await setRemember("persist");
 
+  // 19s. keyboard-interactive 下密码也能保存（`SEC-002` 的 AC-1）
+  //
+  // mock 里用户 `kbd` 只认 keyboard-interactive（`auth_password` 只接受 tester），
+  // 所以这条走的就是「服务端关掉 PasswordAuthentication」那种部署。
+  await closeAllDialogs();
+  await closeAllTabs();
+  await cdp.eval(`(() => {
+    const set = (id, v) => {
+      const el = document.getElementById(id);
+      el.value = v;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    set("host", "127.0.0.1");
+    set("port", ${JSON.stringify(String(sshPort))});
+    set("user", "kbd");
+    set("password", "secret");
+    return true;
+  })()`);
+  await setRemember("session");
+  const beforeKbd = await cdp.eval(`window.__wt.sessionPasswords()`);
+  await clickElement("#ssh");
+  const kbdStatus = await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      return /已连接|密码已记住/.test(s) ? s : null;
+    },
+    { timeout: 30000, label: "keyboard-interactive 连接" },
+  ).catch(async () => {
+    const t = await cdp.eval(`window.__wt.screen()`);
+    throw new Error(`keyboard-interactive 没连上：${t.slice(-200)}`);
+  });
+  check(
+    "只开 keyboard-interactive 的服务端也能连上（SEC-002）",
+    /已连接|密码已记住/.test(kbdStatus),
+    kbdStatus,
+  );
+  const afterKbd = await waitFor(
+    async () => {
+      const n = await cdp.eval(`window.__wt.sessionPasswords()`);
+      return n > beforeKbd ? n : null;
+    },
+    { timeout: 10000, label: "kbd 模式保存密码" },
+  ).catch(() => null);
+  check(
+    "keyboard-interactive 认证成功后也会保存密码（MobaXterm 的已知缺陷）",
+    afterKbd !== null,
+    `${beforeKbd} → ${afterKbd ?? "没变"}`,
+  );
+  await closeAllTabs();
+  await setRemember("persist");
+
   // 18. 页面无未捕获异常
   check("页面无未捕获异常", cdp.exceptions.length === 0, cdp.exceptions.join(" | ") || "0 条");
 

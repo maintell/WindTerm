@@ -360,6 +360,69 @@ impl SshConnection {
     ///
     /// 直连与经跳板都必须走这里：认证失败的错误文案要是两套，
     /// 用户看到同一个问题会有两种说法，排查时容易以为是两回事。
+    /// keyboard-interactive（`SEC-002`）：用同一个密码回答「Password:」类 prompt。
+    ///
+    /// 超出密码的 prompt（OTP、验证码）**不猜也不保存**：猜错只会换来服务端一串
+    /// 无意义的失败，用户完全看不出问题在哪，不如直接给一条可执行的错误。
+    async fn authenticate_interactive(
+        handle: &mut client::Handle<ClientHandler>,
+        cfg: &SshConfig,
+        password: &str,
+    ) -> Result<(), WtError> {
+        use russh::client::KeyboardInteractiveAuthResponse as Resp;
+        let mut reply = handle
+            .authenticate_keyboard_interactive_start(&cfg.user, None::<String>)
+            .await
+            .map_err(|e| {
+                WtError::new(codes::SSH_AUTH_FAILED)
+                    .message("发起 keyboard-interactive 认证失败")
+                    .detail(e.to_string())
+            })?;
+        loop {
+            match reply {
+                Resp::Success => return Ok(()),
+                Resp::Failure { .. } => {
+                    return Err(WtError::new(codes::SSH_AUTH_FAILED)
+                        .message("keyboard-interactive 认证被服务端拒绝")
+                        .detail(format!(
+                            "用户 {} 在 {}:{} 上认证失败",
+                            cfg.user, cfg.host, cfg.port
+                        )));
+                }
+                Resp::InfoRequest { prompts, .. } => {
+                    let mut answers = Vec::with_capacity(prompts.len());
+                    for p in &prompts {
+                        let lower = p.prompt.to_ascii_lowercase();
+                        let asks_password = lower.contains("password")
+                            || p.prompt.contains("口令")
+                            || p.prompt.contains("密码");
+                        if asks_password {
+                            answers.push(password.to_string());
+                        } else {
+                            return Err(WtError::new(codes::SSH_AUTH_INTERACTIVE)
+                                .message(format!(
+                                    "服务端要求应答「{}」，暂不支持密码以外的二次验证",
+                                    p.prompt.trim()
+                                ))
+                                .hint(
+                                    "改用密钥认证，或让管理员关掉这项二次验证",
+                                    HintAction::None,
+                                ));
+                        }
+                    }
+                    reply = handle
+                        .authenticate_keyboard_interactive_respond(answers)
+                        .await
+                        .map_err(|e| {
+                            WtError::new(codes::SSH_AUTH_FAILED)
+                                .message("应答 keyboard-interactive 失败")
+                                .detail(e.to_string())
+                        })?;
+                }
+            }
+        }
+    }
+
     async fn authenticate(
         handle: &mut client::Handle<ClientHandler>,
         cfg: &SshConfig,
@@ -368,24 +431,29 @@ impl SshConnection {
         let addr = format!("{}:{}", cfg.host, cfg.port);
         match auth {
             Auth::Password(password) => {
-                match handle.authenticate_password(&cfg.user, *password).await {
-                    Ok(russh::client::AuthResult::Success) => {}
-                    Ok(_) => {
-                        return Err(WtError::new(codes::SSH_AUTH_FAILED)
-                            .message("密码认证被服务端拒绝")
-                            .detail(format!("用户 {} 在 {} 上认证失败", cfg.user, addr))
-                            .hint("确认用户名与密码", HintAction::None)
-                            .hint(
-                                "编辑会话凭据",
-                                HintAction::OpenSettings {
-                                    page: "session.auth".into(),
-                                },
-                            ));
-                    }
-                    Err(e) => {
-                        return Err(WtError::new(codes::SSH_AUTH_FAILED)
-                            .message("认证过程出错")
-                            .detail(e.to_string()));
+                let ok = matches!(
+                    handle.authenticate_password(&cfg.user, *password).await,
+                    Ok(russh::client::AuthResult::Success)
+                );
+                if !ok {
+                    // 只开 `KbdInteractiveAuthentication yes` 的服务端在客户端看来就是
+                    // 「密码被拒」，但它其实还认同一个密码。`SEC-002` 点名的 MobaXterm
+                    // 已知缺陷正是这种模式下不弹保存、用户每次都要重输。
+                    match Self::authenticate_interactive(handle, cfg, password).await {
+                        Ok(()) => {}
+                        Err(e) if e.code == codes::SSH_AUTH_FAILED => {
+                            return Err(WtError::new(codes::SSH_AUTH_FAILED)
+                                .message("密码认证被服务端拒绝（password 与 keyboard-interactive 都试过）")
+                                .detail(format!("用户 {} 在 {} 上认证失败", cfg.user, addr))
+                                .hint("确认用户名与密码", HintAction::None)
+                                .hint(
+                                    "编辑会话凭据",
+                                    HintAction::OpenSettings {
+                                        page: "session.auth".into(),
+                                    },
+                                ));
+                        }
+                        Err(e) => return Err(e),
                     }
                 }
             }
