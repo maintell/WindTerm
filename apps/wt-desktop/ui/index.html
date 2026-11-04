@@ -336,6 +336,32 @@
         padding: 12px 14px;
         max-width: 520px;
       }
+      #edit-dialog {
+        background: #24242a;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 8px;
+        padding: 12px 14px;
+        min-width: 460px;
+      }
+      #edit-dialog pre {
+        white-space: pre-wrap;
+        word-break: break-all;
+        color: var(--muted);
+        font-size: 12px;
+        margin: 0 0 10px;
+      }
+      #edit-dialog .key-row { display: flex; gap: 8px; margin-bottom: 10px; }
+      #edit-dialog button {
+        background: #2a2a30;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 4px;
+        padding: 2px 10px;
+        font: inherit;
+        cursor: pointer;
+      }
+      #edit-dialog menu { display: flex; justify-content: flex-end; padding: 0; margin: 0; }
       #key-dialog {
         background: #24242a;
         color: var(--fg);
@@ -725,6 +751,7 @@
             <button id="files-mkdir" title="在当前目录新建文件夹">+ 目录</button>
             <button id="files-rename" title="重命名选中项" disabled>改名</button>
             <button id="files-remove" title="删除选中项" disabled>删除</button>
+            <button id="files-edit" title="下载到本地编辑，再写回远端" disabled>编辑</button>
             <button id="files-up" title="上一级">↑</button>
             <button id="files-upload-btn" title="上传本地文件到当前目录">上传</button>
             <button id="files-refresh" title="刷新">⟳</button>
@@ -810,6 +837,18 @@
     <!-- 确认框：广播前/危险命令拦截都用它。确认放前面，回车即确认 -->
     <!-- 键位设置（TER-020）：一行一个动作，点「录制」后按组合键 -->
     <!-- 密钥生成/导入（LOC-014） -->
+    <!-- 远端文件编辑（FIL-005）：下载到本地 → 编辑器 → 写回 -->
+    <dialog id="edit-dialog">
+      <p id="edit-title">编辑远端文件</p>
+      <pre id="edit-info"></pre>
+      <div class="key-row">
+        <button type="button" id="edit-open">用系统程序打开</button>
+        <button type="button" id="edit-save">写回远端</button>
+      </div>
+      <menu>
+        <button type="button" id="edit-close">关闭</button>
+      </menu>
+    </dialog>
     <dialog id="key-dialog">
       <p id="key-title">SSH 密钥</p>
       <div class="key-row">

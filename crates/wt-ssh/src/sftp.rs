@@ -85,11 +85,24 @@ impl SftpClient {
     }
 
     /// 写整个文件（覆盖）。
+    ///
+    /// 用 `create` 而不是 `write`：`write` **不截断**——覆盖成更短的内容时，
+    /// 文件尾部会留下上一次的旧字节（写 14 字节到 17 字节的文件里，末尾 3 字节还在）。
+    /// 这类问题只有「覆盖成更短」时才暴露，所以下面专门有用例盯着。
     pub async fn write_file(&self, path: &str, data: &[u8]) -> Result<(), WtError> {
-        self.inner
-            .write(path, data)
+        use tokio::io::AsyncWriteExt;
+        let mut file = self
+            .inner
+            .create(path)
             .await
-            .map_err(|e| sftp_error(&format!("无法写入 {path}"), e.to_string()))
+            .map_err(|e| sftp_error(&format!("无法创建 {path}"), e.to_string()))?;
+        file.write_all(data)
+            .await
+            .map_err(|e| sftp_error(&format!("无法写入 {path}"), e.to_string()))?;
+        file.close()
+            .await
+            .map_err(|e| sftp_error(&format!("无法关闭 {path}"), e.to_string()))?;
+        Ok(())
     }
 
     /// 建目录。

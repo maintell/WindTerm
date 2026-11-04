@@ -1530,6 +1530,71 @@ function runAction(action) {
   }
 }
 
+// ── 远端文件编辑（`FIL-005`）──────────────────────────────
+//
+// 下载到本地临时区 → 外部编辑器 → 写回。不做内嵌编辑器（`FIL-011` 是另一条 P0）。
+// 写回前比一次远端大小：期间被别人改过就拒绝覆盖——悄悄盖掉别人的修改
+// 是这类功能最坏的行为。
+
+const editDialog = document.getElementById("edit-dialog");
+const editInfo = document.getElementById("edit-info");
+const filesEdit = document.getElementById("files-edit");
+
+/** 当前正在编辑的远端文件（验收读它） */
+let lastEdit = null;
+
+function editReq() {
+  return { req: filesReq(), jump: jumpReq() };
+}
+
+filesEdit.addEventListener("click", async () => {
+  if (!selectedEntry || selectedEntry.is_dir) return;
+  const remote = joinPath(sftpPath, selectedEntry.name);
+  editInfo.textContent = "下载中…";
+  editDialog.showModal();
+  try {
+    const d = await invoke("sftp_edit_download", { ...editReq(), path: remote });
+    lastEdit = d;
+    editInfo.textContent = [
+      `远端：${d.remotePath}（${d.size} 字节）`,
+      `本地副本：${d.localPath}`,
+    ].join("\n");
+    setStatus(`已下载到本地：${d.localPath}`);
+  } catch (e) {
+    lastEdit = null;
+    editInfo.textContent = `下载失败：${e}`;
+  }
+});
+
+document.getElementById("edit-open").addEventListener("click", async () => {
+  if (!lastEdit) return;
+  try {
+    await invoke("open_in_system", { path: lastEdit.localPath });
+  } catch (e) {
+    setStatus(`打开失败：${e}`);
+  }
+});
+
+document.getElementById("edit-save").addEventListener("click", async () => {
+  if (!lastEdit) return;
+  try {
+    const n = await invoke("sftp_edit_save", {
+      ...editReq(),
+      path: lastEdit.remotePath,
+      localPath: lastEdit.localPath,
+      expectedSize: lastEdit.size,
+    });
+    // 写回之后远端大小变了，下次写回要按新的算，否则第二次必然误报冲突
+    lastEdit.size = n;
+    setStatus(`已写回远端（${n} 字节）`);
+    await loadDir(sftpPath);
+  } catch (e) {
+    setStatus(`写回失败：${e}`);
+  }
+});
+
+document.getElementById("edit-close").addEventListener("click", () => editDialog.close());
+
 // ── 密钥生成/导入（`LOC-014`）────────────────────────────
 //
 // 私钥落在下载目录：界面还没有文件保存对话框，而「生成了但不知道存哪」
@@ -1943,6 +2008,8 @@ function selectEntry(entry, row) {
   row.classList.add("selected");
   filesRename.disabled = false;
   filesRemove.disabled = false;
+  // 目录不能「编辑」（先凑成 FIL-005 的语义：只对文件）
+  filesEdit.disabled = Boolean(entry.is_dir);
 }
 
 /** 清掉选中态（换目录后旧选中项已经不属于当前列表）。 */
@@ -1950,6 +2017,7 @@ function clearSelection() {
   selectedEntry = null;
   filesRename.disabled = true;
   filesRemove.disabled = true;
+  filesEdit.disabled = true;
   removeArmed = false;
   filesRemove.textContent = "删除";
 }
@@ -2992,7 +3060,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-37",
+  ui: "wt-ui-38",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";
@@ -3102,6 +3170,10 @@ window.__wt = {
   /** 终端输出编码（`TER-006`，验收读它而不是去解析下拉框） */
   get encoding() {
     return encoding;
+  },
+  /** 正在编辑的远端文件（`FIL-005`）：验收读它 */
+  get lastEdit() {
+    return lastEdit ? { ...lastEdit } : null;
   },
   /** 最近生成的密钥（`LOC-014`）：验收读它，别去解析对话框里的文本 */
   get lastKey() {

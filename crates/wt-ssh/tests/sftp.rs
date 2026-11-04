@@ -18,6 +18,21 @@ fn cfg(port: u16) -> SshConfig {
 }
 
 #[tokio::test]
+async fn overwriting_with_shorter_content_truncates() {
+    // 回归用例：`write` 不截断时，覆盖成更短的内容会在文件尾部留下旧字节
+    let server = MockSshServer::start().await;
+    let conn = SshConnection::connect_password(&cfg(server.port), "secret", HostKeyPolicy::AcceptAll)
+        .await
+        .expect("连接应成功");
+    let sftp = SftpClient::open(conn).await.expect("应能打开 sftp 子系统");
+
+    sftp.write_file("/a.txt", b"hello world").await.expect("写长内容");
+    sftp.write_file("/a.txt", b"hi").await.expect("写短内容");
+    let got = sftp.read_file("/a.txt").await.expect("读回");
+    assert_eq!(got, b"hi", "覆盖后尾部不该残留旧字节");
+}
+
+#[tokio::test]
 async fn lists_reads_and_writes_over_real_channel() {
     let server = MockSshServer::start().await;
     {

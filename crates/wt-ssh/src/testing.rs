@@ -196,9 +196,17 @@ impl russh_sftp::server::Handler for MemSftp {
         &mut self,
         id: u32,
         filename: String,
-        _pflags: russh_sftp::protocol::OpenFlags,
+        pflags: russh_sftp::protocol::OpenFlags,
         _attrs: FileAttributes,
     ) -> Result<Handle, StatusCode> {
+        // TRUNC 必须真的清空：真实 sshd 在 O_TRUNC 时会这么做。
+        // mock 不模拟它，「覆盖成更短的内容」这类 bug 在测试里就看不出来——
+        // 客户端看着没问题，服务端却没截断，尾部留着上一次的旧字节。
+        if pflags
+            .contains(russh_sftp::protocol::OpenFlags::TRUNCATE)
+        {
+            self.fs.lock().await.insert(filename.clone(), Vec::new());
+        }
         Ok(Handle {
             id,
             handle: filename,

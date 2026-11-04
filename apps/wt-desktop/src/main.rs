@@ -680,6 +680,112 @@ struct KeyInfoDto {
     encrypted: bool,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EditDownloadDto {
+    /// 本地副本路径（临时区，按文件名区分）
+    local_path: String,
+    remote_path: String,
+    size: usize,
+}
+
+/// 把远端文件下载到本地临时区，供外部编辑器打开（`FIL-005`）。
+///
+/// 临时区放在下载目录下：用户找不到的临时文件等于没下载，
+/// 而且真出事时还能自己捞回来。
+#[tauri::command]
+async fn sftp_edit_download(
+    state: State<'_, AppState>,
+    req: SshOpenReq,
+    path: String,
+    jump: Option<JumpReq>,
+) -> Result<EditDownloadDto, String> {
+    let sftp = open_sftp(&state, req, jump).await?;
+    let data = sftp.read_file(&path).await.map_err(|e| e.to_string())?;
+    drop(sftp);
+
+    let dir = download_dir().join("wt-edit");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建临时目录失败：{e}"))?;
+    let name = path.rsplit('/').next().unwrap_or("remote.txt");
+    let local = unique_path(&dir, name);
+    std::fs::write(&local, &data).map_err(|e| format!("写入 {} 失败：{e}", local.display()))?;
+
+    Ok(EditDownloadDto {
+        local_path: local.display().to_string(),
+        remote_path: path,
+        size: data.len(),
+    })
+}
+
+/// 把本地副本写回远端（`FIL-005`）。
+///
+/// 写之前比一次远端大小：期间被别人改过就不覆盖——「悄悄盖掉别人的修改」
+/// 是这类编辑器最坏的行为。注意**不是原子写**（SFTP v3 的 rename 覆盖语义不可靠），
+/// 这一点在 README 里标了。
+#[tauri::command]
+async fn sftp_edit_save(
+    state: State<'_, AppState>,
+    req: SshOpenReq,
+    path: String,
+    local_path: String,
+    expected_size: usize,
+    jump: Option<JumpReq>,
+) -> Result<usize, String> {
+    let data = std::fs::read(&local_path).map_err(|e| format!("读取本地副本失败：{e}"))?;
+    let sftp = open_sftp(&state, req, jump).await?;
+
+    // 冲突检测：远端大小与下载时不一致，说明期间有人动过
+    let (dir, name) = match path.rsplit_once('/') {
+        Some((d, n)) => (if d.is_empty() { "/" } else { d }, n),
+        None => ("/", path.as_str()),
+    };
+    if let Ok(entries) = sftp.list_dir(dir).await {
+        if let Some(e) = entries.iter().find(|e| e.name == name) {
+            if e.size as usize != expected_size {
+                return Err(format!(
+                    "[SFTP_CONFLICT] 远端文件已被改动（下载时 {expected_size} 字节，现在 {} 字节），拒绝覆盖；先重新下载确认差异",
+                    e.size
+                ));
+            }
+        } else {
+            return Err("[SFTP_CONFLICT] 远端文件已不存在（可能被删除），不重建".into());
+        }
+    }
+
+    sftp.write_file(&path, &data)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(data.len())
+}
+
+/// 用系统默认程序打开一个本地文件（`FIL-005` 的「打开编辑器」）。
+#[tauri::command]
+fn open_in_system(path: String) -> Result<(), String> {
+    if !std::path::Path::new(&path).exists() {
+        return Err(format!("[FILE_NOT_FOUND] 文件不存在：{path}"));
+    }
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", "start", "", &path]);
+        c
+    };
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("open");
+        c.arg(&path);
+        c
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut cmd = {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(&path);
+        c
+    };
+    cmd.spawn().map_err(|e| format!("无法启动系统程序：{e}"))?;
+    Ok(())
+}
+
 /// 生成密钥并落盘（`LOC-014`）。
 ///
 /// 私钥写到下载目录：界面上还没有文件保存对话框，而「生成了但不知道存哪」
@@ -2496,7 +2602,10 @@ fn main() {
             session_reorder,
             session_export,
             key_generate,
-            key_inspect
+            key_inspect,
+            sftp_edit_download,
+            sftp_edit_save,
+            open_in_system
         ])
         .run(tauri::generate_context!())
         .expect("启动 WindTerm 失败");

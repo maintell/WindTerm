@@ -14,7 +14,7 @@
 //   WT_DESKTOP_EXE=path/to/wt-desktop.exe WT_E2E_PORT=9333 node scripts/e2e-desktop.mjs
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, connect as netConnect } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -878,7 +878,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-37",
+    uiVersion === "wt-ui-38",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -2022,6 +2022,55 @@ try {
   );
   check("分块上传后远端出现该文件", bigUploaded !== null, "200 KB");
 
+  // 16d-4b. 远端文件编辑（`FIL-005`）：下载到本地 → 改 → 写回远端
+  await clickFileRow("notes.txt");
+  await clickElement("#files-edit");
+  const editDl = await waitFor(
+    async () => {
+      const e = await cdp.eval(`window.__wt.lastEdit`);
+      return e && e.localPath ? e : null;
+    },
+    { timeout: 20000, label: "下载远端文件到本地" },
+  );
+  const localCopy = readFileSync(editDl.localPath);
+  check(
+    "编辑会把远端文件下载到本地临时区",
+    localCopy.length === editDl.size && localCopy.length > 0,
+    `${editDl.localPath}（${editDl.size} 字节）`,
+  );
+
+  // 改本地副本再写回：远端内容必须真的变了（重新下载一次对照）
+  const editedText = "edited by e2e";
+  writeFileSync(editDl.localPath, editedText);
+  await clickElement("#edit-save");
+  await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      return s.startsWith("已写回远端") ? s : null;
+    },
+    { timeout: 20000, label: "写回远端" },
+  );
+  await clickElement("#edit-close");
+  // 重新下载一次，确认远端真的被改了
+  await clickFileRow("notes.txt");
+  await doubleClickFileRow("notes.txt");
+  const redownloaded = await waitFor(
+    async () => {
+      const msg = await cdp.eval(`document.getElementById("files-msg").textContent`);
+      return msg.startsWith("已保存") ? msg : null;
+    },
+    { timeout: 20000, label: "重新下载" },
+  );
+  const newest = readdirSync(DOWNLOAD_DIR)
+    .filter((f) => f.startsWith("notes"))
+    .map((f) => ({ f, t: statSync(join(DOWNLOAD_DIR, f)).mtimeMs }))
+    .sort((a, b) => b.t - a.t)[0];
+  const refreshed = readFileSync(join(DOWNLOAD_DIR, newest.f), "utf8");
+  check(
+    "写回远端后远端内容真的变了",
+    refreshed === editedText,
+    `${newest.f} → ${JSON.stringify(refreshed)}`,
+  );
   // 16d-5. 多会话并存（FIL-001）：文件面板可以对着某个会话，而不是只能跟随连接表单
   const filesSessionId = await cdp.eval(`(async () => {
     const dto = await window.__TAURI__.core.invoke("sessions_load");
