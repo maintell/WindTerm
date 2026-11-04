@@ -5214,18 +5214,18 @@ try {
 
   // 19zd. 高级设置：配置文件路径与重置偏好（`SET-001`）
   await closeAllDialogs();
-  // 「设置」按钮在终端底栏，**没有会话时整个底栏是隐藏的**——先开一个终端再进设置
+  // `G15` 回归：底栏在没有会话时是隐藏的，设置入口必须还能用（左侧树头那个）
+  const footHidden = await cdp.eval(`document.getElementById("term-foot").hidden`);
+  check("没有会话时终端底栏是隐藏的（前提）", footHidden === true, footHidden === true);
   await clickUntil(
-    () => clickElement("#open"),
-    async () => (await cdp.eval(`!document.getElementById("term-foot").hidden`)) ? true : null,
-    { timeout: 15000, tries: 4, label: "为进设置开一个终端" },
-  );
-  // 必须确认对话框真的开了：只读 DOM 的断言在对话框关着时也会过（元素在、只是不可见），
-  // 等到要**点**里面的按钮时才发现坐标是 0,0
-  await clickUntil(
-    () => clickElement("#settings-open"),
+    () => clickElement("#tree-settings"),
     async () => (await cdp.eval(`document.getElementById("settings").open`)) ? true : null,
-    { timeout: 5000, tries: 3, label: "打开设置面板" },
+    { timeout: 5000, tries: 3, label: "从树头打开设置" },
+  );
+  check(
+    "没有会话时也能进设置（G15）",
+    await cdp.eval(`document.getElementById("settings").open`),
+    "面板已打开",
   );
   const advGroup = await cdp.eval(`(() => {
     const g = [...document.querySelectorAll("#set-body .set-group")].find((x) =>

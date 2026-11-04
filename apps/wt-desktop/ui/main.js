@@ -4502,12 +4502,21 @@ function filterSettings(query) {
   setEmpty.hidden = shown > 0;
 }
 
-document.getElementById("settings-open").addEventListener("click", () => {
+/**
+ * 打开设置面板。
+ *
+ * 两个入口共用这一个函数：终端底栏（有会话时的顺路位置）与左侧树头（始终可见）。
+ * 只放底栏的话，没有会话时整条底栏是隐藏的，用户根本进不来（`G15`）。
+ */
+function openSettings() {
   setSearch.value = "";
   filterSettings("");
   settingsDialog.showModal();
   setSearch.focus();
-});
+}
+
+document.getElementById("settings-open").addEventListener("click", openSettings);
+document.getElementById("tree-settings").addEventListener("click", openSettings);
 
 document.getElementById("set-close").addEventListener("click", () => settingsDialog.close());
 setSearch.addEventListener("input", () => filterSettings(setSearch.value));
@@ -4650,7 +4659,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-79",
+  ui: "wt-ui-80",
   /** 「本次记住」存了几条（验收用：只回数量，不回口令） */
   sessionPasswords() {
     return sessionPasswords.size;
