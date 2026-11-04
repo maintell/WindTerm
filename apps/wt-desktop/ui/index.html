@@ -502,6 +502,42 @@
         padding: 0;
         margin: 0;
       }
+      #known-dialog {
+        background: #24242a;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 8px;
+        padding: 12px 14px;
+        min-width: 520px;
+        max-height: 70vh;
+      }
+      #known-list {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        overflow: auto;
+        margin-bottom: 10px;
+      }
+      .known-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 12px;
+        padding: 3px 4px;
+        border-bottom: 1px solid #2a2a30;
+      }
+      .known-row .host { flex: 1; }
+      .known-row .fp { color: var(--muted); font-family: ui-monospace, monospace; }
+      #known-dialog button {
+        background: #2a2a30;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 4px;
+        padding: 1px 10px;
+        font: inherit;
+        cursor: pointer;
+      }
+      #known-dialog menu { display: flex; justify-content: flex-end; padding: 0; margin: 0; }
       #theme-dialog {
         background: #24242a;
         color: var(--fg);
@@ -1060,6 +1096,11 @@
           <span class="set-scope">全局</span>
           <select id="look-theme"></select>
         </div>
+        <div class="set-row" data-kw="已知主机 known_hosts 主机密钥 指纹 host key 信任">
+          <span class="set-name">已知主机</span>
+          <span class="set-scope">全局</span>
+          <button type="button" id="known-open">查看…</button>
+        </div>
         <div class="set-row" data-kw="配色 主题 导入 import iterm windows terminal schemes">
           <span class="set-name">导入配色方案</span>
           <span class="set-scope">全局</span>
@@ -1095,6 +1136,12 @@
       </div>
     </dialog>
     <!-- 导入配色（TER-005）：Windows Terminal schemes JSON / iTerm2 .itermcolors -->
+    <!-- 已知主机（SEC-005）：密钥变了要能在这忘掉旧记录，而不是手改 known_hosts -->
+    <dialog id="known-dialog">
+      <p id="known-title">已记录的主机密钥</p>
+      <div id="known-list"></div>
+      <menu><button type="button" id="known-close">关闭</button></menu>
+    </dialog>
     <dialog id="theme-dialog">
       <p id="theme-title">导入配色方案</p>
       <textarea id="theme-text" spellcheck="false" placeholder="把 Windows Terminal 的 schemes JSON 粘到这里，或选择 .itermcolors 文件"></textarea>

@@ -233,6 +233,17 @@ impl KnownHosts {
         });
     }
 
+    /// 按主机**模式**删除记录（含哈希形式与通配符）。返回删除条数。
+    ///
+    /// `remove_host` 只认 `host:port`，表达不了 `|1|salt|hmac` 这种哈希模式——
+    /// 而界面上列出来的正是模式本身，所以另给一个按模式删的入口。
+    pub fn remove_pattern(&mut self, pattern: &str) -> usize {
+        let before = self.entries.len();
+        self.entries
+            .retain(|e| !e.patterns.iter().any(|p| p == pattern));
+        before - self.entries.len()
+    }
+
     /// 删除某主机的全部记录（用户确认「服务器已重装」后调用）。返回删除条数。
     pub fn remove_host(&mut self, id: &HostKeyId) -> usize {
         let before = self.entries.len();
@@ -333,6 +344,25 @@ pub fn fingerprint_sha256(blob: &[u8]) -> String {
     use base64::engine::general_purpose::STANDARD_NO_PAD;
     let digest = Sha256::digest(blob);
     format!("SHA256:{}", STANDARD_NO_PAD.encode(digest))
+}
+
+#[cfg(test)]
+mod pattern_tests {
+    use super::*;
+
+    #[test]
+    fn remove_pattern_covers_hashed_entries_too() {
+        let mut kh = KnownHosts::new();
+        kh.add(&HostKeyId::new("h1", 22), "ssh-ed25519", b"k1", false);
+        kh.add(&HostKeyId::new("h2", 22), "ssh-ed25519", b"k2", true);
+        assert_eq!(kh.entries().len(), 2);
+
+        // 哈希形式的记录 `remove_host` 表达不了，只能按模式删
+        let hashed = kh.entries()[1].patterns[0].clone();
+        assert_eq!(kh.remove_pattern(&hashed), 1);
+        assert_eq!(kh.entries().len(), 1);
+        assert_eq!(kh.remove_pattern("没这个模式"), 0);
+    }
 }
 
 #[cfg(test)]

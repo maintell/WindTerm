@@ -672,6 +672,14 @@ async function confirmName(text) {
   await clickElement("#name-ok");
 }
 
+/** 关掉所有还开着的 <dialog>：模态框会挡住后续点击，而 e2e 里很容易漏关一个 */
+async function closeAllDialogs() {
+  await cdp.eval(`(() => {
+    for (const d of document.querySelectorAll("dialog[open]")) d.close();
+    return true;
+  })()`);
+}
+
 /** Ctrl+点击会话树节点（多选用） */
 async function ctrlClickTreeNode(name) {
   const box = await cdp.eval(`(() => {
@@ -895,7 +903,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-45",
+    uiVersion === "wt-ui-46",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -3300,8 +3308,46 @@ try {
   check("关闭分屏后会话都回到左 pane", splitOff.a === 2, `左 ${splitOff.a} 个`);
   await closeAllTabs();
 
+  // 19j. 已知主机（`SEC-005`）：能列出指纹，也能忘掉某条记录
+  const khBefore = await cdp.eval(`window.__wt.knownHosts()`);
+  check("known_hosts 里能列出已记录的主机", khBefore.length > 0, `${khBefore.length} 条`);
+
+  // 这段之前刚 closeAllTabs()，底栏（含「设置」按钮）是隐藏的——直接开对话框
+  await cdp.eval(`document.getElementById("settings").showModal()`);
+  await clickElement("#known-open");
+  const khRow = await waitFor(
+    async () => {
+      const rows = await cdp.eval(`[...document.querySelectorAll("#known-list .known-row")].map((r) => ({ pattern: r.dataset.pattern ?? null, text: r.textContent }))`);
+      return rows.length && rows[0].pattern ? rows[0] : null;
+    },
+    { timeout: 10000, label: "已知主机列表" },
+  );
+  check(
+    "界面显示出主机与指纹",
+    khRow.text.includes("SHA256:"),
+    khRow.text.slice(0, 60),
+  );
+
+  const forgottenPattern = khRow.pattern;
+  await cdp.eval(`document.querySelector("#known-list .known-row button").click()`);
+  const khAfter = await waitFor(
+    async () => {
+      const rows = await cdp.eval(`window.__wt.knownHosts()`);
+      return rows.some((r) => r.pattern === forgottenPattern) ? null : rows;
+    },
+    { timeout: 10000, label: "忘掉主机密钥" },
+  );
+  check(
+    "忘记后该主机的记录从 known_hosts 里消失",
+    Array.isArray(khAfter),
+    `${khBefore.length} → ${khAfter.length} 条（忘了 ${forgottenPattern}）`,
+  );
+  await clickElement("#known-close");
+  await clickElement("#set-close");
+
   // 19h. 密钥生成与导入（`LOC-014`）：生成 → 落盘 → 回读指纹一致
   // 这条不需要会话：直接开对话框（「密钥」按钮在终端底栏里，没会话时是隐藏的）
+  await closeAllDialogs();
   await cdp.eval(`document.getElementById("key-dialog").showModal()`);
   await cdp.eval(`(() => {
     const alg = document.getElementById("key-alg");
@@ -3343,6 +3389,7 @@ try {
   await clickElement("#key-close");
 
   // 19c-2. 多执行广播（`TER-004`）：同一命令发给多个会话，按输出分组收起
+  await closeAllDialogs();
   await closeAllTabs();
   await clickSessionNode("mock-ssh");
   await fillInput("#port", String(sshPort));

@@ -943,6 +943,52 @@ fn open_in_system(path: String) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KnownHostRow {
+    /// known_hosts 里的主机模式（可能是 `[host]:port`，也可能是哈希形式）
+    pattern: String,
+    key_type: String,
+    fingerprint: String,
+    comment: String,
+}
+
+/// 列出已记录的主机密钥（`SEC-005`：密钥变了要能重置信任）。
+///
+/// 没有这个入口，用户遇到 `SSH_HOSTKEY_CHANGED` 只能手动去改 `known_hosts`——
+/// 而那个文件里存的是 base64 blob，手改几乎必然改坏。
+#[tauri::command]
+fn known_hosts_list() -> Result<Vec<KnownHostRow>, String> {
+    let known = load_known_hosts();
+    let mut rows = Vec::new();
+    for e in known.entries() {
+        let fp = wt_ssh::fingerprint_sha256(&e.key_blob);
+        for p in &e.patterns {
+            rows.push(KnownHostRow {
+                pattern: p.clone(),
+                key_type: e.key_type.clone(),
+                fingerprint: fp.clone(),
+                comment: e.comment.clone().unwrap_or_default(),
+            });
+        }
+    }
+    Ok(rows)
+}
+
+/// 忘掉某台主机的密钥（`SEC-005`）。下次连接会重新走 TOFU。
+#[tauri::command]
+fn known_hosts_forget(pattern: String) -> Result<usize, String> {
+    let mut known = load_known_hosts();
+    // 直接按主机模式删：`HostKeyId` 只能表达 `host:port`，表达不了哈希形式与通配符，
+    // 而界面上列出来的正是模式本身
+    let removed = known.remove_pattern(&pattern);
+    if removed == 0 {
+        return Err(format!("[KNOWN_HOSTS_NOT_FOUND] 没有记录 {pattern}"));
+    }
+    save_known_hosts(&known)?;
+    Ok(removed)
+}
+
 /// 生成密钥并落盘（`LOC-014`）。
 ///
 /// 私钥写到下载目录：界面上还没有文件保存对话框，而「生成了但不知道存哪」
@@ -2849,6 +2895,8 @@ fn main() {
             session_export,
             prefs_load,
             prefs_save,
+            known_hosts_list,
+            known_hosts_forget,
             key_generate,
             key_inspect,
             sftp_edit_download,

@@ -3340,6 +3340,65 @@ lookScrollbackInput.addEventListener("change", () => {
   applyLook();
 });
 
+// ── 已知主机（`SEC-005`）──────────────────────────────────
+//
+// 主机密钥变了的时候，用户唯一的出路是「忘掉旧记录」。没有这个界面，
+// 他只能手改 known_hosts——那里存的是 base64 blob，手改几乎必然改坏。
+
+const knownDialog = document.getElementById("known-dialog");
+const knownList = document.getElementById("known-list");
+
+async function renderKnownHosts() {
+  knownList.textContent = "";
+  let rows = [];
+  try {
+    rows = await invoke("known_hosts_list");
+  } catch (e) {
+    setStatus(`读取 known_hosts 失败：${e}`);
+    return;
+  }
+  if (!rows.length) {
+    const empty = document.createElement("div");
+    empty.className = "known-row";
+    empty.textContent = "还没有记录（第一次连接时会自动记下）";
+    knownList.appendChild(empty);
+    return;
+  }
+  for (const r of rows) {
+    const row = document.createElement("div");
+    row.className = "known-row";
+    row.dataset.pattern = r.pattern;
+    const host = document.createElement("span");
+    host.className = "host";
+    host.textContent = r.pattern;
+    const fp = document.createElement("span");
+    fp.className = "fp";
+    fp.textContent = `${r.keyType} ${r.fingerprint}`;
+    const del = document.createElement("button");
+    del.type = "button";
+    del.textContent = "忘记";
+    del.title = "删掉这条记录；下次连接会重新走 TOFU 确认";
+    del.addEventListener("click", async () => {
+      try {
+        await invoke("known_hosts_forget", { pattern: r.pattern });
+        setStatus(`已忘掉 ${r.pattern}`);
+        await renderKnownHosts();
+      } catch (e) {
+        setStatus(`删除失败：${e}`);
+      }
+    });
+    row.append(host, fp, del);
+    knownList.appendChild(row);
+  }
+}
+
+document.getElementById("known-open").addEventListener("click", () => {
+  knownDialog.showModal();
+  void renderKnownHosts();
+});
+
+document.getElementById("known-close").addEventListener("click", () => knownDialog.close());
+
 // ── 导入配色方案（`TER-005`）──────────────────────────────
 //
 // 支持两种来源：Windows Terminal 的 `schemes`（JSON）与 iTerm2 的 `.itermcolors`（plist）。
@@ -3642,7 +3701,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-45",
+  ui: "wt-ui-46",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";
@@ -3752,6 +3811,10 @@ window.__wt = {
   /** 终端输出编码（`TER-006`，验收读它而不是去解析下拉框） */
   get encoding() {
     return encoding;
+  },
+  /** 已知主机条目数（`SEC-005`，验收读它） */
+  async knownHosts() {
+    return invoke("known_hosts_list");
   },
   /** 分屏状态（`G6`）：右侧显示哪个会话 */
   get split() {
