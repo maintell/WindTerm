@@ -283,7 +283,8 @@
         flex: none;
       }
       #term-foot[hidden] { display: none; }
-      #term-foot select {
+      #term-foot select,
+      #term-foot input {
         background: #2a2a30;
         color: var(--fg);
         border: 1px solid #3a3a44;
@@ -291,6 +292,9 @@
         padding: 1px 4px;
         font: inherit;
       }
+      #term-foot input[type="number"] { width: 62px; }
+      #term-foot #look-size { width: 48px; }
+      #term-foot #look-height { width: 52px; }
       #paste-confirm {
         background: #202024;
         color: var(--fg);
@@ -565,6 +569,17 @@
       <div id="right">
         <div id="tabs"></div>
         <div id="term-foot">
+          <select id="look-theme" title="配色"></select>
+          <select id="look-font" title="字体">
+            <option value='"JetBrains Mono", Consolas, "Cascadia Mono", monospace'>JetBrains Mono</option>
+            <option value='"Cascadia Mono", Consolas, monospace'>Cascadia Mono</option>
+            <option value='Consolas, "Courier New", monospace'>Consolas</option>
+            <option value='"Courier New", Courier, monospace'>Courier New</option>
+            <option value="monospace">系统等宽</option>
+          </select>
+          <input id="look-size" type="number" min="9" max="28" step="1" title="字号" />
+          <input id="look-height" type="number" min="1" max="2" step="0.05" title="行高" />
+          <input id="look-scrollback" type="number" min="1000" max="1000000" step="1000" title="回滚行数" />
           <select id="encoding" title="终端输出编码（只影响之后的输出，已显示的内容不动）">
             <option value="utf-8">UTF-8</option>
             <option value="gbk">GBK</option>

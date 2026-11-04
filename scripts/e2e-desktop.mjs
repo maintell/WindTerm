@@ -785,7 +785,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-27",
+    uiVersion === "wt-ui-28",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -2655,6 +2655,51 @@ try {
     { timeout: 15000, label: "按 GBK 解码出中文" },
   );
   check("切到 GBK 后能把 GBK 字节解成中文", gbkText !== null);
+  await closeAllTabs();
+
+  // 19d. 外观与回滚（`TER-005` / `TER-008`）：主题要真的落到 xterm 上，
+  //      只改下拉框不算（把 theme 传空也能骗过那种断言）
+  await closeAllTabs();
+  await clickSessionNode("mock-ssh");
+  await fillInput("#port", String(sshPort));
+  await clickElement("#ssh");
+  await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      return s.startsWith("已连接") ? s : null;
+    },
+    { timeout: 30000, label: "外观用例建会话" },
+  );
+  const lookUi = await cdp.eval(`(() => {
+    const theme = document.getElementById("look-theme");
+    const count = theme.options.length;
+    theme.value = "Dracula";
+    theme.dispatchEvent(new Event("change", { bubbles: true }));
+    const sb = document.getElementById("look-scrollback");
+    sb.value = "20000";
+    sb.dispatchEvent(new Event("change", { bubbles: true }));
+    const size = document.getElementById("look-size");
+    size.value = "16";
+    size.dispatchEvent(new Event("change", { bubbles: true }));
+    return { count, ...window.__wt.look };
+  })()`);
+  check("内置配色不少于 20 套", lookUi.count >= 20, `${lookUi.count} 套`);
+  check(
+    "切主题/改回滚/改字号都真的落到终端上",
+    lookUi.theme === "Dracula" &&
+      lookUi.appliedBackground === "#282a36" &&
+      lookUi.scrollback === 20000 &&
+      lookUi.appliedScrollback === 20000 &&
+      lookUi.fontSize === 16,
+    JSON.stringify(lookUi),
+  );
+  // 复原字号，别把后面用例的屏幕尺寸带偏
+  await cdp.eval(`(() => {
+    const size = document.getElementById("look-size");
+    size.value = "13";
+    size.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  })()`);
   await closeAllTabs();
 
   // 19b. 多跳（`SES-025`）：目标 ← bastion ← bastion2。

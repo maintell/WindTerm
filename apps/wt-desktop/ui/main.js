@@ -104,8 +104,108 @@ function frame() {
  * 每个会话有自己的 xterm 实例、FitAddon、未确认计数与拉取循环——
  * 共用一份状态会让「切走的标签页停止 ack」变成静默的背压泄漏。
  */
-/** 当前字号；Ctrl+= / Ctrl+- 调整，对所有会话生效 */
+/**
+ * 内置配色（`TER-005`）。
+ *
+ * 每项 4 个界面色 + 16 个 ANSI 色。写成紧凑数组而不是对象字面量，是因为
+ * 20 套 × 20 个键的 `black:`/`brightBlack:` 形式会把文件撑成好几屏，改起来反而容易错位。
+ */
+const THEME_DATA = [
+{ name: "WindTerm Dark", bg: "#1a1a1c", fg: "#e8e8ea", cur: "#5b9bff", sel: "#2f4f7f", ansi: ["#1a1a1c","#e5534b","#4caf50","#d7a24a","#5b9bff","#b06bd0","#3aa6a6","#c8c8cc","#5a5a62","#ff6b64","#7ee787","#ffd479","#8ab6ff","#d99cf0","#63cfcf","#f0f0f4"] },
+{ name: "Solarized Dark", bg: "#002b36", fg: "#839496", cur: "#93a1a1", sel: "#073642", ansi: ["#073642","#dc322f","#859900","#b58900","#268bd2","#d33682","#2aa198","#eee8d5","#002b36","#cb4b16","#586e75","#657b83","#839496","#6c71c4","#93a1a1","#fdf6e3"] },
+{ name: "Solarized Light", bg: "#fdf6e3", fg: "#657b83", cur: "#586e75", sel: "#eee8d5", ansi: ["#073642","#dc322f","#859900","#b58900","#268bd2","#d33682","#2aa198","#eee8d5","#002b36","#cb4b16","#586e75","#657b83","#839496","#6c71c4","#93a1a1","#fdf6e3"] },
+{ name: "Dracula", bg: "#282a36", fg: "#f8f8f2", cur: "#f8f8f2", sel: "#44475a", ansi: ["#21222c","#ff5555","#50fa7b","#f1fa8c","#bd93f9","#ff79c6","#8be9fd","#f8f8f2","#6272a4","#ff6e6e","#69ff94","#ffffa5","#d6acff","#ff92df","#a4ffff","#ffffff"] },
+{ name: "Nord", bg: "#2e3440", fg: "#d8dee9", cur: "#d8dee9", sel: "#434c5e", ansi: ["#3b4252","#bf616a","#a3be8c","#ebcb8b","#81a1c1","#b48ead","#88c0d0","#e5e9f0","#4c566a","#bf616a","#a3be8c","#ebcb8b","#81a1c1","#b48ead","#8fbcbb","#eceff4"] },
+{ name: "Gruvbox Dark", bg: "#282828", fg: "#ebdbb2", cur: "#ebdbb2", sel: "#504945", ansi: ["#282828","#cc241d","#98971a","#d79921","#458588","#b16286","#689d6a","#a89984","#928374","#fb4934","#b8bb26","#fabd2f","#83a598","#d3869b","#8ec07c","#ebdbb2"] },
+{ name: "One Dark", bg: "#282c34", fg: "#abb2bf", cur: "#528bff", sel: "#3e4451", ansi: ["#282c34","#e06c75","#98c379","#e5c07b","#61afef","#c678dd","#56b6c2","#abb2bf","#5c6370","#e06c75","#98c379","#e5c07b","#61afef","#c678dd","#56b6c2","#ffffff"] },
+{ name: "Monokai", bg: "#272822", fg: "#f8f8f2", cur: "#f8f8f0", sel: "#49483e", ansi: ["#272822","#f92672","#a6e22e","#f4bf75","#66d9ef","#ae81ff","#a1efe4","#f8f8f2","#75715e","#f92672","#a6e22e","#f4bf75","#66d9ef","#ae81ff","#a1efe4","#f9f8f5"] },
+{ name: "Tokyo Night", bg: "#1a1b26", fg: "#c0caf5", cur: "#c0caf5", sel: "#33467c", ansi: ["#15161e","#f7768e","#9ece6a","#e0af68","#7aa2f7","#bb9af7","#7dcfff","#a9b1d6","#414868","#f7768e","#9ece6a","#e0af68","#7aa2f7","#bb9af7","#7dcfff","#c0caf5"] },
+{ name: "Catppuccin Mocha", bg: "#1e1e2e", fg: "#cdd6f4", cur: "#f5e0dc", sel: "#585b70", ansi: ["#45475a","#f38ba8","#a6e3a1","#f9e2af","#89b4fa","#f5c2e7","#94e2d5","#bac2de","#585b70","#f38ba8","#a6e3a1","#f9e2af","#89b4fa","#f5c2e7","#94e2d5","#a6adc8"] },
+{ name: "Material", bg: "#263238", fg: "#eeffff", cur: "#ffcc00", sel: "#80cbc4", ansi: ["#000000","#ff5370","#c3e88d","#ffcb6b","#82aaff","#c792ea","#89ddff","#ffffff","#545454","#ff5370","#c3e88d","#ffcb6b","#82aaff","#c792ea","#89ddff","#ffffff"] },
+{ name: "Tomorrow Night", bg: "#1d1f21", fg: "#c5c8c6", cur: "#c5c8c6", sel: "#373b41", ansi: ["#1d1f21","#cc6666","#b5bd68","#f0c674","#81a2be","#b294bb","#8abeb7","#c5c8c6","#969896","#cc6666","#b5bd68","#f0c674","#81a2be","#b294bb","#8abeb7","#ffffff"] },
+{ name: "Zenburn", bg: "#3f3f3f", fg: "#dcdccc", cur: "#dcdccc", sel: "#2f2f2f", ansi: ["#4d4d4d","#705050","#60b48a","#f0dfaf","#506070","#dc8cc3","#8cd0d3","#dcdccc","#709080","#dca3a3","#c3bf9f","#e0cf9f","#dfaf8f","#dc8cc3","#93e0e3","#ffffff"] },
+{ name: "Ocean", bg: "#224fbc", fg: "#ffffff", cur: "#ffffff", sel: "#2c62d6", ansi: ["#000000","#ff0000","#00b300","#c8c800","#0000ff","#ff00ff","#00b3b3","#ffffff","#808080","#ff5555","#55ff55","#ffff55","#5555ff","#ff55ff","#55ffff","#ffffff"] },
+{ name: "Ubuntu", bg: "#300a24", fg: "#eeeeec", cur: "#bbbbbb", sel: "#b4a6a2", ansi: ["#2e3436","#cc0000","#4e9a06","#c4a000","#3465a4","#75507b","#06989a","#d3d7cf","#555753","#ef2929","#8ae234","#fce94f","#729fcf","#ad7fa8","#34e2e2","#eeeeec"] },
+{ name: "Tango Light", bg: "#ffffff", fg: "#000000", cur: "#000000", sel: "#a6d9f7", ansi: ["#2e3436","#cc0000","#4e9a06","#c4a000","#3465a4","#75507b","#06989a","#d3d7cf","#555753","#ef2929","#8ae234","#fce94f","#729fcf","#ad7fa8","#34e2e2","#eeeeec"] },
+{ name: "xterm", bg: "#000000", fg: "#e5e5e5", cur: "#ffffff", sel: "#444444", ansi: ["#000000","#cd0000","#00cd00","#cdcd00","#0000ee","#cd00cd","#00cdcd","#e5e5e5","#7f7f7f","#ff0000","#00ff00","#ffff00","#5c5cff","#ff00ff","#00ffff","#ffffff"] },
+{ name: "Cobalt", bg: "#193549", fg: "#ffffff", cur: "#ffcc00", sel: "#0050a4", ansi: ["#000000","#ff0000","#38de21","#ffe50a","#1460d2","#ff005d","#00bbbb","#bbbbbb","#555555","#f40e17","#3bd01d","#edc809","#0e7ff5","#ff5572","#00eeee","#ffffff"] },
+{ name: "Ayu Mirage", bg: "#1f2430", fg: "#cbccc6", cur: "#ffcc66", sel: "#33415e", ansi: ["#191e2a","#ed8274","#a6cc70","#fad07b","#6dcbfa","#cfbafa","#90e1c6","#c7c7c7","#686868","#f28779","#bae67e","#ffd580","#73d0ff","#d4bfff","#95e6cb","#ffffff"] },
+{ name: "Kanagawa", bg: "#1f1f28", fg: "#dcd7ba", cur: "#c8c093", sel: "#2d4f67", ansi: ["#090618","#c34043","#76946a","#c0a36e","#7e9cd8","#957fb8","#6a9589","#c8c093","#727169","#e82424","#98bb6c","#e6c384","#7fb4ca","#938aa9","#7aa89f","#dcd7ba"] },
+{ name: "PaperColor Light", bg: "#eeeeee", fg: "#444444", cur: "#444444", sel: "#b5c7d9", ansi: ["#1c1c1c","#af0000","#008700","#5f8700","#0087af","#878787","#005f87","#d0d0d0","#585858","#d70000","#d70087","#8700af","#d75f00","#d75f00","#005faf","#f5f5f5"] },
+];
+
+/** 名称 → xterm 的 theme 对象 */
+const ANSI_KEYS = [
+  "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
+  "brightBlack", "brightRed", "brightGreen", "brightYellow",
+  "brightBlue", "brightMagenta", "brightCyan", "brightWhite",
+];
+
+function xtermTheme(name) {
+  const t = THEME_DATA.find((x) => x.name === name) ?? THEME_DATA[0];
+  const th = {
+    background: t.bg,
+    foreground: t.fg,
+    cursor: t.cur,
+    selectionBackground: t.sel,
+  };
+  ANSI_KEYS.forEach((k, i) => {
+    th[k] = t.ansi[i];
+  });
+  return th;
+}
+
+/** 当前字号；Ctrl+= / Ctrl+- 调整，对所有会话生效（真值在 `look.fontSize`） */
 let fontSize = 13;
+
+/**
+ * 终端外观状态（`TER-005` / `TER-008`）。
+ *
+ * 存 localStorage 而不是配置文件，是**已知偏差**：`SET-006` 要求设置走 TOML
+ * （人可读、可进 Git），但设置体系（`SET-001`）还没做。先把「换主题这种
+ * 立刻想看效果」的偏好落地，别让用户每次启动重设一遍。
+ */
+const LOOK_KEY = "wt.look";
+const look = {
+  theme: "WindTerm Dark",
+  fontFamily: '"JetBrains Mono", Consolas, "Cascadia Mono", monospace',
+  fontSize: 13,
+  lineHeight: 1.2,
+  scrollback: 10000,
+};
+
+function clampNum(n, lo, hi) {
+  return Math.min(hi, Math.max(lo, n));
+}
+
+function loadLook() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LOOK_KEY) ?? "null");
+    if (!saved || typeof saved !== "object") return;
+    if (THEME_DATA.some((t) => t.name === saved.theme)) look.theme = saved.theme;
+    if (typeof saved.fontFamily === "string" && saved.fontFamily) {
+      look.fontFamily = saved.fontFamily;
+    }
+    if (Number.isFinite(saved.fontSize)) look.fontSize = clampNum(saved.fontSize, 9, 28);
+    if (Number.isFinite(saved.lineHeight)) {
+      look.lineHeight = clampNum(saved.lineHeight, 1, 2);
+    }
+    if (Number.isFinite(saved.scrollback)) {
+      look.scrollback = clampNum(saved.scrollback, 1000, 1000000);
+    }
+  } catch {
+    // 存坏了就用默认值：偏好读不出来不该让界面起不来
+  }
+  fontSize = look.fontSize;
+}
+
+function saveLook() {
+  try {
+    localStorage.setItem(LOOK_KEY, JSON.stringify(look));
+  } catch {
+    // 隐私模式下写不进去，忽略即可——本次运行内的效果仍然生效
+  }
+}
 
 /**
  * 终端输出编码（`TER-006`）。
@@ -147,20 +247,15 @@ function createView(label) {
   termHost.appendChild(el);
 
   const term = new Terminal({
-    fontFamily: '"JetBrains Mono", Consolas, "Cascadia Mono", monospace',
-    fontSize,
-    lineHeight: 1.2,
+    fontFamily: look.fontFamily,
+    fontSize: look.fontSize,
+    lineHeight: look.lineHeight,
     cursorBlink: true,
-    scrollback: 5000,
+    scrollback: look.scrollback,
     // 查找高亮用到了 decorations（proposed API）。不开这个开关，
     // addon-search 的 findNext 会直接抛错，界面上表现为「搜索框没反应」。
     allowProposedApi: true,
-    theme: {
-      background: "#1a1a1c",
-      foreground: "#e8e8ea",
-      cursor: "#5b9bff",
-      selectionBackground: "#2f4f7f",
-    },
+    theme: xtermTheme(look.theme),
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
@@ -868,11 +963,33 @@ findClose.addEventListener("click", closeFind);
 
 /** 字号调整：所有会话一起改，改完重新 fit（行列数会变） */
 function setFontSize(next) {
-  fontSize = Math.min(28, Math.max(9, next));
+  look.fontSize = Math.min(28, Math.max(9, next));
+  fontSize = look.fontSize;
+  lookSizeInput.value = String(look.fontSize);
   for (const view of sessions.values()) {
-    view.term.options.fontSize = fontSize;
+    view.term.options.fontSize = look.fontSize;
     view.fit.fit();
   }
+  saveLook();
+}
+
+/**
+ * 外观（`TER-005`）与回滚行数（`TER-008`）全部应用到已有会话。
+ *
+ * 逐项 set 再统一 fit：只改一项时 fit 一次就够，但统一走这里最省心——
+ * 字号/字体/行高都会改变行列数，漏一次 fit 就会和远端 PTY 的尺寸对不上。
+ */
+function applyLook() {
+  for (const view of sessions.values()) {
+    view.term.options.theme = xtermTheme(look.theme);
+    view.term.options.fontFamily = look.fontFamily;
+    view.term.options.fontSize = look.fontSize;
+    view.term.options.lineHeight = look.lineHeight;
+    view.term.options.scrollback = look.scrollback;
+    view.fit.fit();
+  }
+  fontSize = look.fontSize;
+  saveLook();
 }
 
 // ── 剪贴板（TER-011 / TER-013 / TER-023）────────────────────
@@ -1548,6 +1665,11 @@ const tunnelSocksUser = document.getElementById("tunnel-socks-user");
 const tunnelSocksPass = document.getElementById("tunnel-socks-pass");
 const termFoot = document.getElementById("term-foot");
 const encodingSelect = document.getElementById("encoding");
+const lookThemeSelect = document.getElementById("look-theme");
+const lookFontSelect = document.getElementById("look-font");
+const lookSizeInput = document.getElementById("look-size");
+const lookHeightInput = document.getElementById("look-height");
+const lookScrollbackInput = document.getElementById("look-scrollback");
 const tunnelAuto = document.getElementById("tunnel-auto");
 const tunnelAutoRow = document.getElementById("tunnel-auto-row");
 const tunnelAdd = document.getElementById("tunnel-add");
@@ -1958,6 +2080,58 @@ function jumpReq() {
   };
 }
 
+// ── 外观控件（`TER-005` / `TER-008`）────────────────────────
+
+function initLookControls() {
+  for (const t of THEME_DATA) {
+    const o = document.createElement("option");
+    o.value = t.name;
+    o.textContent = t.name;
+    lookThemeSelect.appendChild(o);
+  }
+  lookThemeSelect.value = look.theme;
+  // 存下来的字体可能不在预设里（换过机器/手改过 localStorage）：补一条再选中，
+  // 否则 select.value 静默落空，用户会看到「字体没生效」
+  if (![...lookFontSelect.options].some((o) => o.value === look.fontFamily)) {
+    const o = document.createElement("option");
+    o.value = look.fontFamily;
+    o.textContent = look.fontFamily.split(",")[0].replaceAll('"', "");
+    lookFontSelect.appendChild(o);
+  }
+  lookFontSelect.value = look.fontFamily;
+  lookSizeInput.value = String(look.fontSize);
+  lookHeightInput.value = String(look.lineHeight);
+  lookScrollbackInput.value = String(look.scrollback);
+}
+
+lookThemeSelect.addEventListener("change", () => {
+  look.theme = lookThemeSelect.value;
+  applyLook();
+});
+
+lookFontSelect.addEventListener("change", () => {
+  look.fontFamily = lookFontSelect.value;
+  applyLook();
+});
+
+lookSizeInput.addEventListener("change", () => setFontSize(Number(lookSizeInput.value)));
+
+lookHeightInput.addEventListener("change", () => {
+  look.lineHeight = clampNum(Number(lookHeightInput.value) || 1.2, 1, 2);
+  lookHeightInput.value = String(look.lineHeight);
+  applyLook();
+});
+
+lookScrollbackInput.addEventListener("change", () => {
+  look.scrollback = clampNum(
+    Math.round(Number(lookScrollbackInput.value) || 10000),
+    1000,
+    1000000,
+  );
+  lookScrollbackInput.value = String(look.scrollback);
+  applyLook();
+});
+
 encodingSelect.addEventListener("change", () => {
   encoding = encodingSelect.value;
   // 换编码时丢掉旧的流式状态：上一个编码留下的半截字符不该混进新口径
@@ -2081,7 +2255,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-27",
+  ui: "wt-ui-28",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";
@@ -2186,6 +2360,19 @@ window.__wt = {
   get encoding() {
     return encoding;
   },
+  /**
+   * 外观与回滚行数（`TER-005` / `TER-008`）：验收读它，别去解析下拉框。
+   *
+   * 带 `appliedBackground` 是为了能断言「主题真的应用到 xterm 上了」——
+   * 只验下拉框的话，把 theme 传空也能过。
+   */
+  get look() {
+    return {
+      ...look,
+      appliedBackground: active?.term.options.theme?.background ?? null,
+      appliedScrollback: active?.term.options.scrollback ?? null,
+    };
+  },
   /** 在激活会话里查找（验收与脚本用），返回是否命中与当前计数文本 */
   find(query) {
     if (!active) return null;
@@ -2218,6 +2405,9 @@ window.__wt = {
 
 // 启动自检：把后端是否可达打到状态栏，避免「白屏但不知道哪坏了」
 (async () => {
+  // 外观要先读回来再建会话，否则第一个终端会用默认配色闪一下再变色
+  loadLook();
+  initLookControls();
   loadTree();
   try {
     await invoke("term_stats", { handle: "probe" });
