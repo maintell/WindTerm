@@ -70,6 +70,9 @@ let vaultUnlocked = false;
 let selectedSession = null;
 
 const termHost = document.getElementById("term");
+const paneA = document.getElementById("term-a");
+const paneB = document.getElementById("term-b");
+const splitToggle = document.getElementById("split-toggle");
 const tabsEl = document.getElementById("tabs");
 
 /** 攒够这么多未确认字节就先确认一次，减少 IPC 往返 */
@@ -270,7 +273,8 @@ function decodeOutput(bytes) {
 function createView(label) {
   const el = document.createElement("div");
   el.className = "term-view";
-  termHost.appendChild(el);
+  // 新会话进左 pane；分屏时由 syncSplit 决定谁去右边
+  paneA.appendChild(el);
 
   const term = new Terminal({
     fontFamily: look.fontFamily,
@@ -560,6 +564,11 @@ async function closeView(view) {
   }
   sessions.delete(view.id);
   view.el.remove();
+  // 关掉的正是右侧那个：分屏跟着取消，别留一个空 pane
+  if (splitViewId === view.id) {
+    splitViewId = null;
+    syncSplit();
+  }
   const next = sessions.values().next().value ?? null;
   setActive(next);
 }
@@ -3013,6 +3022,51 @@ function syncTunnelKind() {
  * 带代理认证的隧道不落库（口令不写配置库），所以「自动拉起」对它没意义——
  * 库里没有可拉起的配置。这里直接禁用并说明原因，而不是留个勾了也不生效的控件。
  */
+// ── 左右分屏（`G6`）──────────────────────────────────────
+//
+// 只做两个 pane：Terminal 的尺寸由各自的 pane 决定，fit 按容器算，
+// 所以分屏后两边行列数会各自重算（远端 stty size 也跟着变）。
+
+/** 右侧 pane 显示哪个会话（null = 没分屏） */
+let splitViewId = null;
+
+function splitView() {
+  return splitViewId === null ? null : (sessions.get(splitViewId) ?? null);
+}
+
+function syncSplit() {
+  const second = splitView();
+  paneB.hidden = second === null;
+  splitToggle.classList.toggle("on", second !== null);
+  if (second) {
+    if (second.el.parentElement !== paneB) paneB.appendChild(second.el);
+    second.fit.fit();
+  }
+  // 其余会话都回到左 pane（关掉分屏时也靠这一步把元素搬回来）
+  for (const v of sessions.values()) {
+    if (v !== second && v.el.parentElement !== paneA) paneA.appendChild(v.el);
+  }
+  active?.fit.fit();
+}
+
+splitToggle.addEventListener("click", () => {
+  if (splitView()) {
+    splitViewId = null;
+    syncSplit();
+    setStatus("已关闭分屏");
+    return;
+  }
+  const other = [...sessions.values()].find((v) => v !== active && v.handle);
+  if (!other) {
+    // 只有一个会话时分屏没有意义，直接说清楚，别让按钮看起来坏了
+    setStatus("分屏需要至少两个已连接的会话");
+    return;
+  }
+  splitViewId = other.id;
+  syncSplit();
+  setStatus(`右侧显示：${other.label}`);
+});
+
 function syncTunnelPersistable() {
   const auth = tunnelSocksUser.value.trim() !== "" || tunnelSocksPass.value !== "";
   const blocked = !tunnelSocksUser.hidden && auth;
@@ -3315,7 +3369,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-40",
+  ui: "wt-ui-41",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";
@@ -3425,6 +3479,11 @@ window.__wt = {
   /** 终端输出编码（`TER-006`，验收读它而不是去解析下拉框） */
   get encoding() {
     return encoding;
+  },
+  /** 分屏状态（`G6`）：右侧显示哪个会话 */
+  get split() {
+    const v = splitView();
+    return { on: v !== null, right: v?.label ?? null };
   },
   /** 内嵌编辑器（`FIL-011`）：打开的文档与当前内容 */
   get editor() {

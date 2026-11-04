@@ -878,7 +878,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-40",
+    uiVersion === "wt-ui-41",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -3150,6 +3150,64 @@ try {
     JSON.stringify({ prePress, keyDiag }),
   );
   await pressChord(0, "Escape", "Escape", 27);
+  await closeAllTabs();
+
+  // 19i. 左右分屏（`G6`）：两个会话各占一半，各自独立渲染
+  await closeAllTabs();
+  await clickSessionNode("mock-ssh");
+  await fillInput("#port", String(sshPort));
+  await clickElement("#ssh");
+  await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      return s.startsWith("已连接") ? s : null;
+    },
+    { timeout: 30000, label: "分屏第一个会话" },
+  );
+  await clickElement("#ssh");
+  await waitFor(
+    async () => ((await cdp.eval(`window.__wt.tabs().length`)) >= 2 ? true : null),
+    { timeout: 30000, label: "分屏第二个会话" },
+  );
+  await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.screen()`);
+      return t.includes("WELCOME") ? true : null;
+    },
+    { timeout: 15000, label: "第二个会话横幅" },
+  );
+
+  await clickElement("#split-toggle");
+  const splitOn = await waitFor(
+    async () => {
+      const s = await cdp.eval(`window.__wt.split`);
+      const panes = await cdp.eval(
+        `({ a: document.querySelectorAll("#term-a .term-view").length, b: document.querySelectorAll("#term-b .term-view").length, bHidden: document.getElementById("term-b").hidden })`,
+      );
+      return s.on && panes.a === 1 && panes.b === 1 && panes.bHidden === false
+        ? { ...s, panes }
+        : null;
+    },
+    { timeout: 10000, label: "分屏生效" },
+  );
+  check(
+    "分屏后两个 pane 各有一个会话",
+    splitOn.panes.a === 1 && splitOn.panes.b === 1,
+    `左 ${splitOn.panes.a} / 右 ${splitOn.panes.b}（右=${splitOn.right}）`,
+  );
+
+  await clickElement("#split-toggle");
+  const splitOff = await waitFor(
+    async () => {
+      const s = await cdp.eval(`window.__wt.split`);
+      const panes = await cdp.eval(
+        `({ a: document.querySelectorAll("#term-a .term-view").length, b: document.querySelectorAll("#term-b .term-view").length, bHidden: document.getElementById("term-b").hidden })`,
+      );
+      return !s.on && panes.b === 0 && panes.bHidden === true ? panes : null;
+    },
+    { timeout: 10000, label: "关闭分屏" },
+  );
+  check("关闭分屏后会话都回到左 pane", splitOff.a === 2, `左 ${splitOff.a} 个`);
   await closeAllTabs();
 
   // 19h. 密钥生成与导入（`LOC-014`）：生成 → 落盘 → 回读指纹一致

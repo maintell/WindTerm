@@ -271,7 +271,11 @@
       .tab.active { color: var(--fg); background: #2f2f38; }
       .tab .x { color: #8a8a92; }
       .tab .x:hover { color: #e8e8ea; }
-      #term { flex: 1; min-width: 0; min-height: 0; position: relative; }
+      #term { flex: 1; min-width: 0; min-height: 0; display: flex; }
+      /* 分屏（G6）：两个 pane 各占一半，会话元素仍按 absolute 铺满各自 pane */
+      #term .pane { flex: 1; min-width: 0; min-height: 0; position: relative; }
+      #term .pane[hidden] { display: none; }
+      #term .pane + .pane { border-left: 1px solid #33333a; }
       #editor {
         flex: 1;
         min-width: 0;
@@ -900,6 +904,7 @@
           <input id="look-size" type="number" min="9" max="28" step="1" title="字号" />
           <input id="look-height" type="number" min="1" max="2" step="0.05" title="行高" />
           <input id="look-scrollback" type="number" min="1000" max="1000000" step="1000" title="回滚行数" />
+          <button id="split-toggle" title="左右分屏：同时看两个会话">分屏</button>
           <button id="bc-toggle" title="多执行广播：同一命令发给所有已连接会话">广播</button>
           <button id="keys-open" title="键位设置（可重绑、冲突检测、导入导出）">键位</button>
           <button id="keygen-open" title="生成或导入 SSH 密钥，查看指纹">密钥</button>
@@ -938,7 +943,10 @@
             <textarea id="ed-text" spellcheck="false" wrap="off"></textarea>
           </div>
         </div>
-        <div id="term"></div>
+        <div id="term">
+          <div id="term-a" class="pane"></div>
+          <div id="term-b" class="pane" hidden></div>
+        </div>
       </div>
     </div>
     <!-- 多行粘贴确认（TER-013）。用原生 <dialog> 而不是 window.confirm：
