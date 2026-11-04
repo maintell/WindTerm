@@ -165,7 +165,7 @@ let fontSize = 13;
  * （人可读、可进 Git），但设置体系（`SET-001`）还没做。先把「换主题这种
  * 立刻想看效果」的偏好落地，别让用户每次启动重设一遍。
  */
-const LOOK_KEY = "wt.look";
+
 const look = {
   theme: "WindTerm Dark",
   fontFamily: '"JetBrains Mono", Consolas, "Cascadia Mono", monospace',
@@ -178,33 +178,59 @@ function clampNum(n, lo, hi) {
   return Math.min(hi, Math.max(lo, n));
 }
 
-function loadLook() {
+/**
+ * 读偏好（`SET-006`）：外观、编码、键位都来自 `config.toml`。
+ *
+ * 文件不存在就是默认值；解析失败也退回默认值并说明原因——
+ * 一份写坏的配置不该让界面起不来。
+ */
+async function loadPrefs() {
+  let p = null;
   try {
-    const saved = JSON.parse(localStorage.getItem(LOOK_KEY) ?? "null");
-    if (!saved || typeof saved !== "object") return;
-    if (THEME_DATA.some((t) => t.name === saved.theme)) look.theme = saved.theme;
-    if (typeof saved.fontFamily === "string" && saved.fontFamily) {
-      look.fontFamily = saved.fontFamily;
+    p = await invoke("prefs_load");
+  } catch (e) {
+    setStatus(`配置读取失败，已用默认值：${e}`);
+  }
+  if (p) {
+    if (THEME_DATA.some((t) => t.name === p.theme)) look.theme = p.theme;
+    if (typeof p.fontFamily === "string" && p.fontFamily) look.fontFamily = p.fontFamily;
+    if (Number.isFinite(p.fontSize)) look.fontSize = clampNum(p.fontSize, 9, 28);
+    if (Number.isFinite(p.lineHeight)) look.lineHeight = clampNum(p.lineHeight, 1, 2);
+    if (Number.isFinite(p.scrollback)) look.scrollback = clampNum(p.scrollback, 1000, 1000000);
+    if (typeof p.encoding === "string" && p.encoding) encoding = p.encoding;
+    for (const [action, chords] of Object.entries(p.keymap ?? {})) {
+      if (keymap[action] && Array.isArray(chords)) {
+        keymap[action].chords = chords.filter((c) => typeof c === "string");
+      }
     }
-    if (Number.isFinite(saved.fontSize)) look.fontSize = clampNum(saved.fontSize, 9, 28);
-    if (Number.isFinite(saved.lineHeight)) {
-      look.lineHeight = clampNum(saved.lineHeight, 1, 2);
-    }
-    if (Number.isFinite(saved.scrollback)) {
-      look.scrollback = clampNum(saved.scrollback, 1000, 1000000);
-    }
-  } catch {
-    // 存坏了就用默认值：偏好读不出来不该让界面起不来
   }
   fontSize = look.fontSize;
 }
 
-function saveLook() {
+/** 把偏好写回 `config.toml`。失败只提示，本次运行内的效果仍然生效。 */
+async function savePrefs() {
+  const plain = {};
+  for (const [action, v] of Object.entries(keymap)) plain[action] = v.chords;
   try {
-    localStorage.setItem(LOOK_KEY, JSON.stringify(look));
-  } catch {
-    // 隐私模式下写不进去，忽略即可——本次运行内的效果仍然生效
+    await invoke("prefs_save", {
+      prefs: {
+        theme: look.theme,
+        fontFamily: look.fontFamily,
+        fontSize: look.fontSize,
+        lineHeight: look.lineHeight,
+        scrollback: look.scrollback,
+        encoding,
+        keymap: plain,
+      },
+    });
+  } catch (e) {
+    setStatus(`配置保存失败：${e}`);
   }
+}
+
+/** 外观与键位改动都走同一个入口，免得漏掉某一项 */
+function saveLook() {
+  void savePrefs();
 }
 
 /**
@@ -1444,7 +1470,7 @@ const KEYMAP_DEFAULT = {
   tunnels: { label: "隧道面板", chords: ["Ctrl+Shift+T"] },
 };
 
-const KEYMAP_KEY = "wt.keymap";
+
 /** 当前生效的键位表：`action → { label, chords[] }` */
 let keymap = structuredClone(KEYMAP_DEFAULT);
 
@@ -1462,28 +1488,9 @@ function chordOf(ev) {
   return [...mods, key].join("+");
 }
 
-function loadKeymap() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(KEYMAP_KEY) ?? "null");
-    if (!saved || typeof saved !== "object") return;
-    for (const [action, chords] of Object.entries(saved)) {
-      if (keymap[action] && Array.isArray(chords)) {
-        keymap[action].chords = chords.filter((c) => typeof c === "string");
-      }
-    }
-  } catch {
-    // 存坏了就用默认键位，不该让界面起不来
-  }
-}
-
+/** 键位与外观存在同一份 `config.toml` 里，所以这里只是转发 */
 function saveKeymap() {
-  try {
-    const plain = {};
-    for (const [action, v] of Object.entries(keymap)) plain[action] = v.chords;
-    localStorage.setItem(KEYMAP_KEY, JSON.stringify(plain));
-  } catch {
-    // 隐私模式写不进去，本次运行内仍然生效
-  }
+  void savePrefs();
 }
 
 /** 键位冲突：同一个组合被两个动作占用时返回占用者 */
@@ -2941,6 +2948,7 @@ encodingSelect.addEventListener("change", () => {
   encoding = encodingSelect.value;
   // 换编码时丢掉旧的流式状态：上一个编码留下的半截字符不该混进新口径
   decoders.clear();
+  void savePrefs();
   setStatus(`终端编码：${encodingSelect.selectedOptions[0]?.textContent ?? encoding}`);
 });
 
@@ -3060,7 +3068,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-38",
+  ui: "wt-ui-39",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";
@@ -3240,8 +3248,7 @@ window.__wt = {
 // 启动自检：把后端是否可达打到状态栏，避免「白屏但不知道哪坏了」
 (async () => {
   // 外观要先读回来再建会话，否则第一个终端会用默认配色闪一下再变色
-  loadLook();
-  loadKeymap();
+  await loadPrefs();
   initLookControls();
   initBroadcast();
   loadTree();

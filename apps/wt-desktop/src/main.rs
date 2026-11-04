@@ -660,6 +660,74 @@ fn folder_move(folder_id: String, parent_id: Option<String>) -> Result<(), Strin
     Ok(())
 }
 
+/// 用户偏好（`SET-006`）：外观与键位存在 `config.toml`，人可读、可进 Git。
+///
+/// 之前这两块各自存在 `localStorage` 里——那是**已知偏差**：浏览器存储既不可读、
+/// 也不能随仓库走。这里补上真正的配置文件，并把 `localStorage` 撤掉（一份真值）。
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct PrefsDto {
+    theme: String,
+    font_family: String,
+    font_size: u32,
+    line_height: f64,
+    scrollback: u32,
+    /// 终端输出编码（`TER-006`）
+    encoding: String,
+    /// 键位（`TER-020`）：`action → chords[]`
+    keymap: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+impl Default for PrefsDto {
+    fn default() -> Self {
+        Self {
+            theme: "WindTerm Dark".into(),
+            font_family: "\"JetBrains Mono\", Consolas, \"Cascadia Mono\", monospace".into(),
+            font_size: 13,
+            line_height: 1.2,
+            scrollback: 10_000,
+            encoding: "utf-8".into(),
+            keymap: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+/// `config.toml` 的位置：与会话库同目录（`WT_DATA_DIR` 可覆盖）。
+fn prefs_path() -> std::path::PathBuf {
+    sessions_db_path()
+        .parent()
+        .map(|d| d.join("config.toml"))
+        .unwrap_or_else(|| std::path::PathBuf::from("config.toml"))
+}
+
+/// 读偏好。文件不存在就是默认值，不算错误。
+#[tauri::command]
+fn prefs_load() -> Result<PrefsDto, String> {
+    let path = prefs_path();
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(_) => return Ok(PrefsDto::default()),
+    };
+    toml::from_str(&text).map_err(|e| {
+        format!(
+            "[PREFS_INVALID] 配置文件无法解析（{}）：{e}",
+            path.display()
+        )
+    })
+}
+
+/// 写偏好。先序列化成 TOML 再落盘，返回值是实际路径（界面据此告诉用户存在哪）。
+#[tauri::command]
+fn prefs_save(prefs: PrefsDto) -> Result<String, String> {
+    let path = prefs_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("创建配置目录失败：{e}"))?;
+    }
+    let text = toml::to_string_pretty(&prefs).map_err(|e| format!("序列化配置失败：{e}"))?;
+    std::fs::write(&path, text).map_err(|e| format!("写入 {} 失败：{e}", path.display()))?;
+    Ok(path.display().to_string())
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct KeyDto {
@@ -2601,6 +2669,8 @@ fn main() {
             session_move,
             session_reorder,
             session_export,
+            prefs_load,
+            prefs_save,
             key_generate,
             key_inspect,
             sftp_edit_download,

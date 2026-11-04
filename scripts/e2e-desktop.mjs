@@ -878,15 +878,15 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-38",
+    uiVersion === "wt-ui-39",
     `__wt.ui=${uiVersion}`,
   );
 
   // 2b. 每次运行都从默认键位开始。
   //
-  //     WebView2 的 profile 跨运行保留 `localStorage`，上一轮改过的键位会让这一轮的
-  //     **默认值**断言失败（「Ctrl+F 打开查找」超时、终端上却出现 `^F`）。
-  //     这里直接用界面自己的「恢复默认」把内存状态也复位——重载页面不可取：
+  //     偏好现在存在 `config.toml`（`SET-006`），而它是**跨运行保留**的：上一轮改过的
+  //     键位会让这一轮的默认值断言失败（「Ctrl+F 打开查找」超时、终端上却出现 `^F`）。
+  //     这里用界面自己的「恢复默认」把内存与文件一起复位——重载页面不可取：
   //     CDP 的执行上下文会随之失效，后面的 eval 全部拿不到页面。
   const localNormalized = await waitFor(
     async () => {
@@ -898,7 +898,6 @@ try {
         dlg.showModal();
         document.getElementById("keys-reset").click();
         dlg.close();
-        localStorage.clear();
         return { had, find: window.__wt.keymap.find.chords.join("/") };
       })()`);
       return v ?? null;
@@ -909,6 +908,23 @@ try {
     "每次运行都从默认键位开始",
     localNormalized.find.includes("Ctrl+F"),
     localNormalized.had ? "已把上一轮遗留的键位复位" : "本来就是默认键位",
+  );
+
+  // 2c. 偏好落在 `config.toml`（`SET-006`）：人可读、可进 Git，而不是浏览器存储
+  const prefsFile = join(DATA_DIR, "config.toml");
+  // 写文件是异步的（界面点「恢复默认」→ invoke → 落盘），这里等它出现
+  const prefsOk = await waitFor(
+    () => {
+      if (!existsSync(prefsFile)) return null;
+      const text = readFileSync(prefsFile, "utf8");
+      return text.includes('theme = "') && text.includes("[keymap]") ? text : null;
+    },
+    { timeout: 10000, label: "config.toml 落盘" },
+  ).catch(() => null);
+  check(
+    "偏好写到 config.toml 且是 TOML 文本",
+    prefsOk !== null,
+    prefsOk ? prefsFile : `${prefsFile}（不存在或不含 theme/[keymap]）`,
   );
 
   // 3c. 二进制里内嵌的前端资源也是新的。

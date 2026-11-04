@@ -126,10 +126,11 @@ def test_ssh_connect(server, wt):
 | `cdp.eval` 的模板字符串里不要再套反引号 | 嵌套模板会把外层截断，报 `SyntaxError: missing ) after argument list`；改完先跑 `node --check` |
 | WebView2 的 profile 跨运行保留 `localStorage` | 上一轮改过的键位/外观会让下一轮的**默认值**断言失败（表现为「Ctrl+F 打开查找」超时，屏幕上却出现 `^F`）。验收开头必须 `localStorage.clear()`；已经写进内存的状态得靠重载页面才复位 |
 | 在文本里定位再点击之前要等屏幕稳定 | 本地 shell 执行完会再打印提示符、整行上移，量到的坐标指向的已经是下一行（表现为「双击选中了提示符」）。先等「连续 350ms 无新输出」再量 |
+| 偏好改动是异步落盘的，断言要等文件 | 界面点「恢复默认」→ `invoke prefs_save` → 写 `config.toml`，中间有 async 间隙。写完立刻读文件会读不到（表现为「配置没落盘」的假失败）。断言要 `waitFor` 到文件里出现预期内容 |
 | SFTP 覆盖写要 truncate，否则尾部留旧字节 | `self.inner.write(path, data)` **不截断**：写 14 字节到 17 字节的文件里，末尾 3 字节还在（表现为「edited by e2erver」）。改用 `create`（O_TRUNC）。**mock 也要模拟 TRUNC**，否则这类 bug 在测试里看不出来——服务端没截断，客户端看着却没问题 |
 | `<dialog>` 里没有 `<form method=dialog>` 时，按钮不会关闭它 | 「关闭」按钮看着能点，实际上什么也不做，接着的按键全被当成「录制」。要么包 form，要么显式 `close()` |
 
-当前覆盖 149 项断言：
+当前覆盖 150 项断言：
 
 - 本地终端：页面加载与 Tauri 桥接、启动自检、点击建会话、句柄可取、首屏输出渲染、
   焦点在终端、键盘输入、命令输出、统计字段非零值、前后端行列一致、ack 回流归零、
