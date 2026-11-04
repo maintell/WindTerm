@@ -4667,6 +4667,61 @@ try {
   check("「关闭其他」只留当前标签（TER-001）", afterExcept === 1, `剩 ${afterExcept ?? "?"} 个`);
   await closeAllTabs();
 
+  // 19x. 设置分组（`SET-001`）
+  await closeAllDialogs();
+  await clickElement("#settings-open");
+  const setGroups = await cdp.eval(`(() => {
+    const gs = [...document.querySelectorAll("#set-body .set-group")];
+    return gs.map((g) => ({
+      name: g.dataset.group,
+      title: g.querySelector(".set-group-title")?.textContent ?? "",
+      rows: g.querySelectorAll(".set-row").length,
+    }));
+  })()`);
+  check(
+    "设置分成可扫的分组（SET-001）",
+    setGroups.length >= 4 && setGroups.every((g) => g.title === g.name && g.rows > 0),
+    setGroups.map((g) => `${g.name}(${g.rows})`).join("、"),
+  );
+
+  await cdp.eval(`(() => {
+    const el = document.getElementById("set-search");
+    el.value = "乱码";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    return el.value;
+  })()`);
+  const shownGroups = await waitFor(
+    async () => {
+      const s = await cdp.eval(`[...document.querySelectorAll("#set-body .set-group")]
+        .filter((g) => !g.hidden).map((g) => g.dataset.group)`);
+      return s.length ? s : null;
+    },
+    { timeout: 5000, label: "搜索过滤分组" },
+  ).catch(() => null);
+  check(
+    "搜索只留下命中的分组（SET-001）",
+    shownGroups !== null && shownGroups.length === 1 && shownGroups[0] === "终端",
+    shownGroups ? shownGroups.join("、") : "没有结果",
+  );
+
+  await cdp.eval(`(() => {
+    const el = document.getElementById("set-search");
+    el.value = "";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    return el.value;
+  })()`);
+  const groupsBack = await waitFor(
+    async () => {
+      const n = await cdp.eval(`
+        [...document.querySelectorAll("#set-body .set-group")].filter((g) => !g.hidden).length
+      `);
+      return n >= 4 ? n : null;
+    },
+    { timeout: 5000, label: "清空后恢复" },
+  ).catch(() => null);
+  check("清空搜索后分组全部回来（SET-001）", groupsBack !== null, `${groupsBack ?? 0} 组`);
+  await closeAllDialogs();
+
   // 18. 页面无未捕获异常
   check("页面无未捕获异常", cdp.exceptions.length === 0, cdp.exceptions.join(" | ") || "0 条");
 

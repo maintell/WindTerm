@@ -4072,6 +4072,68 @@ const settingsDialog = document.getElementById("settings");
 const setSearch = document.getElementById("set-search");
 const setEmpty = document.getElementById("set-empty");
 
+/**
+ * 设置分组（`SET-001`）：规格要求「常规/外观/终端/文件/图形/网络/安全/扩展/高级」。
+ *
+ * 归属写在这张表里，运行时按分组顺序重排 DOM——比在 HTML 里手排更不容易漏：
+ * 加一条设置只要在这里登记一次，忘登记会被兜到「其他」，不会从面板里消失。
+ * 没有条目的分组不渲染（空标题是噪音）。
+ */
+const SET_GROUPS = [
+  ["常规", ["local-shell", "local-shell-path"]],
+  ["外观", ["look-size", "look-height"]],
+  ["终端", ["encoding", "look-theme", "theme-import-open", "look-font", "look-scrollback"]],
+  ["文件", ["files-auto-open"]],
+  ["安全", ["master-open", "known-open"]],
+];
+
+function buildSettingGroups() {
+  const body = document.getElementById("set-body");
+  const empty = document.getElementById("set-empty");
+  const rows = [...body.querySelectorAll(".set-row")];
+  // 按「行里第一个带 id 的控件」认领归属；行的 id 挂在行自己身上时取不到，所以用控件
+  const byId = new Map();
+  for (const row of rows) {
+    const ctl = row.querySelector("[id]");
+    if (ctl) byId.set(ctl.id, row);
+  }
+  const placed = new Set();
+  const frag = document.createDocumentFragment();
+  for (const [name, ids] of SET_GROUPS) {
+    const group = document.createElement("div");
+    group.className = "set-group";
+    group.dataset.group = name;
+    const title = document.createElement("h4");
+    title.className = "set-group-title";
+    title.textContent = name;
+    group.appendChild(title);
+    let any = false;
+    for (const id of ids) {
+      const row = byId.get(id);
+      if (!row || placed.has(row)) continue;
+      group.appendChild(row);
+      placed.add(row);
+      any = true;
+    }
+    if (any) frag.appendChild(group);
+  }
+  const rest = rows.filter((r) => !placed.has(r));
+  if (rest.length) {
+    const group = document.createElement("div");
+    group.className = "set-group";
+    group.dataset.group = "其他";
+    const title = document.createElement("h4");
+    title.className = "set-group-title";
+    title.textContent = "其他";
+    group.appendChild(title);
+    for (const r of rest) group.appendChild(r);
+    frag.appendChild(group);
+  }
+  body.textContent = "";
+  body.appendChild(frag);
+  if (empty) body.appendChild(empty);
+}
+
 function filterSettings(query) {
   const needle = query.trim().toLowerCase();
   let shown = 0;
@@ -4080,6 +4142,12 @@ function filterSettings(query) {
     const hit = !needle || hay.includes(needle);
     row.hidden = !hit;
     if (hit) shown += 1;
+  }
+  // 分组标题跟着内容走：一个组里没有可见项就整组收起来，
+  // 否则搜索时满屏都是空标题，等于没过滤
+  for (const g of document.querySelectorAll("#set-body .set-group")) {
+    const any = [...g.querySelectorAll(".set-row")].some((r) => !r.hidden);
+    g.hidden = !any;
   }
   // 搜不到要说出来，别让面板看起来是空的
   setEmpty.hidden = shown > 0;
@@ -4233,7 +4301,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-68",
+  ui: "wt-ui-69",
   /** 「本次记住」存了几条（验收用：只回数量，不回口令） */
   sessionPasswords() {
     return sessionPasswords.size;
@@ -4488,6 +4556,7 @@ window.__wt = {
   await loadPrefs();
   initLookControls();
   await initShellControls();
+  buildSettingGroups();
   filesAutoOpenBox.checked = filesAutoOpen;
   initBroadcast();
   loadTree();

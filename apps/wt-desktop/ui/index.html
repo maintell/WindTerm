@@ -652,6 +652,16 @@
       #local-shell-custom[hidden] { display: none; }
       /* 字体缺失的回退提示（TER-005）：不能静默回退，得说清「没有「X」，用的是「Y」」 */
       .set-warn { color: #ffb86b; font-size: 11px; }
+      /* 设置分组（SET-001）：标题要能一眼扫到，别做成和条目一样的行 */
+      .set-group-title {
+        margin: 10px 0 4px;
+        font-size: 11px;
+        font-weight: 600;
+        color: #8a8a92;
+        letter-spacing: 0.04em;
+      }
+      .set-group:first-child .set-group-title { margin-top: 0; }
+      .set-group[hidden] { display: none; }
       #look-font-warn[hidden] { display: none; }
       .set-row select,
       .set-row input {
