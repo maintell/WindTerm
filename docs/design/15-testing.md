@@ -141,7 +141,7 @@ def test_ssh_connect(server, wt):
 | DTO 没写 `rename_all` 时，字段名是 snake_case | `RemoteEntryDto` 没有 camelCase 重命名，序列化出来是 `is_symlink` / `link_target`；界面按 `e.isSymlink` 去读只会拿到 `undefined`，症状是「后端字段有值、界面就是没反应」，而且不报错。同一个仓库里 `PrefsDto` 是 camelCase、这个是 snake_case，**看 DTO 定义再写前端** |
 | `dataset` 里取出来永远是字符串 | 会话键是数字时，`dataset.id` 拿去 `indexOf` 一个都匹配不上。症状极具迷惑性：拖拽计数全对、`moved` 为真、目标也拿到了，**顺序就是不变**。比较前统一 `String()` |
 
-当前覆盖 232 项断言：
+当前覆盖 235 项断言：
 
 - 本地终端：页面加载与 Tauri 桥接、启动自检、点击建会话、句柄可取、首屏输出渲染、
   焦点在终端、键盘输入、命令输出、统计字段非零值、前后端行列一致、ack 回流归零、
@@ -197,6 +197,9 @@ def test_ssh_connect(server, wt):
   `.term-view` 数量，不靠视觉判断）、再点一次所有会话回到左 pane 且右 pane 隐藏；
 - 内嵌编辑器（`FIL-011`）：打开后显示文件内容、全部替换能改到内容并标记未保存、
   保存后**回读本地文件**确认内容真的变了（只看状态栏等于没验）；
+- 权限不足（`FIL-001` AC-4）：mock 的 `/noperm` 一律返回 `PermissionDenied`；进去之后
+  `__wt.files.error` 含「权限不足」、`rows` 为 0、DOM 里**不是**「（空目录）」占位而是错误行；
+  返回上一层后错误清除、列表恢复；
 - 虚拟滚动（`FIL-001` AC-1）：种 1000 个文件后进那个目录，`__wt.files.rows` 是 1000 条（读
   **数据**，不受虚拟化影响），但 DOM 里只有可视窗口那几十行；滚到底时窗口跟着走，末行
   `f1000.txt` 能渲染出来；列表渲染耗时也要在 1 s 内；

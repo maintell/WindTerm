@@ -336,6 +336,27 @@ async function clickSessionNode(name) {
  * 不能只点 `#files-toggle`：SSH 连上会自动打开（`FIL-001`），那时「点一下」是**关闭**，
  * 后面的断言就都在错误的前提上跑。
  */
+/**
+ * 把文件面板带回根目录。
+ *
+ * 树与刷新都不改变当前目录，所以只能一路点 ↑。
+ * 抽成函数是因为「忘了回根就刷新」这个错已经犯过两次。
+ */
+async function filesGoRoot() {
+  for (let i = 0; i < 6; i += 1) {
+    const at = await cdp.eval(`document.getElementById("files-path").textContent`);
+    if (at === "/") return;
+    await clickElement("#files-up");
+    await waitFor(
+      async () => {
+        const p = await cdp.eval(`document.getElementById("files-path").textContent`);
+        return p !== at;
+      },
+      { timeout: 8000, label: "回到上一层" },
+    ).catch(() => null);
+  }
+}
+
 async function ensureFilesPanel(open) {
   const hidden = await cdp.eval(`document.getElementById("files").hidden`);
   if (hidden === !open) return;
@@ -5041,18 +5062,7 @@ try {
   // 19za. 大目录的虚拟滚动（`FIL-001` AC-1）
   await cdp.eval(`window.__TAURI__.core.invoke("mock_seed_many", { dir: "/many", count: 1000 })`);
   // 先回到根目录：上一步还停在 /treeA，刷新只会刷那一层
-  for (let i = 0; i < 5; i += 1) {
-    const at = await cdp.eval(`document.getElementById("files-path").textContent`);
-    if (at === "/") break;
-    await clickElement("#files-up");
-    await waitFor(
-      async () => {
-        const p = await cdp.eval(`document.getElementById("files-path").textContent`);
-        return p !== at;
-      },
-      { timeout: 8000, label: "回到根目录" },
-    ).catch(() => null);
-  }
+  await filesGoRoot();
   await clickElement("#files-refresh");
   const t0 = Date.now();
   await doubleClickFileRow("many/");
@@ -5102,6 +5112,59 @@ try {
     "滚动到末尾时窗口跟着走（虚拟滚动正确）",
     lastRow !== null,
     lastRow ? `末行在：${lastRow[lastRow.length - 1]}` : "没渲染出末尾",
+  );
+
+  // 19zb. 权限不足要说清楚，而不是显示空目录（`FIL-001` AC-4）
+  await cdp.eval(`window.__TAURI__.core.invoke("mock_seed_file", { path: "/noperm/", content: "" })`);
+  // 上一步停在 /many，先回根，否则刷新刷的是 /many
+  await filesGoRoot();
+  await clickElement("#files-refresh");
+  await waitFor(
+    async () => {
+      const rows = await cdp.eval(`window.__wt.files.rows`);
+      return rows.some((r) => r.startsWith("noperm")) ? rows : null;
+    },
+    { timeout: 15000, label: "根目录出现 noperm" },
+  );
+  await doubleClickFileRow("noperm/");
+  const denied = await waitFor(
+    async () => {
+      const s = await cdp.eval(`({
+        error: window.__wt.files.error,
+        rows: window.__wt.files.rows.length,
+        errRow: document.querySelector("#files-list .row.err")?.textContent ?? null,
+        emptyRow: [...document.querySelectorAll("#files-list .row")].some((r) =>
+          r.textContent === "（空目录）",
+        ),
+      })`);
+      return s.error ? s : null;
+    },
+    { timeout: 15000, label: "进入无权限目录" },
+  ).catch(() => null);
+  check(
+    "权限不足时给出明确错误（FIL-001 AC-4）",
+    denied !== null && denied.error.includes("权限不足"),
+    denied ? denied.error : "没有错误信息",
+  );
+  check(
+    "权限不足时不显示成「空目录」、也不残留上一个目录的条目",
+    denied !== null && denied.rows === 0 && denied.emptyRow === false && denied.errRow !== null,
+    denied ? `rows=${denied.rows} 空目录占位=${denied.emptyRow} 错误行=${denied.errRow}` : "没进到失败状态",
+  );
+
+  await clickElement("#files-up");
+  const recovered = await waitFor(
+    async () => {
+      const s = await cdp.eval(`({ path: document.getElementById("files-path").textContent,
+        error: window.__wt.files.error, rows: window.__wt.files.rows.length })`);
+      return s.path === "/" && s.error === "" && s.rows > 0 ? s : null;
+    },
+    { timeout: 15000, label: "返回上一层" },
+  ).catch(() => null);
+  check(
+    "离开无权限目录后错误清除、列表恢复（FIL-001）",
+    recovered !== null,
+    recovered ? `${recovered.path}，${recovered.rows} 条` : "没恢复",
   );
 
   // 18. 页面无未捕获异常

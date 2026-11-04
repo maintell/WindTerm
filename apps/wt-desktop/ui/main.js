@@ -2618,6 +2618,7 @@ async function loadDir(path) {
     filesPath.title = sftpPath;
     // 只存数据，DOM 由 `renderFileList` 按可视窗口渲染（`FIL-001` AC-1）：
     // 1000 个条目逐个建 DOM 会明显卡顿，而绝大多数根本看不到
+    filesLoadError = "";
     filesEntries = r.entries;
     renderFileList();
     setFilesMsg("");
@@ -2625,7 +2626,11 @@ async function loadDir(path) {
   } catch (e) {
     // 旧请求的失败同样不该覆盖新视图
     if (gen !== filesGen) return;
-    filesList.textContent = "";
+    // 条目也要清：留着上一次的会让「当前目录」的结论是假的（虚拟滚动之后
+    // 尤其明显——DOM 变空了，但数据源还在）
+    filesEntries = [];
+    filesLoadError = String(e);
+    renderFileList();
     setFilesMsg(`列目录失败：${e}`);
     return false;
   }
@@ -2678,6 +2683,8 @@ filesRefresh.addEventListener("click", async () => {
 const FILES_ROW_H = 20;
 /** 当前目录的全部条目。DOM 里只有可视窗口内的那些（`FIL-001` AC-1） */
 let filesEntries = [];
+/** 列目录失败的原因；非空时列表只显示这条，不再显示「（空目录）」 */
+let filesLoadError = "";
 let filesScrollRaf = 0;
 
 /** 一条的显示名：目录带 `/`、链接带 `@`（`ls -F` 的老习惯） */
@@ -2728,6 +2735,14 @@ function buildFileRow(e, index) {
 function renderFileList() {
   const savedTop = filesList.scrollTop;
   filesList.textContent = "";
+  // 失败时必须显示失败本身：显示「（空目录）」会让用户以为文件没了（`FIL-001` AC-4）
+  if (filesLoadError) {
+    const el = document.createElement("div");
+    el.className = "row err";
+    el.textContent = filesLoadError;
+    filesList.appendChild(el);
+    return;
+  }
   if (!filesEntries.length) {
     const el = document.createElement("div");
     el.className = "row";
@@ -4557,7 +4572,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-75",
+  ui: "wt-ui-76",
   /** 「本次记住」存了几条（验收用：只回数量，不回口令） */
   sessionPasswords() {
     return sessionPasswords.size;
@@ -4642,6 +4657,8 @@ window.__wt = {
       msg: filesMsg.textContent,
       // 读**数据**而不是 DOM：列表是虚拟滚动的，DOM 里只有可视窗口内的那些条
       rows: filesEntries.map(entryLabel),
+      /** 列目录失败的原因（空串表示这次是成功的） */
+      error: filesLoadError,
       /** 当前选中项的名字（验收与脚本用） */
       selected: selectedEntry?.name ?? null,
       /** 最近一次上传的进度快照：`{name,total,last,events}` */

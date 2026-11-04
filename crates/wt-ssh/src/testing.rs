@@ -79,6 +79,10 @@ impl russh_sftp::server::Handler for MemSftp {
     }
 
     async fn opendir(&mut self, id: u32, path: String) -> Result<Handle, StatusCode> {
+        // `/noperm` 一律拒绝（`FIL-001` AC-4）：用来验「权限不足要说清楚，而不是显示空目录」
+        if path.starts_with("/noperm") {
+            return Err(StatusCode::PermissionDenied);
+        }
         self.dir_sent = false;
         Ok(Handle { id, handle: path })
     }

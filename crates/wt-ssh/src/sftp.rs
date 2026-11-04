@@ -347,10 +347,27 @@ fn sort_entries(mut entries: Vec<RemoteEntry>) -> Vec<RemoteEntry> {
 }
 
 fn sftp_error(message: &str, detail: String) -> WtError {
+    // 权限不足单独给一条可读的话（`FIL-001` AC-4）：这类失败最容易被界面
+    // 呈现成「目录是空的」，用户会以为文件没了
+    if is_permission_denied(&detail) {
+        return WtError::new("SFTP_PERMISSION_DENIED")
+            .message(format!("权限不足：{message}"))
+            .detail(detail)
+            .hint(
+                "换一个有权限的账号，或让管理员调整该目录的权限",
+                HintAction::None,
+            );
+    }
     WtError::new("SFTP_FAILED")
         .message(message)
         .detail(detail)
         .hint("确认远端开启了 sftp 子系统（sshd 默认开启）", HintAction::None)
+}
+
+/// 服务端说的是不是「没权限」。不同实现对这同一件事的措辞不一样，都认。
+fn is_permission_denied(detail: &str) -> bool {
+    let d = detail.to_ascii_lowercase();
+    d.contains("permission denied") || d.contains("permissiondenied")
 }
 
 #[cfg(test)]
