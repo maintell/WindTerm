@@ -4453,6 +4453,28 @@ try {
     `${modes.link}`,
   );
 
+  // 改权限（`FIL-002` 的 SETSTAT）：644 → 600，列表里要立刻反映出来
+  await clickFileRow("notes.txt");
+  await clickElement("#files-chmod");
+  await confirmName("600");
+  const changedMode = await waitFor(
+    async () => {
+      const m = await cdp.eval(`(() => {
+        const row = [...document.querySelectorAll("#files-list .row")].find((r) =>
+          r.textContent.startsWith("notes.txt"),
+        );
+        return row?.querySelector("span.mode")?.textContent ?? null;
+      })()`);
+      return m === "-rw-------" ? m : null;
+    },
+    { timeout: 15000, label: "改权限生效" },
+  ).catch(() => null);
+  check(
+    "改权限后列表里的权限位真的变了（FIL-002 SETSTAT）",
+    changedMode === "-rw-------",
+    `${changedMode ?? "没变"}`,
+  );
+
   // 18. 页面无未捕获异常
   check("页面无未捕获异常", cdp.exceptions.length === 0, cdp.exceptions.join(" | ") || "0 条");
 

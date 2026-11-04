@@ -2918,6 +2918,22 @@ async fn sftp_remove(
     }
 }
 
+/// 改权限位（`FIL-002` 的 `SETSTAT`）。
+///
+/// `mode` 是完整的 `st_mode`：界面把原条目的类型位与新的权限位拼起来传进来，
+/// 这里不做猜测——类型位丢了的后果是有服务端把路径当成未知类型。
+#[tauri::command]
+async fn sftp_chmod(
+    state: State<'_, AppState>,
+    req: SshOpenReq,
+    path: String,
+    mode: u32,
+    jump: Option<JumpReq>,
+) -> Result<(), String> {
+    let sftp = open_sftp(&state, req, jump).await?;
+    sftp.set_mode(&path, mode).await.map_err(|e| e.to_string())
+}
+
 #[derive(serde::Serialize)]
 struct StatsDto {
     buffered: usize,
@@ -3028,6 +3044,7 @@ fn main() {
             sftp_mkdir,
             sftp_rename,
             sftp_remove,
+            sftp_chmod,
             tunnel_start,
             tunnel_start_saved,
             tunnel_autostart,

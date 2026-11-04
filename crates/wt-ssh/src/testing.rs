@@ -32,6 +32,10 @@ pub type MockFs = Arc<AsyncMutex<HashMap<String, Vec<u8>>>>;
 /// 那就是断链——客户端必须能分辨，否则界面上只能点进去才报错。
 pub type MockLinks = Arc<AsyncMutex<HashMap<String, String>>>;
 
+/// mock 的权限位覆盖表：路径 → `st_mode`（`FIL-002` 的 `SETSTAT`）。
+/// 没被改过的路径用 readdir 里的默认值（文件 0644、目录 0755）。
+pub type MockModes = Arc<AsyncMutex<HashMap<String, u32>>>;
+
 /// 内存文件系统上的 SFTP 服务端（只实现列目录/读/写/stat）。
 ///
 /// 刻意不完整——它的价值是让「客户端真的会讲 SFTP」可验证，
@@ -39,14 +43,16 @@ pub type MockLinks = Arc<AsyncMutex<HashMap<String, String>>>;
 pub struct MemSftp {
     fs: MockFs,
     links: MockLinks,
+    modes: MockModes,
     dir_sent: bool,
 }
 
 impl MemSftp {
-    pub fn new(fs: MockFs, links: MockLinks) -> Self {
+    pub fn new(fs: MockFs, links: MockLinks, modes: MockModes) -> Self {
         Self {
             fs,
             links,
+            modes,
             dir_sent: false,
         }
     }
@@ -88,6 +94,7 @@ impl russh_sftp::server::Handler for MemSftp {
             format!("{handle}/")
         };
         let fs = self.fs.lock().await;
+        let modes = self.modes.lock().await;
         // 先快照键：判断「这一项是不是目录」要再查一遍前缀，边迭代边借用过不了编译
         let keys: Vec<String> = fs.keys().cloned().collect();
         let files = keys
@@ -107,12 +114,15 @@ impl russh_sftp::server::Handler for MemSftp {
                 // 不能用 `FileAttributes::dummy()`：它把 permissions 写死成
                 // `0o777 | S_IFDIR`，于是每个条目都被报成目录，界面上给文件加个 `/`。
                 // 这会让「列目录」看起来对、`is_dir` 全错——测试保真度的问题最难发现。
-                let mut attrs = FileAttributes::empty();
-                attrs.permissions = Some(if is_dir {
+                // `SETSTAT` 改过的路径优先：否则改完权限再列目录又变回默认值，
+                // 用户会以为改失败了
+                let default_mode = if is_dir {
                     0o755 | 0o040000 // S_IFDIR
                 } else {
                     0o644 | 0o100000 // S_IFREG
-                });
+                };
+                let mut attrs = FileAttributes::empty();
+                attrs.permissions = Some(modes.get(&full).copied().unwrap_or(default_mode));
                 attrs.size = Some(if is_dir {
                     0
                 } else {
@@ -287,6 +297,25 @@ impl russh_sftp::server::Handler for MemSftp {
         Ok(Attrs { id, attrs })
     }
 
+    /// 改元数据（`FIL-002` 的 `SETSTAT`）：这里只认权限位，其它字段照收不报错，
+    /// 但不会假装支持（`uid/gid/mtime` 尚未实现，mock 也没法模拟）。
+    async fn setstat(
+        &mut self,
+        id: u32,
+        path: String,
+        attrs: FileAttributes,
+    ) -> Result<Status, StatusCode> {
+        let exists = self.fs.lock().await.contains_key(&path)
+            || self.links.lock().await.contains_key(&path);
+        if !exists {
+            return Err(StatusCode::NoSuchFile);
+        }
+        if let Some(mode) = attrs.permissions {
+            self.modes.lock().await.insert(path, mode);
+        }
+        Ok(ok_status(id))
+    }
+
     /// 读链接目标（`FIL-002`）。协议回的 `Name` 里第一条的文件名就是目标，
     /// 客户端（russh-sftp）正是这么取的。
     async fn readlink(&mut self, id: u32, path: String) -> Result<Name, StatusCode> {
@@ -309,6 +338,7 @@ impl russh_sftp::server::Handler for MemSftp {
 struct MockServer {
     fs: MockFs,
     links: MockLinks,
+    modes: MockModes,
 }
 
 impl russh::server::Server for MockServer {
@@ -319,6 +349,7 @@ impl russh::server::Server for MockServer {
             subsystems: Arc::new(AsyncMutex::new(std::collections::HashSet::new())),
             fs: self.fs.clone(),
             links: self.links.clone(),
+            modes: self.modes.clone(),
             input_buf: String::new(),
             forward_stops: HashMap::new(),
         }
@@ -334,6 +365,8 @@ struct MockHandler {
     fs: MockFs,
     /// SFTP 子系统的符号链接表（`FIL-002`）
     links: MockLinks,
+    /// SFTP 子系统的权限位覆盖表（`SETSTAT`）
+    modes: MockModes,
     /// shell 收到的输入累积（按字符截断）。客户端是**逐键**发的，
     /// 想识别一段词就必须累积，否则永远匹配不到整词。
     input_buf: String,
@@ -486,7 +519,7 @@ impl russh::server::Handler for MockHandler {
             }
             "sftp" => {
                 session.channel_success(channel_id)?;
-                let handler = MemSftp::new(self.fs.clone(), self.links.clone());
+                let handler = MemSftp::new(self.fs.clone(), self.links.clone(), self.modes.clone());
                 // 必须 spawn：在 handler 里 await 服务端会挡住连接循环，
                 // 客户端发来的报文永远读不到（表现为服务端「立刻退出」）
                 tokio::spawn(async move {
@@ -691,6 +724,8 @@ impl russh::server::Handler for MockHandler {
 }
 pub struct MockSshServer {
     pub port: u16,
+    /// 权限位覆盖：`SETSTAT` 改过的路径记在这里，列目录时优先生效
+    pub modes: MockModes,
     /// SFTP 子系统的内存文件系统：用例在连接前预置、连接后检查
     pub fs: MockFs,
     /// 符号链接表：链接路径 → 目标（`FIL-002`）。目标不存在就是断链
@@ -721,15 +756,22 @@ impl MockSshServer {
         let server: &'static mut MockServer = Box::leak(Box::new(MockServer {
             fs: Arc::new(AsyncMutex::new(HashMap::new())),
             links: Arc::new(AsyncMutex::new(HashMap::new())),
+            modes: Arc::new(AsyncMutex::new(HashMap::new())),
         }));
         let fs = server.fs.clone();
         let links = server.links.clone();
+        let modes = server.modes.clone();
         tokio::spawn(server.run_on_socket(config, listener));
 
         // 给监听循环一点时间就绪，减少首连抖动
         tokio::time::sleep(Duration::from_millis(30)).await;
 
-        Self { port, fs, links }
+        Self {
+            port,
+            fs,
+            links,
+            modes,
+        }
     }
 
     /// 生成一份可被服务端接受的 OpenSSH 私钥。

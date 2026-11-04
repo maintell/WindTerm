@@ -190,6 +190,19 @@ impl SftpClient {
         }
     }
 
+    /// 改权限位（`FIL-002` 的 `SSH_FXP_SETSTAT`）。
+    ///
+    /// 调用方要把**类型位**一起带进来（`mode` 是完整的 `st_mode`）：只写权限位、把
+    /// `S_IFREG` 写丢，有的服务端会把这个路径当成未知类型，后续操作全失败。
+    pub async fn set_mode(&self, path: &str, mode: u32) -> Result<(), WtError> {
+        use russh_sftp::protocol::FileAttributes;
+        let mut attrs = FileAttributes::empty();
+        attrs.permissions = Some(mode);
+        self.inner.set_metadata(path, attrs).await.map_err(|e| {
+            sftp_error(&format!("无法修改 {path} 的权限位"), e.to_string())
+        })
+    }
+
     /// 读整个文件。
     pub async fn read_file(&self, path: &str) -> Result<Vec<u8>, WtError> {
         self.inner

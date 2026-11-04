@@ -239,6 +239,30 @@ async fn lists_symlinks_with_target_and_broken_flag() {
 }
 
 #[tokio::test]
+async fn set_mode_changes_reported_permissions() {
+    let server = MockSshServer::start().await;
+    {
+        let mut fs = server.fs.lock().await;
+        fs.insert("/run.sh".into(), b"#!/bin/sh\n".to_vec());
+    }
+    let conn = SshConnection::connect_password(&cfg(server.port), "secret", HostKeyPolicy::AcceptAll)
+        .await
+        .expect("连接应成功");
+    let sftp = SftpClient::open(conn).await.expect("应能打开 sftp 子系统");
+
+    // `FIL-002` 的 SETSTAT：0644 → 0755，类型位必须原样保留
+    sftp.set_mode("/run.sh", 0o100755).await.expect("改权限");
+    let entries = sftp.list_dir("/").await.expect("列目录");
+    let e = entries
+        .iter()
+        .find(|e| e.name == "run.sh")
+        .expect("run.sh 应在列表里");
+    let mode = e.mode.expect("改过之后必须有 mode");
+    assert_eq!(mode & 0o777, 0o755, "权限位应变成 755：{mode:o}");
+    assert_eq!(mode & 0o170000, 0o100000, "类型位不能被改掉：{mode:o}");
+}
+
+#[tokio::test]
 async fn atomic_write_replaces_content_and_leaves_no_temp_file() {
     let server = MockSshServer::start().await;
     {

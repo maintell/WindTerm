@@ -2320,6 +2320,7 @@ const filesUploadBtn = document.getElementById("files-upload-btn");
 const filesUpload = document.getElementById("files-upload");
 const filesMkdir = document.getElementById("files-mkdir");
 const filesRename = document.getElementById("files-rename");
+const filesChmod = document.getElementById("files-chmod");
 const filesRemove = document.getElementById("files-remove");
 const nameDialog = document.getElementById("name-dialog");
 const nameTitle = document.getElementById("name-title");
@@ -2545,12 +2546,48 @@ filesUp.addEventListener("click", () => loadDir(parentPath(sftpPath)));
 filesRefresh.addEventListener("click", () => loadDir(sftpPath));
 
 /** 选中某一行（只改状态，不发请求）。 */
+// 改权限位（`FIL-002` 的 `SETSTAT`）。输入用八进制——`chmod 644` 是所有人都会的写法，
+// 摆在对话框里点九宫格反而更慢。
+filesChmod.addEventListener("click", async () => {
+  if (!selectedEntry) return;
+  const full = Number.isFinite(selectedEntry.mode) ? selectedEntry.mode : 0o100644;
+  // 类型位必须原样带回去：只写权限位、把 S_IFREG 丢了的后果是有服务端把路径当成
+  // 未知类型，后续操作全失败。
+  const type = full & 0o170000;
+  const cur = (full & 0o777).toString(8).padStart(3, "0");
+  const ans = await askName(`改权限：${selectedEntry.name}（八进制，如 644）`, cur);
+  if (ans === null) return;
+  const perm = Number.parseInt(ans, 8);
+  if (!Number.isFinite(perm) || perm < 0 || perm > 0o777) {
+    setStatus(`权限位要 0~777 的八进制数，收到「${ans}」`);
+    return;
+  }
+  const target = selectedEntry;
+  try {
+    await withDeadline(
+      invoke("sftp_chmod", {
+        req: filesReq(),
+        path: joinPath(sftpPath, target.name),
+        mode: type | perm,
+        jump: jumpReq(),
+      }),
+      20000,
+      "改权限",
+    );
+    setStatus(`已把 ${target.name} 的权限改成 ${perm.toString(8).padStart(3, "0")}`);
+    await loadDir(sftpPath);
+  } catch (e) {
+    setStatus(`改权限失败：${e}`);
+  }
+});
+
 function selectEntry(entry, row) {
   selectedEntry = entry;
   for (const r of filesList.children) r.classList.remove?.("selected");
   row.classList.add("selected");
   filesRename.disabled = false;
   filesRemove.disabled = false;
+  filesChmod.disabled = false;
   // 目录不能「编辑」（先凑成 FIL-005 的语义：只对文件）
   filesEdit.disabled = Boolean(entry.is_dir);
 }
@@ -2560,6 +2597,7 @@ function clearSelection() {
   selectedEntry = null;
   filesRename.disabled = true;
   filesRemove.disabled = true;
+  filesChmod.disabled = true;
   filesEdit.disabled = true;
   removeArmed = false;
   filesRemove.textContent = "删除";
@@ -4070,7 +4108,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-63",
+  ui: "wt-ui-64",
   /** 「本次记住」存了几条（验收用：只回数量，不回口令） */
   sessionPasswords() {
     return sessionPasswords.size;
