@@ -657,6 +657,8 @@
         display: flex;
         align-items: center;
         gap: 10px;
+        /* 长路径之类的内容不能把按钮挤出对话框：挤出去之后点它等于点背景 */
+        flex-wrap: wrap;
         padding: 4px 6px;
         font-size: 12px;
         border-bottom: 1px solid #2a2a30;
@@ -680,6 +682,8 @@
       .set-group[hidden] { display: none; }
       /* 搜索时的分组路径与命中高亮（SET-002） */
       .set-path { color: #6f9bd1; font-size: 10px; margin-right: 2px; }
+      /* 只读展示的路径：等宽、可横向滚动，别把整行撑破 */
+      .set-path-shown { color: #8a8a92; font-size: 11px; font-family: monospace; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .set-path[hidden] { display: none; }
       .set-row mark { background: #7a5a12; color: #ffe9b0; padding: 0 1px; border-radius: 2px; }
       #look-font-warn[hidden],
@@ -1231,6 +1235,17 @@
           <span class="set-name">回滚行数</span>
           <span class="set-scope">全局</span>
           <input id="look-scrollback" type="number" min="1000" max="1000000" step="1000" />
+        </div>
+        <div class="set-row" data-kw="配置文件 config toml 路径 位置 备份 在哪">
+          <span class="set-name">配置文件</span>
+          <span class="set-scope">全局</span>
+          <span id="app-prefs-path" class="set-path-shown"></span>
+          <button type="button" id="app-prefs-open">打开所在目录</button>
+        </div>
+        <div class="set-row" data-kw="重置 reset 恢复默认 清空 preferences 恢复出厂">
+          <span class="set-name">重置偏好</span>
+          <span class="set-scope">全局</span>
+          <button type="button" id="prefs-reset">重置…</button>
         </div>
         <div class="set-row" data-kw="shell 本地终端 powershell cmd git bash wsl 命令行 终端类型">
           <span class="set-name">本地终端 Shell</span>

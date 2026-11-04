@@ -309,10 +309,16 @@ async function clickElement(selector) {
     // 面板可能是可滚动的（隧道面板就是）：先滚进可视区，量到的位置才可点
     el.scrollIntoView({ block: "nearest" });
     const r = el.getBoundingClientRect();
-    if (r.bottom > innerHeight || r.top < 0) return { offscreen: true, y: r.y };
+    // 纵向与横向都要查：只查纵向时，被挤出对话框右边的按钮会在「看似正常」的
+    // 坐标上点下去——实际落在背景遮罩上，既不报错也没反应
+    if (r.bottom > innerHeight || r.top < 0 || r.right > innerWidth || r.left < 0) {
+      return { offscreen: true, y: r.y, x: r.x, right: r.right };
+    }
     return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
   })()`);
-  if (box?.offscreen) throw new Error(`${selector} 在可视区外（y=${box.y}）`);
+  if (box?.offscreen) {
+    throw new Error(`${selector} 在可视区外（x=${box.x} y=${box.y} right=${box.right}）`);
+  }
   if (!box) throw new Error(`找不到元素 ${selector}`);
   await clickAt(box);
 }
@@ -5205,6 +5211,95 @@ try {
   ).catch(() => null);
   check("复制标签会再开一条（TER-001）", dupDone === 2, `标签数 ${dupDone ?? "不对"}`);
   await closeAllTabs();
+
+  // 19zd. 高级设置：配置文件路径与重置偏好（`SET-001`）
+  await closeAllDialogs();
+  // 「设置」按钮在终端底栏，**没有会话时整个底栏是隐藏的**——先开一个终端再进设置
+  await clickUntil(
+    () => clickElement("#open"),
+    async () => (await cdp.eval(`!document.getElementById("term-foot").hidden`)) ? true : null,
+    { timeout: 15000, tries: 4, label: "为进设置开一个终端" },
+  );
+  // 必须确认对话框真的开了：只读 DOM 的断言在对话框关着时也会过（元素在、只是不可见），
+  // 等到要**点**里面的按钮时才发现坐标是 0,0
+  await clickUntil(
+    () => clickElement("#settings-open"),
+    async () => (await cdp.eval(`document.getElementById("settings").open`)) ? true : null,
+    { timeout: 5000, tries: 3, label: "打开设置面板" },
+  );
+  const advGroup = await cdp.eval(`(() => {
+    const g = [...document.querySelectorAll("#set-body .set-group")].find((x) =>
+      x.dataset.group === "高级",
+    );
+    return g ? { rows: g.querySelectorAll(".set-row").length } : null;
+  })()`);
+  check(
+    "设置里有「高级」分组（SET-001）",
+    advGroup !== null && advGroup.rows === 2,
+    JSON.stringify(advGroup),
+  );
+
+  const prefsShown = await cdp.eval(`document.getElementById("app-prefs-path").textContent`);
+  check(
+    "显示出配置文件的实际路径（SET-001）",
+    typeof prefsShown === "string" && prefsShown.endsWith("config.toml"),
+    prefsShown,
+  );
+
+  // 改字号 → 重置 → 回到默认 13
+  await cdp.eval(`(() => {
+    const el = document.getElementById("look-size");
+    el.value = "15";
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return el.value;
+  })()`);
+  await waitFor(
+    async () => {
+      const s = await cdp.eval(`window.__wt.look.fontSize`);
+      return s === 15 ? s : null;
+    },
+    { timeout: 5000, label: "改字号" },
+  );
+  // 先做命中测试：这个按钮被挤出对话框或被别的元素盖住时，点下去不报错也没反应
+  const resetHit = await cdp.eval(`(() => {
+    const el = document.getElementById("prefs-reset");
+    if (!el) return null;
+    el.scrollIntoView({ block: "nearest" });
+    const r = el.getBoundingClientRect();
+    const cx = Math.round(r.x + r.width / 2);
+    const cy = Math.round(r.y + r.height / 2);
+    const top = document.elementFromPoint(cx, cy);
+    return { cx, cy, top: top ? top.id || top.tagName : null };
+  })()`);
+  check(
+    "「重置…」按钮能点到（没有被遮挡）",
+    resetHit?.top === "prefs-reset",
+    JSON.stringify(resetHit),
+  );
+  if (resetHit?.top === "prefs-reset") await clickAt({ x: resetHit.cx, y: resetHit.cy });
+  // 等确认框真的打开再点确定：合成点击可能抢在 showModal 前面
+  await waitFor(
+    async () =>
+      (await cdp.eval(`document.getElementById("ask-dialog").open`)) ? true : null,
+    { timeout: 5000, label: "重置确认框" },
+  );
+  await clickElement("#ask-ok");
+  const resetOk = await waitFor(
+    async () => {
+      const s = await cdp.eval(`({
+        size: window.__wt.look.fontSize,
+        status: document.getElementById("status").textContent,
+      })`);
+      return s.size === 13 ? s : null;
+    },
+    { timeout: 15000, label: "重置偏好" },
+  ).catch(() => null);
+  check(
+    "重置偏好后字号回到默认（SET-001）",
+    resetOk !== null,
+    resetOk ? `字号 ${resetOk.size}；${resetOk.status}` : "没重置",
+  );
+  await closeAllDialogs();
 
   // 18. 页面无未捕获异常
   check("页面无未捕获异常", cdp.exceptions.length === 0, cdp.exceptions.join(" | ") || "0 条");

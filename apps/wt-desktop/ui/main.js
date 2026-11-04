@@ -4338,6 +4338,8 @@ const SET_GROUPS = [
   ["终端", ["encoding", "look-theme", "theme-import-open", "look-font", "look-scrollback"]],
   ["文件", ["files-auto-open"]],
   ["安全", ["master-open", "known-open"]],
+  // 按「行里第一个带 id 的元素」认领：配置文件那行首个 id 是路径 span，不是按钮
+  ["高级", ["app-prefs-path", "prefs-reset"]],
 ];
 
 function buildSettingGroups() {
@@ -4413,6 +4415,53 @@ function highlightName(el, needle) {
     document.createTextNode(raw.slice(at + needle.length)),
   );
 }
+
+// 高级（`SET-001`）：配置文件在哪、以及一键重置偏好
+const appPrefsPath = document.getElementById("app-prefs-path");
+let prefsDir = "";
+
+async function refreshAppPaths() {
+  try {
+    const p = await invoke("app_paths");
+    appPrefsPath.textContent = p.prefs;
+    appPrefsPath.title = p.prefs;
+    prefsDir = p.data;
+  } catch (e) {
+    appPrefsPath.textContent = `读取失败：${e}`;
+  }
+}
+
+document.getElementById("app-prefs-open").addEventListener("click", async () => {
+  if (!prefsDir) return;
+  try {
+    await invoke("open_in_system", { path: prefsDir });
+  } catch (e) {
+    setStatus(`打不开目录：${e}`);
+  }
+});
+
+document.getElementById("prefs-reset").addEventListener("click", async () => {
+  const ok = await askConfirm(
+    "重置全部偏好？",
+    "配色、字体、编码、键位、导入的方案都会恢复默认。旧配置会备份成 config.toml.bak-<时间戳>，不会直接丢掉。",
+    "重置",
+  );
+  if (!ok) return;
+  try {
+    const backup = await invoke("prefs_reset");
+    // 重新从磁盘读一遍（现在是默认值），并把所有受影响的控件刷回来；
+    // 不重载页面：CDP 的执行上下文会随重载失效，验收脚本拿不到页面
+    await loadPrefs();
+    initLookControls();
+    await initShellControls();
+    buildSettingGroups();
+    applyLook();
+    await refreshAppPaths();
+    setStatus(backup ? `已重置偏好；旧配置备份在 ${backup}` : "偏好本来就是默认值");
+  } catch (e) {
+    setStatus(`重置失败：${e}`);
+  }
+});
 
 function filterSettings(query) {
   const needle = query.trim().toLowerCase();
@@ -4601,7 +4650,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-77",
+  ui: "wt-ui-79",
   /** 「本次记住」存了几条（验收用：只回数量，不回口令） */
   sessionPasswords() {
     return sessionPasswords.size;
@@ -4860,6 +4909,7 @@ window.__wt = {
   initLookControls();
   await initShellControls();
   buildSettingGroups();
+  await refreshAppPaths();
   filesAutoOpenBox.checked = filesAutoOpen;
   initBroadcast();
   loadTree();

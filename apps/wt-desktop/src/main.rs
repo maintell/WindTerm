@@ -1204,6 +1204,48 @@ fn session_export(session_id: String) -> Result<String, String> {
     Ok(path.display().to_string())
 }
 
+/// 应用把哪些文件放在哪（`SET-001` 的「高级」组）。
+///
+/// 用户要备份或排查配置时，最常问的就是「配置文件在哪」——把它显示出来比写进文档有用。
+#[derive(serde::Serialize)]
+struct AppPathsDto {
+    /// `config.toml` 的绝对路径
+    prefs: String,
+    /// 数据目录（会话库、保险库、known_hosts 都在这里）
+    data: String,
+}
+
+#[tauri::command]
+fn app_paths() -> AppPathsDto {
+    AppPathsDto {
+        prefs: prefs_path().display().to_string(),
+        data: sessions_db_path()
+            .parent()
+            .map(|d| d.display().to_string())
+            .unwrap_or_default(),
+    }
+}
+
+/// 把偏好重置为默认：现有的 `config.toml` 先**改名备份**，界面重新读默认值。
+///
+/// 不直接删：用户点错一次就丢掉全部配色、键位与导入的方案，代价太大。
+/// 备份路径会回给界面，由它告诉用户旧配置在哪。
+#[tauri::command]
+fn prefs_reset() -> Result<Option<String>, String> {
+    let path = prefs_path();
+    if !path.exists() {
+        return Ok(None);
+    }
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let backup = path.with_extension(format!("toml.bak-{secs}"));
+    std::fs::rename(&path, &backup)
+        .map_err(|e| format!("备份 {} 失败：{e}", path.display()))?;
+    Ok(Some(backup.display().to_string()))
+}
+
 /// 把全部隧道配置导出成 JSON（`NET-004`）。
 ///
 /// 落点与会话导出一致（下载目录 + 时间戳 + 冲突加序号），并把路径回给界面。
@@ -3170,6 +3212,8 @@ fn main() {
             session_move_many,
             session_reorder,
             session_export,
+            app_paths,
+            prefs_reset,
             tunnels_export,
             tunnels_import,
             prefs_load,
