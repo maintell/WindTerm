@@ -336,6 +336,46 @@
         padding: 12px 14px;
         max-width: 520px;
       }
+      #key-dialog {
+        background: #24242a;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 8px;
+        padding: 12px 14px;
+        min-width: 460px;
+      }
+      #key-dialog .key-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 8px;
+        font-size: 12px;
+      }
+      #key-dialog select,
+      #key-dialog input,
+      #key-dialog button {
+        background: #2a2a30;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 4px;
+        padding: 2px 8px;
+        font: inherit;
+        cursor: pointer;
+      }
+      #key-dialog input { cursor: text; }
+      #key-dialog pre {
+        white-space: pre-wrap;
+        word-break: break-all;
+        color: var(--muted);
+        font-size: 12px;
+        margin: 0 0 8px;
+      }
+      #key-dialog menu {
+        display: flex;
+        justify-content: flex-end;
+        padding: 0;
+        margin: 0;
+      }
       #keys-dialog {
         background: #24242a;
         color: var(--fg);
@@ -744,6 +784,7 @@
           <input id="look-scrollback" type="number" min="1000" max="1000000" step="1000" title="回滚行数" />
           <button id="bc-toggle" title="多执行广播：同一命令发给所有已连接会话">广播</button>
           <button id="keys-open" title="键位设置（可重绑、冲突检测、导入导出）">键位</button>
+          <button id="keygen-open" title="生成或导入 SSH 密钥，查看指纹">密钥</button>
           <select id="encoding" title="终端输出编码（只影响之后的输出，已显示的内容不动）">
             <option value="utf-8">UTF-8</option>
             <option value="gbk">GBK</option>
@@ -768,6 +809,28 @@
     <div id="ctx-menu" hidden></div>
     <!-- 确认框：广播前/危险命令拦截都用它。确认放前面，回车即确认 -->
     <!-- 键位设置（TER-020）：一行一个动作，点「录制」后按组合键 -->
+    <!-- 密钥生成/导入（LOC-014） -->
+    <dialog id="key-dialog">
+      <p id="key-title">SSH 密钥</p>
+      <div class="key-row">
+        <select id="key-alg" title="算法">
+          <option value="ed25519">ed25519</option>
+          <option value="rsa3072">RSA 3072</option>
+          <option value="ecdsa-p256">ECDSA P-256</option>
+        </select>
+        <input id="key-pass" type="password" placeholder="口令（可空）" spellcheck="false" />
+        <button type="button" id="key-gen">生成</button>
+      </div>
+      <pre id="key-result"></pre>
+      <div class="key-row">
+        <button type="button" id="key-import">导入已有密钥…</button>
+        <span id="key-import-info"></span>
+      </div>
+      <menu>
+        <button type="button" id="key-close">关闭</button>
+      </menu>
+    </dialog>
+    <input id="key-file" type="file" hidden />
     <dialog id="keys-dialog">
       <p id="keys-title">键位</p>
       <div id="keys-list"></div>

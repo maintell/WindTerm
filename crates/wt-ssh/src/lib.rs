@@ -28,7 +28,7 @@ pub use client::{
     Auth, ChannelData, ExecOutput, HostKeyPolicy, HostKeyVerdict, ObservedHostKey, SshChannel,
     SshConnection, TunnelStream,
 };
-pub use keys::{inspect as inspect_key, KeyInfo, PrivateKeySource};
+pub use keys::{generate as generate_key, inspect as inspect_key, GeneratedKey, KeyInfo, PrivateKeySource};
 pub use forward::{
     exposes_to_lan, start_local, start_local_limited, start_remote, start_socks5,
     start_socks5_limited, ForwardStats, LocalForward, MAX_PER_TUNNEL, RemoteForward,

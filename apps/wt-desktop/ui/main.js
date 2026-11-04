@@ -1530,6 +1530,69 @@ function runAction(action) {
   }
 }
 
+// ── 密钥生成/导入（`LOC-014`）────────────────────────────
+//
+// 私钥落在下载目录：界面还没有文件保存对话框，而「生成了但不知道存哪」
+// 比多一次另存为更糟。生成完把路径、指纹、公钥都摆出来。
+
+const keyDialog = document.getElementById("key-dialog");
+const keyAlg = document.getElementById("key-alg");
+const keyPass = document.getElementById("key-pass");
+const keyResult = document.getElementById("key-result");
+const keyImportInfo = document.getElementById("key-import-info");
+const keyFile = document.getElementById("key-file");
+
+/** 最近一次生成的密钥（验收读它，别去解析 pre 里的文本） */
+let lastKey = null;
+
+document.getElementById("keygen-open").addEventListener("click", () => {
+  keyResult.textContent = "";
+  keyImportInfo.textContent = "";
+  keyDialog.showModal();
+});
+
+document.getElementById("key-close").addEventListener("click", () => keyDialog.close());
+
+document.getElementById("key-gen").addEventListener("click", async () => {
+  keyResult.textContent = "生成中…";
+  try {
+    const k = await invoke("key_generate", {
+      alg: keyAlg.value,
+      passphrase: keyPass.value || null,
+      comment: "windterm",
+    });
+    lastKey = k;
+    keyResult.textContent = [
+      `类型：${k.keyType}${k.encrypted ? "（已加密）" : ""}`,
+      `指纹：${k.fingerprint}`,
+      `私钥：${k.path}`,
+      `公钥：${k.publicKey}`,
+    ].join("\n");
+    setStatus(`已生成 ${k.keyType} 密钥`);
+  } catch (e) {
+    keyResult.textContent = `生成失败：${e}`;
+  }
+});
+
+document.getElementById("key-import").addEventListener("click", () => keyFile.click());
+
+keyFile.addEventListener("change", async () => {
+  const file = keyFile.files?.[0];
+  if (!file) return;
+  keyImportInfo.textContent = "读取中…";
+  try {
+    const info = await invoke("key_inspect", {
+      path: file.path,
+      passphrase: keyPass.value || null,
+    });
+    keyImportInfo.textContent = `${info.keyType} · ${info.fingerprint}${info.encrypted ? "（已加密）" : ""}`;
+  } catch (e) {
+    keyImportInfo.textContent = `导入失败：${e}`;
+  } finally {
+    keyFile.value = "";
+  }
+});
+
 // ── 键位设置界面（`TER-020`）──────────────────────────────
 
 const keysDialog = document.getElementById("keys-dialog");
@@ -2929,7 +2992,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-36",
+  ui: "wt-ui-37",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";
@@ -3039,6 +3102,10 @@ window.__wt = {
   /** 终端输出编码（`TER-006`，验收读它而不是去解析下拉框） */
   get encoding() {
     return encoding;
+  },
+  /** 最近生成的密钥（`LOC-014`）：验收读它，别去解析对话框里的文本 */
+  get lastKey() {
+    return lastKey ? { ...lastKey } : null;
   },
   /** 键位表（`TER-020`）：验收读它，别去解析对话框里的文本 */
   get keymap() {

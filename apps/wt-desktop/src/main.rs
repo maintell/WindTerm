@@ -660,6 +660,74 @@ fn folder_move(folder_id: String, parent_id: Option<String>) -> Result<(), Strin
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KeyDto {
+    /// 私钥落盘路径（下载目录）
+    path: String,
+    key_type: String,
+    fingerprint: String,
+    /// 可贴进 authorized_keys 的公钥行
+    public_key: String,
+    encrypted: bool,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KeyInfoDto {
+    key_type: String,
+    fingerprint: String,
+    encrypted: bool,
+}
+
+/// 生成密钥并落盘（`LOC-014`）。
+///
+/// 私钥写到下载目录：界面上还没有文件保存对话框，而「生成了但不知道存哪」
+/// 比多一次另存为更糟。口令可选，给了就加密。
+#[tauri::command]
+fn key_generate(
+    alg: String,
+    passphrase: Option<String>,
+    comment: Option<String>,
+) -> Result<KeyDto, String> {
+    let pass = passphrase.as_deref().filter(|p| !p.is_empty());
+    let comment = comment.unwrap_or_default();
+    let key = wt_ssh::generate_key(&alg, pass, comment.trim()).map_err(|e| e.to_string())?;
+
+    let dir = download_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败：{e}"))?;
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let path = unique_path(&dir, &format!("id_{alg}_{secs}.key"));
+    std::fs::write(&path, &key.pem).map_err(|e| format!("写入 {} 失败：{e}", path.display()))?;
+
+    Ok(KeyDto {
+        path: path.display().to_string(),
+        key_type: key.key_type,
+        fingerprint: key.fingerprint,
+        public_key: key.public_openssh,
+        encrypted: key.encrypted,
+    })
+}
+
+/// 读一把已有私钥并显示它的公开信息（`LOC-014` 的「导入并显示指纹」）。
+#[tauri::command]
+fn key_inspect(path: String, passphrase: Option<String>) -> Result<KeyInfoDto, String> {
+    let src = wt_ssh::PrivateKeySource::from_file(
+        std::path::Path::new(&path),
+        passphrase.filter(|p| !p.is_empty()),
+    )
+    .map_err(|e| e.to_string())?;
+    let info = wt_ssh::inspect_key(&src).map_err(|e| e.to_string())?;
+    Ok(KeyInfoDto {
+        key_type: info.key_type,
+        fingerprint: info.fingerprint,
+        encrypted: info.encrypted,
+    })
+}
+
 /// 把一条会话导出成 JSON（`SES-014`）。
 ///
 /// 落点是下载目录而不是「另存为」对话框：界面还没有可用的文件选择器，
@@ -2426,7 +2494,9 @@ fn main() {
             folder_move,
             session_move,
             session_reorder,
-            session_export
+            session_export,
+            key_generate,
+            key_inspect
         ])
         .run(tauri::generate_context!())
         .expect("启动 WindTerm 失败");

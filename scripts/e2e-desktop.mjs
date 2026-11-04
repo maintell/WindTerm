@@ -857,30 +857,6 @@ try {
   );
   check("页面加载且 Tauri 桥接注入", hasBridge === true);
 
-  // 2b. 每次运行都从干净的本地状态开始。
-  //     `localStorage` 里存着上一轮的键位与外观，而 WebView2 的 profile 跨运行保留：
-  //     不清掉的话「Ctrl+F 打开查找」这类**默认值**断言会在第二次运行开始失败，
-  //     看起来像功能坏了，其实是被上一轮的实验污染了。
-  const dirtyLocal = await cdp.eval(`(() => {
-    const had = localStorage.length > 0;
-    localStorage.clear();
-    return had;
-  })()`);
-  if (dirtyLocal) {
-    await cdp.eval(`location.reload()`);
-    await waitFor(
-      async () => {
-        try {
-          const v = await cdp.eval(`window.__wt?.ui ?? null`);
-          return v === "wt-ui-36" ? v : null;
-        } catch {
-          return null; // 重载瞬间执行上下文可能失效，下一轮再试
-        }
-      },
-      { timeout: 25000, label: "清理本地状态后重载" },
-    );
-  }
-  check("本地状态已清理（键位/外观从默认值开始）", true, dirtyLocal ? "已清理并重载" : "本来就是干净的");
 
   // 3. 启动自检：前端主动探一次后端，拿到 IPC_UNKNOWN_HANDLE 说明命令通道通
   const bootStatus = await waitFor(
@@ -902,8 +878,37 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-36",
+    uiVersion === "wt-ui-37",
     `__wt.ui=${uiVersion}`,
+  );
+
+  // 2b. 每次运行都从默认键位开始。
+  //
+  //     WebView2 的 profile 跨运行保留 `localStorage`，上一轮改过的键位会让这一轮的
+  //     **默认值**断言失败（「Ctrl+F 打开查找」超时、终端上却出现 `^F`）。
+  //     这里直接用界面自己的「恢复默认」把内存状态也复位——重载页面不可取：
+  //     CDP 的执行上下文会随之失效，后面的 eval 全部拿不到页面。
+  const localNormalized = await waitFor(
+    async () => {
+      const v = await cdp.eval(`(() => {
+        // window.__wt 是 main.js 末尾挂上去的，桥接就绪 ≠ 前端初始化完成
+        if (!window.__wt?.keymap) return null;
+        const had = localStorage.length > 0;
+        const dlg = document.getElementById("keys-dialog");
+        dlg.showModal();
+        document.getElementById("keys-reset").click();
+        dlg.close();
+        localStorage.clear();
+        return { had, find: window.__wt.keymap.find.chords.join("/") };
+      })()`);
+      return v ?? null;
+    },
+    { timeout: 15000, label: "前端初始化完成" },
+  );
+  check(
+    "每次运行都从默认键位开始",
+    localNormalized.find.includes("Ctrl+F"),
+    localNormalized.had ? "已把上一轮遗留的键位复位" : "本来就是默认键位",
   );
 
   // 3c. 二进制里内嵌的前端资源也是新的。
@@ -3019,6 +3024,48 @@ try {
   );
   await pressChord(0, "Escape", "Escape", 27);
   await closeAllTabs();
+
+  // 19h. 密钥生成与导入（`LOC-014`）：生成 → 落盘 → 回读指纹一致
+  // 这条不需要会话：直接开对话框（「密钥」按钮在终端底栏里，没会话时是隐藏的）
+  await cdp.eval(`document.getElementById("key-dialog").showModal()`);
+  await cdp.eval(`(() => {
+    const alg = document.getElementById("key-alg");
+    alg.value = "ed25519";
+    document.getElementById("key-pass").value = "";
+    return true;
+  })()`);
+  await clickElement("#key-gen");
+  const genKey = await waitFor(
+    async () => {
+      const k = await cdp.eval(`window.__wt.lastKey`);
+      return k && k.fingerprint ? k : null;
+    },
+    { timeout: 20000, label: "生成密钥" },
+  );
+  check(
+    "能生成 ed25519 密钥并给出 SHA256 指纹",
+    genKey.fingerprint.startsWith("SHA256:") && genKey.keyType.includes("ed25519"),
+    `${genKey.keyType} ${genKey.fingerprint}`,
+  );
+
+  // 文件真的落盘了：读回来必须是 OpenSSH 私钥，而不是一段空壳
+  const keyPem = readFileSync(genKey.path, "utf8");
+  check(
+    "私钥真的写到磁盘且是 OpenSSH 格式",
+    keyPem.includes("BEGIN OPENSSH PRIVATE KEY"),
+    genKey.path,
+  );
+
+  // 再用「导入」路径解析同一份文件：指纹一致才算这把密钥真的可用
+  const reInspected = await cdp.eval(`window.__TAURI__.core.invoke("key_inspect", {
+    path: ${JSON.stringify(genKey.path)}, passphrase: null,
+  })`);
+  check(
+    "导入同一份私钥得到相同指纹",
+    reInspected?.fingerprint === genKey.fingerprint,
+    `${reInspected?.fingerprint}`,
+  );
+  await clickElement("#key-close");
 
   // 19c-2. 多执行广播（`TER-004`）：同一命令发给多个会话，按输出分组收起
   await closeAllTabs();

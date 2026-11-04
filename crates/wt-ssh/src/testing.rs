@@ -17,7 +17,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use russh::keys::ssh_key::rand_core::{TryCryptoRng, TryRng};
 use russh::server::{Auth, Msg, Server as _, Session};
 use russh::{Channel, ChannelId};use russh_sftp::protocol::{Attrs, Data, File, FileAttributes, Handle, Name, Status, StatusCode};
 use tokio::net::TcpListener;
@@ -255,40 +254,6 @@ impl russh_sftp::server::Handler for MemSftp {
         Ok(Attrs { id, attrs })
     }
 }
-
-/// 桥接 RNG：`ssh-key 0.7` 用 `rand_core 0.10` 的 `CryptoRng`，
-/// 而项目主依赖是 rand 0.8（`rand_core 0.6`）。两者 trait 不同代，无法直接传。
-///
-/// 与其在仓库里塞一个测试私钥，不如写这 20 行适配器——私钥不该进版本库，
-/// 哪怕它是「只用于 localhost」的。
-pub struct BridgeRng;
-
-fn fill(dst: &mut [u8]) {
-    <rand::rngs::ThreadRng as rand::RngCore>::fill_bytes(&mut rand::thread_rng(), dst);
-}
-
-impl TryRng for BridgeRng {
-    type Error = std::convert::Infallible;
-
-    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
-        let mut b = [0u8; 4];
-        fill(&mut b);
-        Ok(u32::from_le_bytes(b))
-    }
-
-    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
-        let mut b = [0u8; 8];
-        fill(&mut b);
-        Ok(u64::from_le_bytes(b))
-    }
-
-    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
-        fill(dst);
-        Ok(())
-    }
-}
-
-impl TryCryptoRng for BridgeRng {}
 
 struct MockServer {
     fs: MockFs,
@@ -622,9 +587,8 @@ pub struct MockSshServer {
 impl MockSshServer {
     /// 在随机端口启动。返回后即可连接。
     pub async fn start() -> Self {
-        let key =
-            russh::keys::PrivateKey::random(&mut BridgeRng, russh::keys::Algorithm::Ed25519)
-                .expect("生成测试主机密钥");
+        let key = crate::keys::random_private_key(russh::keys::Algorithm::Ed25519)
+            .expect("生成测试主机密钥");
 
         let config = Arc::new(russh::server::Config {
             keys: vec![key],
@@ -653,17 +617,13 @@ impl MockSshServer {
         Self { port, fs }
     }
 
-    /// 生成一份可被服务端接受的 OpenSSH 私钥（明文）。
+    /// 生成一份可被服务端接受的 OpenSSH 私钥。
+    ///
+    /// 走生产同一条路径（`crate::keys::generate`）：测试与真实生成各写一份，
+    /// 迟早会出现「测试里能过、真实生成却导不出」这种分叉。
     pub fn fresh_openssh_key(passphrase: Option<&str>) -> Vec<u8> {
-        let key = russh::keys::PrivateKey::random(&mut BridgeRng, russh::keys::Algorithm::Ed25519)
-            .expect("生成密钥");
-        let key = match passphrase {
-            Some(p) => key.encrypt(&mut BridgeRng, p).expect("加密私钥"),
-            None => key,
-        };
-        key.to_openssh(russh::keys::ssh_key::LineEnding::LF)
-            .expect("导出 OpenSSH")
-            .as_bytes()
-            .to_vec()
+        crate::keys::generate("ed25519", passphrase, "")
+            .expect("生成密钥")
+            .pem
     }
 }

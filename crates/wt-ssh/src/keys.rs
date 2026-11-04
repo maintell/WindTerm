@@ -9,6 +9,7 @@
 //! RFC 4716 公钥。PuTTY `.ppk` 由 [`crate::ppk`] 先转成 OpenSSH 文本——
 //! **只覆盖未加密的 ed25519**，RSA 与带口令的 `.ppk` 仍要 puttygen 转一次。
 
+use russh::keys::ssh_key::rand_core::{TryCryptoRng, TryRng};
 use wt_common::{HintAction, WtError};
 
 /// 私钥来源：原文 + 可选口令。
@@ -54,6 +55,168 @@ pub struct KeyInfo {
     /// `SHA256:...`（OpenSSH 风格）
     pub fingerprint: String,
     pub encrypted: bool,
+}
+
+/// 桥接 RNG：`ssh-key 0.7` 用 `rand_core 0.10` 的 `CryptoRng`，而项目主依赖是
+/// rand 0.8（`rand_core 0.6`）。两者 trait 不同代，不能直接传。
+///
+/// 生成密钥（`LOC-014`）与测试用的那把「一次性私钥」都走这里——
+/// 私钥不该进版本库，哪怕它「只用于 localhost」。
+struct KeyRng;
+
+fn fill_random(dst: &mut [u8]) {
+    use rand::RngCore;
+    rand::thread_rng().fill_bytes(dst);
+}
+
+impl TryRng for KeyRng {
+    type Error = std::convert::Infallible;
+
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+        let mut b = [0u8; 4];
+        fill_random(&mut b);
+        Ok(u32::from_le_bytes(b))
+    }
+
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+        let mut b = [0u8; 8];
+        fill_random(&mut b);
+        Ok(u64::from_le_bytes(b))
+    }
+
+    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
+        fill_random(dst);
+        Ok(())
+    }
+}
+
+impl TryCryptoRng for KeyRng {}
+
+#[cfg(test)]
+mod generate_tests {
+    use super::*;
+
+    #[test]
+    fn generated_key_inspects_to_the_same_fingerprint() {
+        let key = generate("ed25519", None, "wt@test").expect("生成");
+        assert!(!key.encrypted);
+        assert!(!key.pem.is_empty());
+        // 公钥行要能直接贴进 authorized_keys：算法 + base64 + 注释
+        assert!(key.public_openssh.starts_with("ssh-ed25519 "), "{}", key.public_openssh);
+        assert!(key.public_openssh.ends_with(" wt@test"), "{}", key.public_openssh);
+
+        // 拿生成的私钥再解析一次：指纹必须一致，否则「导出的是什么」说不清
+        let src = PrivateKeySource::new(key.pem.clone(), None);
+        let info = inspect(&src).expect("解析自己生成的私钥");
+        assert_eq!(info.fingerprint, key.fingerprint);
+        assert_eq!(info.key_type, key.key_type);
+    }
+
+    #[test]
+    fn encrypted_key_needs_the_passphrase() {
+        let key = generate("ed25519", Some("s3cret"), "").expect("生成");
+        assert!(key.encrypted);
+
+        // 不给口令：明确报「需要口令」，而不是一句看不懂的解析错误
+        let err = inspect(&PrivateKeySource::new(key.pem.clone(), None)).unwrap_err();
+        assert_eq!(err.code, "SSH_KEY_PASSPHRASE_REQUIRED");
+
+        let ok = inspect(&PrivateKeySource::new(key.pem.clone(), Some("s3cret".into()))).unwrap();
+        assert_eq!(ok.fingerprint, key.fingerprint);
+    }
+
+    #[test]
+    fn unknown_algorithm_is_rejected_not_guessed() {
+        let err = generate("dsa1024", None, "").unwrap_err();
+        assert_eq!(err.code, "SSH_KEY_BAD_ARGUMENT");
+        assert!(err.message.contains("dsa1024"), "{}", err.message);
+    }
+}
+
+/// 生成一把原始私钥对象。
+///
+/// 生产路径（[`generate`]）与 mock 服务端的主机密钥都走这里：两边各写一份
+/// 生成代码，迟早会出现「测试能生成、真实生成却导不出」这类分叉。
+pub(crate) fn random_private_key(
+    alg: russh::keys::Algorithm,
+) -> Result<russh::keys::PrivateKey, WtError> {
+    russh::keys::PrivateKey::random(&mut KeyRng, alg).map_err(|e| {
+        WtError::new("SSH_KEY_GENERATE_FAILED")
+            .message("生成密钥失败")
+            .detail(e.to_string())
+    })
+}
+
+/// 生成出来的一把新密钥（`LOC-014`）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneratedKey {
+    pub key_type: String,
+    pub fingerprint: String,
+    /// OpenSSH 私钥文本；给了口令就是加密的
+    pub pem: Vec<u8>,
+    /// 可直接贴进 `authorized_keys` 的公钥行
+    pub public_openssh: String,
+    pub encrypted: bool,
+}
+
+/// 生成一把新密钥。
+///
+/// `alg` 只认三种（其余一律报错，不猜）：`ed25519`、`rsa3072`、`ecdsa-p256`。
+/// 口令给了就加密——明文私钥落在磁盘上是 `LOC-014` 最容易被忽略的坑。
+pub fn generate(alg: &str, passphrase: Option<&str>, comment: &str) -> Result<GeneratedKey, WtError> {
+    let alg = match alg {
+        "ed25519" => russh::keys::Algorithm::Ed25519,
+        "rsa3072" => russh::keys::Algorithm::Rsa { hash: None },
+        "ecdsa-p256" => russh::keys::Algorithm::Ecdsa {
+            curve: russh::keys::EcdsaCurve::NistP256,
+        },
+        other => {
+            return Err(WtError::new("SSH_KEY_BAD_ARGUMENT")
+                .message(format!("不支持的算法 {other}"))
+                .hint("可选 ed25519 / rsa3072 / ecdsa-p256", HintAction::None))
+        }
+    };
+
+    let key = random_private_key(alg)?;
+    let info = info_of(&key);
+    let public_openssh = key
+        .public_key()
+        .to_openssh()
+        .map(|s| if comment.is_empty() { s } else { format!("{s} {comment}") })
+        .map_err(|e| {
+            WtError::new("SSH_KEY_GENERATE_FAILED")
+                .message("导出公钥失败")
+                .detail(e.to_string())
+        })?;
+
+    let encrypted = passphrase.map(|p| !p.is_empty()).unwrap_or(false);
+    let key = if encrypted {
+        key.encrypt(&mut KeyRng, passphrase.unwrap_or_default())
+            .map_err(|e| {
+                WtError::new("SSH_KEY_GENERATE_FAILED")
+                    .message("加密私钥失败")
+                    .detail(e.to_string())
+            })?
+    } else {
+        key
+    };
+    let pem = key
+        .to_openssh(russh::keys::ssh_key::LineEnding::LF)
+        .map_err(|e| {
+            WtError::new("SSH_KEY_GENERATE_FAILED")
+                .message("导出私钥失败")
+                .detail(e.to_string())
+        })?
+        .as_bytes()
+        .to_vec();
+
+    Ok(GeneratedKey {
+        key_type: info.key_type,
+        fingerprint: info.fingerprint,
+        pem,
+        public_openssh,
+        encrypted,
+    })
 }
 
 /// 解析私钥并返回公开信息。用于「导入密钥时显示指纹」与「连接前校验」。
