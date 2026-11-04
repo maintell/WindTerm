@@ -330,6 +330,18 @@ async function clickSessionNode(name) {
   await clickAt(box);
 }
 
+/**
+ * 确保文件面板处于指定开合状态。
+ *
+ * 不能只点 `#files-toggle`：SSH 连上会自动打开（`FIL-001`），那时「点一下」是**关闭**，
+ * 后面的断言就都在错误的前提上跑。
+ */
+async function ensureFilesPanel(open) {
+  const hidden = await cdp.eval(`document.getElementById("files").hidden`);
+  if (hidden === !open) return;
+  await clickElement("#files-toggle");
+}
+
 async function clickAt(box) {
   const base = { x: box.x, y: box.y, button: "left", clickCount: 1 };
   await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...base });
@@ -1842,7 +1854,13 @@ try {
   await cdp.eval(
     `window.__TAURI__.core.invoke("mock_seed_file", { path: "/notes.txt", content: ${JSON.stringify(seed)} })`,
   );
-  await clickElement("#files-toggle");
+  await ensureFilesPanel(true);
+  // 自动打开时可能已经列过一次（那时 /notes.txt 还没种进去）：强制重列一次
+  await cdp.eval(`(() => {
+    const sel = document.getElementById("files-session");
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    return sel.value;
+  })()`);
   // 页面活性自检：定时器与 rAF 还在跑吗？
   // 「命令跑完但界面不动」有两种完全不同的原因——后端没返回，或者页面任务队列被占死。
   // 前者要查 IPC，后者要查泵循环。这条自检把两者分开，省掉一整轮瞎猜。
@@ -2275,7 +2293,7 @@ try {
   await clickElement("#files-remove");
   await clickElement("#files-remove");
 
-  await clickElement("#files-toggle");
+  await ensureFilesPanel(false);
 
   // 16e. 隧道（NET-001 / NET-004）：启动 → 经隧道收发 → 统计 → 停止
   const echo = await startEchoTarget();
@@ -4005,6 +4023,116 @@ try {
     { timeout: 10000, label: "shell 偏好复原" },
   ).catch(() => null);
   check("用完把 shell 偏好恢复默认（不污染后续用例）", shellRestored === true, shellRestored === true);
+  await closeAllDialogs();
+
+  // 19p. SSH 连上自动打开文件面板（`FIL-001`）
+  //
+  // 规格要求「连上即自动打开（可关）」。这里验三件事：默认是开的、连上真的自己弹出来
+  // 并列出目录、关掉之后不会再弹。
+  await closeAllDialogs();
+  await closeAllTabs();
+  await clickElement("#settings-open");
+  const autoOpenDefault = await cdp.eval(`document.getElementById("files-auto-open").checked`);
+  check("「连上 SSH 自动打开文件面板」默认是开的", autoOpenDefault === true, autoOpenDefault);
+  await closeAllDialogs();
+
+  await clickSessionNode("mock-ssh");
+  await fillInput("#port", String(sshPort));
+  await clickElement("#ssh");
+  await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      return s.startsWith("已连接") ? s : null;
+    },
+    { timeout: 30000, label: "自动开面板用例建会话" },
+  );
+  const opened = await waitFor(
+    async () => {
+      const s = await cdp.eval(`({
+        hidden: document.getElementById("files").hidden,
+        rows: window.__wt.files.rows,
+        msg: window.__wt.files.msg,
+        path: document.getElementById("files-path").textContent,
+      })`);
+      // 判据是「真的列成功了」，不是「列出来有内容」：自动打开会回到该会话上次
+      // 浏览的目录，那个目录**可能就是空的**（空目录也是成功）
+      return s.hidden === false && s.msg === "" && s.path.startsWith("/") ? s : null;
+    },
+    { timeout: 20000, label: "面板自动打开并列目录" },
+  ).catch(() => null);
+  if (opened === null) {
+    // 失败时把面板自己的说法带出来：是没开、还在读、还是报错了，一眼能分开
+    const why = await cdp.eval(`({
+      hidden: document.getElementById("files").hidden,
+      msg: window.__wt.files.msg,
+      path: document.getElementById("files-path").textContent,
+    })`);
+    check("SSH 连上后文件面板自动打开并列出远端目录（FIL-001）", false, JSON.stringify(why));
+  } else {
+    check(
+      "SSH 连上后文件面板自动打开并列出远端目录（FIL-001）",
+      true,
+      `path=${opened.path} rows=${opened.rows.length}`,
+    );
+  }
+
+  const boundName = await cdp.eval(`(() => {
+    const sel = document.getElementById("files-session");
+    return sel.selectedOptions[0]?.textContent ?? "";
+  })()`);
+  check("面板绑定到刚连的会话（不是含糊地跟着表单跑）", boundName === "mock-ssh", boundName);
+
+  // 关掉偏好：写进配置，并且以后连上不再自动弹
+  await clickElement("#settings-open");
+  await cdp.eval(`(() => {
+    const el = document.getElementById("files-auto-open");
+    el.checked = false;
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return el.checked;
+  })()`);
+  const offSaved = await waitFor(
+    async () => {
+      const t = readFileSync(prefsFile, "utf8");
+      return /filesAutoOpen\s*=\s*false/.test(t) ? true : null;
+    },
+    { timeout: 10000, label: "自动打开开关落盘" },
+  ).catch(() => null);
+  check("关掉开关后写进 config.toml", offSaved === true, offSaved === true);
+  await closeAllDialogs();
+
+  await closeAllTabs();
+  await ensureFilesPanel(false);
+  await clickSessionNode("mock-ssh");
+  await fillInput("#port", String(sshPort));
+  await clickElement("#ssh");
+  await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      return s.startsWith("已连接") ? s : null;
+    },
+    { timeout: 30000, label: "关掉开关后建会话" },
+  );
+  // 等输出安静下来再读：自动打开是异步的，刚连上就读会读到「还没来得及开」
+  await waitScreenStable(600);
+  const stayedHidden = await cdp.eval(`document.getElementById("files").hidden`);
+  check("关掉开关后连上 SSH 不再自动弹面板", stayedHidden === true, stayedHidden);
+
+  // 复原：这是会写进配置文件的全局设置
+  await clickElement("#settings-open");
+  await cdp.eval(`(() => {
+    const el = document.getElementById("files-auto-open");
+    el.checked = true;
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return el.checked;
+  })()`);
+  const onRestored = await waitFor(
+    async () => {
+      const t = readFileSync(prefsFile, "utf8");
+      return /filesAutoOpen\s*=\s*true/.test(t) ? true : null;
+    },
+    { timeout: 10000, label: "自动打开开关复原" },
+  ).catch(() => null);
+  check("用完把自动打开开关恢复默认", onRestored === true, onRestored === true);
   await closeAllDialogs();
 
   // 18. 页面无未捕获异常

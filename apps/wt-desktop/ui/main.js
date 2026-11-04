@@ -204,6 +204,7 @@ async function loadPrefs() {
     if (typeof p.localShell === "string" && p.localShell) localShell = p.localShell;
     if (typeof p.localShellPath === "string") localShellPath = p.localShellPath;
     if (typeof p.localShellArgs === "string") localShellArgs = p.localShellArgs;
+    if (typeof p.filesAutoOpen === "boolean") filesAutoOpen = p.filesAutoOpen;
     // 导入的配色要在建会话之前就进表，否则第一个终端会先闪一下默认配色
     for (const t of p.customThemes ?? []) {
       if (THEME_DATA.some((x) => x.name === t.name)) continue;
@@ -237,6 +238,7 @@ async function savePrefs() {
         localShell,
         localShellPath,
         localShellArgs,
+        filesAutoOpen,
       },
     });
   } catch (e) {
@@ -269,6 +271,9 @@ let encoding = "utf-8";
 let localShell = "auto";
 let localShellPath = "";
 let localShellArgs = "";
+
+/** SSH 连上就打开文件面板（`FIL-001`）。默认开，规格要能关。 */
+let filesAutoOpen = true;
 
 /** 每个编码一个解码器：`stream: true` 才能让多字节字符跨块拼接正确 */
 const decoders = new Map();
@@ -579,6 +584,9 @@ async function openSsh() {
     afterOpen(view, text);
     if (r.fingerprint) view.term.write(`\x1b[2m主机密钥 ${r.fingerprint}\x1b[0m\r\n`);
     await savePasswordIfAsked();
+    // 连上了就把远端目录摆出来（`FIL-001`）。不 await：SFTP 建连比终端慢，
+    // 不该让终端等它；失败了面板自己会显示原因。
+    void autoOpenFiles();
   } catch (e) {
     // 失败原因写进这个标签页：状态栏放不下 hints，而且用户需要能复制下来
     view.term.write(`\r\n\x1b[31m${String(e)}\x1b[0m\r\n`);
@@ -2323,7 +2331,7 @@ async function loadDir(path) {
       el.textContent = "（空目录）";
       filesList.appendChild(el);
       setFilesMsg("");
-      return;
+      return true;
     }
     for (const e of r.entries) {
       const row = document.createElement("div");
@@ -2343,11 +2351,13 @@ async function loadDir(path) {
       filesList.appendChild(row);
     }
     setFilesMsg("");
+    return true;
   } catch (e) {
     // 旧请求的失败同样不该覆盖新视图
     if (gen !== filesGen) return;
     filesList.textContent = "";
     setFilesMsg(`列目录失败：${e}`);
+    return false;
   }
 }
 
@@ -2665,6 +2675,43 @@ document.getElementById("files-toggle").addEventListener("click", async () => {
   openSidePanel(filesPanel);
   await loadDir("/");
 });
+
+/**
+ * SSH 连上就打开文件面板（`FIL-001`）。
+ *
+ * 规格要求「连上即自动打开（可关）」——这是 MobaXterm 的主路径，用户不必再点一次。
+ * 必须能关：有人就只想开一个终端。
+ */
+async function autoOpenFiles() {
+  if (!filesAutoOpen) return;
+  const host = hostInput.value.trim();
+  const user = userInput.value.trim();
+  const port = Number.parseInt(portInput.value, 10) || 22;
+  // 从会话树点进来的才绑定到那条会话（面板显示会话名、各自记路径）；
+  // 手填表单连的就跟表单走——硬拉一条不相干的会话进来只会让人困惑。
+  const picked =
+    selectedSession &&
+    selectedSession.kind === "ssh" &&
+    selectedSession.host === host &&
+    (selectedSession.username ?? "") === user &&
+    (selectedSession.port ?? 22) === port &&
+    [...filesSessionSelect.options].some((o) => o.value === selectedSession.id)
+      ? selectedSession.id
+      : null;
+  if (picked) {
+    filesPaths.set(filesSessionId, sftpPath);
+    filesSessionId = picked;
+    filesSessionSelect.value = picked;
+  }
+  openSidePanel(filesPanel);
+  const remembered = filesPaths.get(filesSessionId) ?? "/";
+  if (await loadDir(remembered)) return;
+  if (remembered === "/") return;
+  // 记住的目录可能已经不在了（上一条会话里把它删了，或者权限变了）：退回根目录。
+  // 不退回的话，一连接就只看到一条「列目录失败」，看着像压根连不上。
+  filesPaths.delete(filesSessionId);
+  await loadDir("/");
+}
 
 // ── 隧道（NET-001 / NET-004）───────────────────────────────
 //
@@ -3698,6 +3745,14 @@ for (const input of [localShellPathInput, localShellArgsInput]) {
   });
 }
 
+// 连上 SSH 自动打开文件面板（`FIL-001`）：规格要求默认开，但得能关
+const filesAutoOpenBox = document.getElementById("files-auto-open");
+filesAutoOpenBox.addEventListener("change", () => {
+  filesAutoOpen = filesAutoOpenBox.checked;
+  void savePrefs();
+  setStatus(`连上 SSH 自动打开文件面板：${filesAutoOpen ? "开" : "关"}`);
+});
+
 // ── 设置中心（`SET-001`）──────────────────────────────────
 //
 // 控件只有这一份：底栏不再重复放主题/字体/字号/编码，避免「两处都能改、状态不一致」。
@@ -3855,7 +3910,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-52",
+  ui: "wt-ui-54",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";
@@ -4102,6 +4157,7 @@ window.__wt = {
   await loadPrefs();
   initLookControls();
   await initShellControls();
+  filesAutoOpenBox.checked = filesAutoOpen;
   initBroadcast();
   loadTree();
   try {

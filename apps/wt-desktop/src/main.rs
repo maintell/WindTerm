@@ -809,6 +809,9 @@ struct PrefsDto {
     local_shell_path: String,
     /// `local_shell = "custom"` 时的参数（空格分隔，`"` 包住带空格的段）
     local_shell_args: String,
+    /// SSH 连上就打开文件面板（`FIL-001`）。规格要求默认开、但要能关——
+    /// 有人只想开一个终端。
+    files_auto_open: bool,
 }
 
 /// 一套导入的配色：4 个界面色 + 16 个 ANSI 色，和内置的结构一致。
@@ -837,6 +840,7 @@ impl Default for PrefsDto {
             local_shell: "auto".into(),
             local_shell_path: String::new(),
             local_shell_args: String::new(),
+            files_auto_open: true,
         }
     }
 }
