@@ -2447,7 +2447,17 @@ async function loadDir(path) {
       const row = document.createElement("div");
       row.className = "row name";
       const label = document.createElement("span");
-      label.textContent = e.is_dir ? `${e.name}/` : e.name;
+      // 注意字段名：`RemoteEntryDto` 没有 camelCase 重命名，序列化出来就是 snake_case
+      if (e.is_symlink) {
+        // `name@` 是 `ls -F` 的老习惯；目标放 tooltip，断链单独标色
+        label.textContent = `${e.name}@`;
+        label.title = e.broken
+          ? `断链：${e.link_target ?? "（读不到目标）"} 不存在`
+          : `链接到 ${e.link_target ?? ""}`;
+        label.className = e.broken ? "link broken" : "link";
+      } else {
+        label.textContent = e.is_dir ? `${e.name}/` : e.name;
+      }
       const size = document.createElement("span");
       size.textContent = e.is_dir ? "" : `${e.size}`;
       size.style.color = "#8a8a92";
@@ -4034,7 +4044,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-60",
+  ui: "wt-ui-62",
   /** 「本次记住」存了几条（验收用：只回数量，不回口令） */
   sessionPasswords() {
     return sessionPasswords.size;

@@ -24,6 +24,12 @@ pub struct RemoteEntry {
     pub name: String,
     pub is_dir: bool,
     pub size: u64,
+    /// 符号链接（`FIL-002`）。链接本身没有内容，`size` 通常是目标路径的长度
+    pub is_symlink: bool,
+    /// 链向哪里（服务端原样返回的字符串，可能是相对路径）；非链接为 `None`
+    pub link_target: Option<String>,
+    /// 断链：链接在，但目标不存在——界面上要标出来，否则用户点进去才报错
+    pub broken: bool,
 }
 
 /// 一条 SFTP 会话。
@@ -39,6 +45,15 @@ pub struct SftpClient {
     /// 也就是所有权守卫。删掉它，连接会在 open 返回后立刻失效。
     #[allow(dead_code)]
     owner: Option<SshConnection>,
+}
+
+/// 把链接目标解析成绝对路径：相对目标相对于**链接所在目录**，不是当前目录。
+fn resolve_link(dir: &str, target: &str) -> String {
+    if target.starts_with('/') {
+        target.to_string()
+    } else {
+        format!("{dir}{target}")
+    }
 }
 
 /// 临时文件名后缀：纳秒 + 进程内计数，保证同一秒内多次写也不撞。
@@ -67,22 +82,51 @@ impl SftpClient {
 
     /// 列出目录内容，按「目录在前、然后按名字」排序。
     pub async fn list_dir(&self, path: &str) -> Result<Vec<RemoteEntry>, WtError> {
-        let entries: Vec<RemoteEntry> = self
+        let raw: Vec<(String, bool, bool, u64)> = self
             .inner
             .read_dir(path)
             .await
             .map_err(|e| sftp_error(&format!("无法列出目录 {path}"), e.to_string()))?
             .map(|f| {
                 let meta = f.metadata();
-                RemoteEntry {
-                    is_dir: meta.is_dir(),
-                    size: meta.len(),
-                    name: f.file_name(),
-                }
+                (f.file_name(), meta.is_dir(), meta.is_symlink(), meta.len())
             })
             // 有的服务端会把 . 和 .. 也返回；界面上不需要
-            .filter(|e| e.name != "." && e.name != "..")
+            .filter(|(name, ..)| name != "." && name != "..")
             .collect();
+
+        let dir = if path.ends_with('/') {
+            path.to_string()
+        } else {
+            format!("{path}/")
+        };
+        let mut entries = Vec::with_capacity(raw.len());
+        for (name, is_dir, is_symlink, size) in raw {
+            let mut entry = RemoteEntry {
+                name,
+                is_dir,
+                size,
+                is_symlink,
+                link_target: None,
+                broken: false,
+            };
+            if is_symlink {
+                // 链接目标要单独问一次服务端（`read_dir` 只给属性，不给目标）。
+                // 「断链」也不能靠猜：必须真的去 stat 一次目标，否则界面上分不出
+                // 「链向一个文件」和「链向一个早就没了的路径」。
+                let full = format!("{dir}{}", entry.name);
+                match self.inner.read_link(&full).await {
+                    Ok(target) => {
+                        let resolved = resolve_link(&dir, &target);
+                        entry.broken = self.inner.metadata(&resolved).await.is_err();
+                        entry.link_target = Some(target);
+                    }
+                    // 连目标都读不到，对用户来说就是「链接不可用」
+                    Err(_) => entry.broken = true,
+                }
+            }
+            entries.push(entry);
+        }
 
         Ok(sort_entries(entries))
     }
@@ -542,13 +586,21 @@ mod tests {
         assert_eq!(&buf, b"ping");
     }
 
+    /// 测试用的普通文件/目录条目：链接那几个字段默认「不是链接」。
+    fn flat(name: &str, is_dir: bool, size: u64) -> RemoteEntry {
+        RemoteEntry {
+            name: name.into(),
+            is_dir,
+            size,
+            is_symlink: false,
+            link_target: None,
+            broken: false,
+        }
+    }
+
     #[test]
     fn sorts_directories_first_then_names() {
-        let entries = vec![
-            RemoteEntry { name: "zeta.txt".into(), is_dir: false, size: 1 },
-            RemoteEntry { name: "Alpha".into(), is_dir: true, size: 0 },
-            RemoteEntry { name: "beta.txt".into(), is_dir: false, size: 2 },
-        ];
+        let entries = vec![flat("zeta.txt", false, 1), flat("Alpha", true, 0), flat("beta.txt", false, 2)];
         let sorted = sort_entries(entries);
         let names: Vec<&str> = sorted.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["Alpha", "beta.txt", "zeta.txt"]);

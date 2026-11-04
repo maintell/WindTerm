@@ -189,6 +189,41 @@ async fn sftp_and_shell_share_one_connection() {
 }
 
 #[tokio::test]
+async fn lists_symlinks_with_target_and_broken_flag() {
+    let server = MockSshServer::start().await;
+    {
+        let mut fs = server.fs.lock().await;
+        fs.insert("/real.txt".into(), b"body".to_vec());
+    }
+    {
+        let mut links = server.links.lock().await;
+        // 相对目标：要按**链接所在目录**解析，不是按进程当前目录
+        links.insert("/ok.txt".into(), "real.txt".into());
+        links.insert("/dead.txt".into(), "gone.txt".into());
+    }
+    let conn = SshConnection::connect_password(&cfg(server.port), "secret", HostKeyPolicy::AcceptAll)
+        .await
+        .expect("连接应成功");
+    let sftp = SftpClient::open(conn).await.expect("应能打开 sftp 子系统");
+
+    let entries = sftp.list_dir("/").await.expect("列目录");
+    let ok = entries
+        .iter()
+        .find(|e| e.name == "ok.txt")
+        .expect("ok.txt 应在列表里");
+    assert!(ok.is_symlink, "链接要标成链接，不能当普通文件");
+    assert_eq!(ok.link_target.as_deref(), Some("real.txt"));
+    assert!(!ok.broken, "指向存在的文件，不该判成断链");
+
+    let dead = entries
+        .iter()
+        .find(|e| e.name == "dead.txt")
+        .expect("dead.txt 应在列表里");
+    assert!(dead.is_symlink);
+    assert!(dead.broken, "目标不存在必须标成断链，否则用户点进去才报错");
+}
+
+#[tokio::test]
 async fn atomic_write_replaces_content_and_leaves_no_temp_file() {
     let server = MockSshServer::start().await;
     {

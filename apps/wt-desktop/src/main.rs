@@ -1843,6 +1843,8 @@ async fn ssh_open(
 #[cfg(feature = "e2e-mock")]
 static MOCK_FS: std::sync::OnceLock<wt_ssh::testing::MockFs> = std::sync::OnceLock::new();
 #[cfg(feature = "e2e-mock")]
+static MOCK_LINKS: std::sync::OnceLock<wt_ssh::testing::MockLinks> = std::sync::OnceLock::new();
+#[cfg(feature = "e2e-mock")]
 static MOCK_PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
 
 /// 诊断用：mock 服务端的端口（前端拿不到 stdout，用一个命令问）
@@ -1855,6 +1857,24 @@ fn e2e_mock_port() -> u16 {
     #[cfg(not(feature = "e2e-mock"))]
     {
         0
+    }
+}
+
+/// 端到端验收专用：往 mock 的 SFTP 文件系统里种一个符号链接（`FIL-002`）。
+#[tauri::command]
+async fn mock_seed_link(path: String, target: String) -> Result<(), String> {
+    #[cfg(feature = "e2e-mock")]
+    {
+        let links = MOCK_LINKS
+            .get()
+            .ok_or_else(|| "[E2E_ONLY] mock 服务端未启动".to_string())?;
+        links.lock().await.insert(path, target);
+        Ok(())
+    }
+    #[cfg(not(feature = "e2e-mock"))]
+    {
+        let _ = (path, target);
+        Err("[E2E_ONLY] 该命令只在 e2e-mock 构建里可用".into())
     }
 }
 
@@ -1912,6 +1932,12 @@ struct RemoteEntryDto {
     name: String,
     is_dir: bool,
     size: u64,
+    /// 符号链接（`FIL-002` / `FIL-001` AC-2）
+    is_symlink: bool,
+    /// 链向哪里；非链接为 `None`
+    link_target: Option<String>,
+    /// 断链：链接在、目标没了，界面要标出来
+    broken: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -2009,6 +2035,9 @@ async fn sftp_list(
                 name: e.name,
                 is_dir: e.is_dir,
                 size: e.size,
+                is_symlink: e.is_symlink,
+                link_target: e.link_target,
+                broken: e.broken,
             })
             .collect(),
     };
@@ -2985,6 +3014,7 @@ fn main() {
             import_mobaxterm,
             mock_generate_key,
             mock_seed_file,
+            mock_seed_link,
             e2e_mock_port,
             sftp_list,
             sftp_download,
@@ -3083,6 +3113,7 @@ fn start_mock_ssh_if_requested() {
     tauri::async_runtime::spawn(async {
         let server = wt_ssh::testing::MockSshServer::start().await;
         let _ = MOCK_FS.set(server.fs.clone());
+        let _ = MOCK_LINKS.set(server.links.clone());
         let _ = MOCK_PORT.set(server.port);
         println!("WT_MOCK_SSH_PORT={}", server.port);
 

@@ -196,6 +196,10 @@
       #files-list .row:hover { background: #24242a; }
       #files-list .row.selected { background: #2f4f7f; }
       #files-list .row span:first-child { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+      /* 符号链接（FIL-002）：名字后面带 @，目标在 tooltip 里；断链用颜色标出来，
+         否则用户点进去才发现是死的 */
+      #files-list .row .link { color: #7fb3ff; }
+      #files-list .row .link.broken { color: #ff7b72; text-decoration: line-through; }
       #vault-panel {
         border-bottom: 1px solid #2a2a30;
         padding: 4px 0;

@@ -28,19 +28,25 @@ use tokio::sync::Mutex as AsyncMutex;
 /// mock 的远端文件系统：路径 → 内容。目录靠路径前缀体现，够 SFTP 测试用。
 pub type MockFs = Arc<AsyncMutex<HashMap<String, Vec<u8>>>>;
 
+/// mock 的符号链接表：链接路径 → 目标（`FIL-002`）。目标可以指到不存在的路径，
+/// 那就是断链——客户端必须能分辨，否则界面上只能点进去才报错。
+pub type MockLinks = Arc<AsyncMutex<HashMap<String, String>>>;
+
 /// 内存文件系统上的 SFTP 服务端（只实现列目录/读/写/stat）。
 ///
 /// 刻意不完整——它的价值是让「客户端真的会讲 SFTP」可验证，
 /// 不是替代真实 sshd。
 pub struct MemSftp {
     fs: MockFs,
+    links: MockLinks,
     dir_sent: bool,
 }
 
 impl MemSftp {
-    pub fn new(fs: MockFs) -> Self {
+    pub fn new(fs: MockFs, links: MockLinks) -> Self {
         Self {
             fs,
+            links,
             dir_sent: false,
         }
     }
@@ -115,6 +121,22 @@ impl russh_sftp::server::Handler for MemSftp {
                 File::new(name, attrs)
             })
             .collect::<Vec<_>>();
+        // 符号链接单独一张表：`entries` 只列本层，属性里标成 S_IFLNK，
+        // 客户端靠它区分「链接」与「文件」
+        let mut files = files;
+        let links = self.links.lock().await;
+        for (path, target) in links.iter() {
+            let Some(rest) = path.strip_prefix(&prefix) else {
+                continue;
+            };
+            if rest.is_empty() || rest.contains('/') {
+                continue;
+            }
+            let mut attrs = FileAttributes::empty();
+            attrs.permissions = Some(0o777 | 0o120000); // S_IFLNK
+            attrs.size = Some(target.len() as u64);
+            files.push(File::new(rest, attrs));
+        }
         Ok(Name { id, files })
     }
 
@@ -264,10 +286,29 @@ impl russh_sftp::server::Handler for MemSftp {
         attrs.size = Some(content.len() as u64);
         Ok(Attrs { id, attrs })
     }
+
+    /// 读链接目标（`FIL-002`）。协议回的 `Name` 里第一条的文件名就是目标，
+    /// 客户端（russh-sftp）正是这么取的。
+    async fn readlink(&mut self, id: u32, path: String) -> Result<Name, StatusCode> {
+        let links = self.links.lock().await;
+        match links.get(&path) {
+            Some(target) => {
+                let mut attrs = FileAttributes::empty();
+                attrs.permissions = Some(0o777 | 0o120000); // S_IFLNK
+                attrs.size = Some(target.len() as u64);
+                Ok(Name {
+                    id,
+                    files: vec![File::new(target.clone(), attrs)],
+                })
+            }
+            None => Err(StatusCode::NoSuchFile),
+        }
+    }
 }
 
 struct MockServer {
     fs: MockFs,
+    links: MockLinks,
 }
 
 impl russh::server::Server for MockServer {
@@ -277,6 +318,7 @@ impl russh::server::Server for MockServer {
             channels: Arc::new(AsyncMutex::new(HashMap::new())),
             subsystems: Arc::new(AsyncMutex::new(std::collections::HashSet::new())),
             fs: self.fs.clone(),
+            links: self.links.clone(),
             input_buf: String::new(),
             forward_stops: HashMap::new(),
         }
@@ -290,6 +332,8 @@ struct MockHandler {
     subsystems: Arc<AsyncMutex<std::collections::HashSet<ChannelId>>>,
     /// SFTP 子系统用的内存文件系统
     fs: MockFs,
+    /// SFTP 子系统的符号链接表（`FIL-002`）
+    links: MockLinks,
     /// shell 收到的输入累积（按字符截断）。客户端是**逐键**发的，
     /// 想识别一段词就必须累积，否则永远匹配不到整词。
     input_buf: String,
@@ -442,7 +486,7 @@ impl russh::server::Handler for MockHandler {
             }
             "sftp" => {
                 session.channel_success(channel_id)?;
-                let handler = MemSftp::new(self.fs.clone());
+                let handler = MemSftp::new(self.fs.clone(), self.links.clone());
                 // 必须 spawn：在 handler 里 await 服务端会挡住连接循环，
                 // 客户端发来的报文永远读不到（表现为服务端「立刻退出」）
                 tokio::spawn(async move {
@@ -649,6 +693,8 @@ pub struct MockSshServer {
     pub port: u16,
     /// SFTP 子系统的内存文件系统：用例在连接前预置、连接后检查
     pub fs: MockFs,
+    /// 符号链接表：链接路径 → 目标（`FIL-002`）。目标不存在就是断链
+    pub links: MockLinks,
 }
 
 impl MockSshServer {
@@ -674,14 +720,16 @@ impl MockSshServer {
 
         let server: &'static mut MockServer = Box::leak(Box::new(MockServer {
             fs: Arc::new(AsyncMutex::new(HashMap::new())),
+            links: Arc::new(AsyncMutex::new(HashMap::new())),
         }));
         let fs = server.fs.clone();
+        let links = server.links.clone();
         tokio::spawn(server.run_on_socket(config, listener));
 
         // 给监听循环一点时间就绪，减少首连抖动
         tokio::time::sleep(Duration::from_millis(30)).await;
 
-        Self { port, fs }
+        Self { port, fs, links }
     }
 
     /// 生成一份可被服务端接受的 OpenSSH 私钥。

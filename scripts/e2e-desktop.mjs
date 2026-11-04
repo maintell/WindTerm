@@ -4372,6 +4372,68 @@ try {
   await closeAllTabs();
   await setRemember("persist");
 
+  // 19t. 符号链接（`FIL-002` / `FIL-001` AC-2）
+  //
+  // 种一个正常链接与一个断链：界面上要能一眼分开，否则用户点进去才报错。
+  await closeAllDialogs();
+  await closeAllTabs();
+  await cdp.eval(`window.__TAURI__.core.invoke("mock_seed_file", { path: "/notes.txt", content: "eA==" })`);
+  await cdp.eval(`window.__TAURI__.core.invoke("mock_seed_link", { path: "/ok.txt", target: "notes.txt" })`);
+  await cdp.eval(`window.__TAURI__.core.invoke("mock_seed_link", { path: "/dead.txt", target: "gone.txt" })`);
+  await clickSessionNode("mock-ssh");
+  await fillInput("#password", "secret");
+  await ensureFilesPanel(true);
+  // 面板会还原该会话上次浏览的目录：一路回到根目录，才看得到刚种在 / 下的链接
+  for (let i = 0; i < 5; i += 1) {
+    const at = await cdp.eval(`document.getElementById("files-path").textContent`);
+    if (at === "/") break;
+    await clickElement("#files-up");
+    // 这里不能用 waitScreenStable：此时一个终端标签都没开，它的判据是「终端输出安静」，
+    // 没有终端时就永远等不到。等**路径变了**才是这件事的完成信号。
+    await waitFor(
+      async () => {
+        const p = await cdp.eval(`document.getElementById("files-path").textContent`);
+        return p !== at;
+      },
+      { timeout: 8000, label: "回到上一层" },
+    ).catch(() => null);
+  }
+  // 强制重列：自动打开时可能已经列过一次（那时链接还没种进去）
+  await cdp.eval(`(() => {
+    const sel = document.getElementById("files-session");
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    return sel.value;
+  })()`);
+  const linkView = await waitFor(
+    async () => {
+      const s = await cdp.eval(`(() => {
+        const pick = (name) =>
+          [...document.querySelectorAll("#files-list .row")].find((r) =>
+            r.textContent.startsWith(name),
+          );
+        const ok = pick("ok.txt");
+        const dead = pick("dead.txt");
+        return {
+          okText: ok ? ok.textContent : null,
+          okTitle: ok ? (ok.querySelector("span")?.title ?? "") : "",
+          deadClass: dead ? (dead.querySelector("span")?.className ?? "") : null,
+        };
+      })()`);
+      return s.okText && s.deadClass !== null ? s : null;
+    },
+    { timeout: 15000, label: "符号链接行" },
+  ).catch(() => null);
+  check(
+    "符号链接显示为 name@ 且 tooltip 给出目标（FIL-002）",
+    linkView !== null && linkView.okText.startsWith("ok.txt@") && linkView.okTitle.includes("notes.txt"),
+    JSON.stringify(linkView),
+  );
+  check(
+    "断链单独标色，而不是伪装成普通文件（FIL-002）",
+    linkView !== null && linkView.deadClass === "link broken",
+    linkView ? linkView.deadClass : "没找到 dead.txt",
+  );
+
   // 18. 页面无未捕获异常
   check("页面无未捕获异常", cdp.exceptions.length === 0, cdp.exceptions.join(" | ") || "0 条");
 
