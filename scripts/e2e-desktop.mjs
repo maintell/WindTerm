@@ -580,6 +580,47 @@ function socksExchange(proxyPort, targetHost, targetPort, payload) {
  * `which`：`toggle` = 启动/停止（第一个按钮），`delete` = 删除（第二个）。
  * 停止后配置仍留在库里（灰灯），所以「删除」是独立的一步。
  */
+/** 在会话树上右键某个节点（真实右键事件，让页面的 contextmenu 监听自己触发） */
+async function rightClickNode(name) {
+  const box = await cdp.eval(`(() => {
+    const el = [...document.querySelectorAll("#tree-body .node")].find(
+      (n) => n.textContent === ${JSON.stringify(name)},
+    );
+    if (!el) return null;
+    el.scrollIntoView({ block: "nearest" });
+    const r = el.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  })()`);
+  if (!box) throw new Error(`会话树里找不到 ${name}`);
+  const base = { x: box.x, y: box.y, button: "right" };
+  await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...base, clickCount: 1 });
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...base, clickCount: 1 });
+  await waitFor(
+    async () => ((await cdp.eval(`document.getElementById("ctx-menu").hidden`)) ? null : true),
+    { timeout: 5000, label: "右键菜单" },
+  );
+}
+
+/** 点右键菜单里的一项（按文本找） */
+async function clickCtxItem(label) {
+  const box = await cdp.eval(`(() => {
+    const btn = [...document.querySelectorAll("#ctx-menu button")].find(
+      (b) => b.textContent === ${JSON.stringify(label)},
+    );
+    if (!btn) return null;
+    const r = btn.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  })()`);
+  if (!box) throw new Error(`右键菜单里没有「${label}」`);
+  await clickAt(box);
+}
+
+/** 命名对话框：填名字并确定 */
+async function confirmName(text) {
+  await fillInput("#name-input", text);
+  await clickElement("#name-ok");
+}
+
 async function clickTunnelButton(kind, which) {
   const idx = which === "delete" ? 1 : 0;
   const box = await cdp.eval(`(() => {
@@ -785,7 +826,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-28",
+    uiVersion === "wt-ui-29",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -2657,7 +2698,51 @@ try {
   check("切到 GBK 后能把 GBK 字节解成中文", gbkText !== null);
   await closeAllTabs();
 
-  // 19d. 外观与回滚（`TER-005` / `TER-008`）：主题要真的落到 xterm 上，
+  // 19e. 会话上下文菜单（`SES-014`）：重命名 / 复制 / 新建子文件夹
+  await clickElement("#refresh");
+  await rightClickNode("mock-ssh");
+  const menuItems = await cdp.eval(`[...document.querySelectorAll("#ctx-menu button")].map((b) => b.textContent)`);
+  check(
+    "右键会话出现上下文菜单（重命名/复制/移动到）",
+    ["重命名", "复制", "移动到…"].every((x) => menuItems.includes(x)),
+    JSON.stringify(menuItems),
+  );
+
+  await clickCtxItem("复制");
+  await waitFor(
+    async () => ((await cdp.eval(`document.getElementById("name-dialog").open`)) ? true : null),
+    { timeout: 5000, label: "复制对话框" },
+  );
+  await confirmName("mock-ssh 副本");
+  const copied = await waitFor(
+    async () => {
+      const names = await cdp.eval(`window.__wt.sessions()`);
+      return names.includes("mock-ssh 副本") ? names : null;
+    },
+    { timeout: 10000, label: "复制会话" },
+  );
+  check("复制会话后树里出现新条目", copied.includes("mock-ssh 副本"), `${copied.length} 条`);
+
+  await rightClickNode("Lab");
+  await clickCtxItem("新建子文件夹");
+  await waitFor(
+    async () => ((await cdp.eval(`document.getElementById("name-dialog").open`)) ? true : null),
+    { timeout: 5000, label: "新建文件夹对话框" },
+  );
+  await confirmName("sub-net");
+  // 文件夹节点不是 `.node.session`，`__wt.sessions()` 看不到它们——直接读文件夹节点
+  const folderMade = await waitFor(
+    async () => {
+      const names = await cdp.eval(
+        `[...document.querySelectorAll("#tree-body .node.folder")].map((n) => n.textContent)`,
+      );
+      return names.includes("sub-net") ? names : null;
+    },
+    { timeout: 10000, label: "新建子文件夹" },
+  );
+  check("右键文件夹能新建子文件夹", folderMade.includes("sub-net"), folderMade.join("、"));
+
+  // 19f. 外观与回滚（`TER-005` / `TER-008`）：主题要真的落到 xterm 上，
   //      只改下拉框不算（把 theme 传空也能骗过那种断言）
   await closeAllTabs();
   await clickSessionNode("mock-ssh");

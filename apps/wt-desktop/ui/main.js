@@ -679,11 +679,13 @@ function renderTree(dto) {  lastTree = dto;
     byFolder.get(k).push(s);
   }
 
-  const addNode = (text, cls, depth, onClick) => {
+  const addNode = (text, cls, depth, onClick, data = {}) => {
     const el = document.createElement("div");
     el.className = `node ${cls}`;
     el.style.paddingLeft = `${8 + depth * 12}px`;
     el.textContent = text;
+    // 右键菜单靠这几个 id 找回对象：树节点是纯文本，没有别的身份标识
+    Object.assign(el.dataset, data);
     if (onClick) el.addEventListener("click", onClick);
     treeBody.appendChild(el);
     return el;
@@ -697,12 +699,12 @@ function renderTree(dto) {  lastTree = dto;
         f.name.toLowerCase().includes(query) ||
         folderHasMatch(f.id, query, byParent, byFolder);
       if (!keep) continue;
-      addNode(f.name, "folder", depth);
+      addNode(f.name, "folder", depth, null, { folderId: f.id });
       walk(f.id, depth + 1);
     }
     for (const s of byFolder.get(key) ?? []) {
       if (query && !s.name.toLowerCase().includes(query)) continue;
-      addNode(s.name, "session", depth, () => selectSession(s));
+      addNode(s.name, "session", depth, () => selectSession(s), { sessionId: s.id });
     }
   };
   walk("", 0);
@@ -719,6 +721,170 @@ function renderTree(dto) {  lastTree = dto;
 
 filterInput.addEventListener("input", () => {
   if (lastTree) renderTree(lastTree);
+});
+
+// ── 右键菜单（`SES-014`）──────────────────────────────────
+//
+// 只列「当前这个对象能做什么」：会话给重命名/复制/移动到/删除，文件夹给重命名/新建子文件夹。
+// 把全局动作（导入、刷新）也塞进来会让菜单变成第二个工具栏。
+
+const ctxMenu = document.getElementById("ctx-menu");
+const pickDialog = document.getElementById("pick-dialog");
+const pickTitle = document.getElementById("pick-title");
+const pickSelect = document.getElementById("pick-select");
+
+function closeCtxMenu() {
+  ctxMenu.hidden = true;
+}
+
+function showCtxMenu(x, y, items) {
+  ctxMenu.textContent = "";
+  for (const it of items) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = it.label;
+    b.addEventListener("click", () => {
+      closeCtxMenu();
+      void it.run();
+    });
+    ctxMenu.appendChild(b);
+  }
+  ctxMenu.hidden = false;
+  // 靠边右键时不要溢出视口：先量再定位置（先定位置再量会闪一下）
+  const r = ctxMenu.getBoundingClientRect();
+  ctxMenu.style.left = `${Math.max(0, Math.min(x, innerWidth - r.width - 4))}px`;
+  ctxMenu.style.top = `${Math.max(0, Math.min(y, innerHeight - r.height - 4))}px`;
+}
+
+function askPick(title, options, current) {
+  pickTitle.textContent = title;
+  pickSelect.textContent = "";
+  for (const o of options) {
+    const el = document.createElement("option");
+    el.value = o.value;
+    el.textContent = o.label;
+    pickSelect.appendChild(el);
+  }
+  pickSelect.value = current;
+  pickDialog.returnValue = "";
+  pickDialog.showModal();
+  pickSelect.focus();
+  return new Promise((resolve) => {
+    pickDialog.addEventListener(
+      "close",
+      () => resolve(pickDialog.returnValue === "yes" ? pickSelect.value : null),
+      { once: true },
+    );
+  });
+}
+
+/** 会话的保存参数：改名/复制都要把**其它字段原样带回去**，否则会被清空 */
+function sessionReqOf(s, name) {
+  return {
+    id: s.id,
+    name,
+    host: s.host ?? "",
+    port: s.port ?? 22,
+    user: s.username ?? "",
+    // 跳板是会话属性：这里传 null 会把它清掉，所以必须带原值
+    jumpSessionId: s.options?.jumpSessionId ?? null,
+  };
+}
+
+async function renameSession(s) {
+  const name = await askName("重命名会话", s.name);
+  if (!name || name === s.name) return;
+  try {
+    await invoke("session_save", { req: sessionReqOf(s, name) });
+    await loadTree();
+    setStatus(`已重命名：${name}`);
+  } catch (e) {
+    setStatus(`重命名失败：${e}`);
+  }
+}
+
+async function duplicateSession(s) {
+  const name = await askName("复制为新名字", `${s.name} 副本`);
+  if (!name) return;
+  try {
+    const req = sessionReqOf(s, name);
+    delete req.id; // 没有 id 才是新建
+    await invoke("session_save", { req });
+    await loadTree();
+    setStatus(`已复制：${name}`);
+  } catch (e) {
+    setStatus(`复制失败：${e}`);
+  }
+}
+
+async function moveSession(s) {
+  const folders = lastTree?.folders ?? [];
+  const options = [{ value: "", label: "（根目录）" }].concat(
+    folders.map((f) => ({ value: f.id, label: f.name })),
+  );
+  const pick = await askPick("移动到文件夹", options, s.folder_id ?? "");
+  if (pick === null) return;
+  try {
+    await invoke("session_move", { sessionId: s.id, folderId: pick || null });
+    await loadTree();
+    setStatus("已移动");
+  } catch (e) {
+    setStatus(`移动失败：${e}`);
+  }
+}
+
+async function newSubFolder(parentId) {
+  const name = await askName("新建子文件夹", "");
+  if (!name) return;
+  try {
+    await invoke("folder_save", { req: { name, parentId } });
+    await loadTree();
+    setStatus(`已新建文件夹：${name}`);
+  } catch (e) {
+    setStatus(`新建文件夹失败：${e}`);
+  }
+}
+
+async function renameFolder(f) {
+  const name = await askName("重命名文件夹", f.name);
+  if (!name || name === f.name) return;
+  try {
+    await invoke("folder_save", { req: { id: f.id, name } });
+    await loadTree();
+    setStatus(`已重命名文件夹：${name}`);
+  } catch (e) {
+    setStatus(`重命名失败：${e}`);
+  }
+}
+
+treeBody.addEventListener("contextmenu", (ev) => {
+  const node = ev.target.closest?.(".node");
+  if (!node) return;
+  ev.preventDefault();
+  const sessionId = node.dataset.sessionId;
+  const folderId = node.dataset.folderId;
+  if (sessionId) {
+    const s = (lastTree?.sessions ?? []).find((x) => x.id === sessionId);
+    if (!s) return;
+    showCtxMenu(ev.clientX, ev.clientY, [
+      { label: "重命名", run: () => renameSession(s) },
+      { label: "复制", run: () => duplicateSession(s) },
+      { label: "移动到…", run: () => moveSession(s) },
+    ]);
+  } else if (folderId) {
+    const f = (lastTree?.folders ?? []).find((x) => x.id === folderId);
+    if (!f) return;
+    showCtxMenu(ev.clientX, ev.clientY, [
+      { label: "重命名", run: () => renameFolder(f) },
+      { label: "新建子文件夹", run: () => newSubFolder(f.id) },
+    ]);
+  }
+});
+
+// 点别处或按 Esc 就关掉：菜单留在屏幕上会挡住底下的节点
+document.addEventListener("click", closeCtxMenu);
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape") closeCtxMenu();
 });
 
 async function loadTree() {
@@ -2255,7 +2421,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-28",
+  ui: "wt-ui-29",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";

@@ -488,6 +488,18 @@ fn credential_get(
     }
 }
 
+/// 新建/重命名文件夹（`SES-014`）。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FolderSaveReq {
+    #[serde(default)]
+    id: Option<String>,
+    name: String,
+    /// 只在新建时生效：父文件夹（空表示根）
+    #[serde(default)]
+    parent_id: Option<String>,
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SessionSaveReq {
@@ -503,6 +515,70 @@ struct SessionSaveReq {
     /// 跳板机会话（`SES-024`）：存进 `options.jumpSessionId`，保存时做环检测
     #[serde(default)]
     jump_session_id: Option<String>,
+}
+
+/// 新建或重命名文件夹（`SES-014`）。
+///
+/// 重命名时不接受 `parentId`：改名不该顺手把文件夹搬到别处——那是两个动作，
+/// 合并会让用户在「只改个名字」之后发现结构也变了。
+#[tauri::command]
+fn folder_save(req: FolderSaveReq) -> Result<String, String> {
+    let name = req.name.trim();
+    if name.is_empty() {
+        return Err("[FOLDER_BAD_ARGUMENT] 文件夹名称不能为空".into());
+    }
+    let mut store = wt_store::Store::open(&sessions_db_path()).map_err(|e| e.to_string())?;
+    let existing = match &req.id {
+        Some(id) => store
+            .load_snapshot()
+            .map_err(|e| e.to_string())?
+            .folders
+            .into_iter()
+            .find(|f| f.id.as_str() == id),
+        None => None,
+    };
+    let mut folder = existing.unwrap_or_else(|| wt_core::Folder {
+        id: wt_core::FolderId::new(),
+        parent_id: None,
+        name: String::new(),
+        sort_order: 0,
+        color: None,
+        environment: None,
+        collapsed: false,
+        rev: 1,
+    });
+    folder.name = name.to_string();
+    if req.id.is_none() {
+        folder.parent_id = req
+            .parent_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(wt_core::FolderId::from);
+    }
+    let id = folder.id.as_str().to_string();
+    store.upsert_folder(&folder).map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+/// 把会话移到某个文件夹（`folderId` 为空表示移到根）。`SES-014` 的「移动到」。
+#[tauri::command]
+fn session_move(session_id: String, folder_id: Option<String>) -> Result<(), String> {
+    let mut store = wt_store::Store::open(&sessions_db_path()).map_err(|e| e.to_string())?;
+    let mut session = store
+        .load_snapshot()
+        .map_err(|e| e.to_string())?
+        .sessions
+        .into_iter()
+        .find(|s| s.id.as_str() == session_id)
+        .ok_or_else(|| "[SESSION_NOT_FOUND] 会话不存在（可能已被删除）".to_string())?;
+    session.folder_id = folder_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(wt_core::FolderId::from);
+    store.upsert_session(&session).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// 新建或更新一条会话。
@@ -2206,7 +2282,9 @@ fn main() {
             credential_list,
             credential_delete,
             session_save,
-            session_delete
+            session_delete,
+            folder_save,
+            session_move
         ])
         .run(tauri::generate_context!())
         .expect("启动 WindTerm 失败");

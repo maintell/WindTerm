@@ -283,6 +283,49 @@
         flex: none;
       }
       #term-foot[hidden] { display: none; }
+      /* 右键菜单（SES-014）：只做「当前对象能做什么」，不堆全局命令 */
+      #ctx-menu {
+        position: fixed;
+        z-index: 30;
+        display: flex;
+        flex-direction: column;
+        min-width: 120px;
+        padding: 2px;
+        background: #24242a;
+        border: 1px solid #3a3a44;
+        border-radius: 6px;
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+      }
+      #ctx-menu[hidden] { display: none; }
+      #ctx-menu button {
+        background: none;
+        border: none;
+        color: var(--fg);
+        text-align: left;
+        padding: 4px 10px;
+        font: inherit;
+        font-size: 12px;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      #ctx-menu button:hover { background: #2f4f7f; }
+      #pick-dialog {
+        background: #24242a;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 8px;
+        padding: 12px 14px;
+      }
+      #pick-dialog select {
+        width: 100%;
+        background: #2a2a30;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 4px;
+        padding: 3px 6px;
+        font: inherit;
+        margin-bottom: 10px;
+      }
       #term-foot select,
       #term-foot input {
         background: #2a2a30;
@@ -601,6 +644,18 @@
     </div>
     <!-- 多行粘贴确认（TER-013）。用原生 <dialog> 而不是 window.confirm：
          后者会阻塞整个渲染进程，终端在那段时间里连输出都刷不出来。 -->
+    <div id="ctx-menu" hidden></div>
+    <!-- 选文件夹：用原生 dialog + select，和命名对话框同一套路数 -->
+    <dialog id="pick-dialog">
+      <form method="dialog">
+        <p id="pick-title"></p>
+        <select id="pick-select"></select>
+        <menu>
+          <button value="yes">确定</button>
+          <button value="cancel">取消</button>
+        </menu>
+      </form>
+    </dialog>
     <dialog id="paste-confirm">
       <form method="dialog">
         <p id="paste-info"></p>
