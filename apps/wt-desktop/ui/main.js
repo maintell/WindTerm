@@ -2413,6 +2413,95 @@ let filesSessionId = "";
 /** 每个会话各自记住自己浏览到哪（切换会话不该把路径带回根目录） */
 const filesPaths = new Map();
 
+const filesTree = document.getElementById("files-tree");
+
+/**
+ * 侧栏目录树（`FIL-001`）：按需展开，一个目录点开才去 `sftp_list`，
+ * 不预先爬整棵树——远端目录可能很大，进面板就爬一遍等于自找卡顿。
+ *
+ * 只列**目录**：文件已经在右边的列表里，树里再放一遍只会更难找。
+ */
+const ftree = new Map(); // path -> { expanded, children }
+
+async function ftreeChildren(path) {
+  const node = ftree.get(path);
+  if (node?.children) return node.children;
+  const r = await withDeadline(
+    invoke("sftp_list", { arg: { req: filesReq(), path, jump: jumpReq() } }),
+    20000,
+    "读目录树",
+  );
+  const dirs = r.entries.filter((e) => e.is_dir).map((e) => e.name);
+  ftree.set(path, { ...(node ?? {}), children: dirs });
+  return dirs;
+}
+
+async function toggleTreeDir(path) {
+  const node = ftree.get(path) ?? { children: null };
+  const next = { ...node, expanded: !node.expanded };
+  ftree.set(path, next);
+  if (next.expanded) {
+    try {
+      await ftreeChildren(path);
+    } catch (e) {
+      setFilesMsg(`展开 ${path} 失败：${e}`);
+    }
+  }
+  renderFileTree();
+}
+
+function renderFileTree() {
+  const rows = [];
+  const walk = (path, depth) => {
+    const node = ftree.get(path);
+    if (!node?.expanded || !node.children) return;
+    for (const name of node.children) {
+      const full = joinPath(path, name);
+      rows.push({ path: full, name, depth, expanded: !!ftree.get(full)?.expanded });
+      walk(full, depth + 1);
+    }
+  };
+  walk("/", 0);
+  filesTree.textContent = "";
+  for (const r of rows) {
+    const row = document.createElement("div");
+    row.className = r.path === sftpPath ? "ftree-row selected" : "ftree-row";
+    row.dataset.path = r.path;
+    row.style.paddingLeft = `${6 + r.depth * 10}px`;
+    const toggle = document.createElement("span");
+    toggle.className = "ftree-toggle";
+    toggle.textContent = r.expanded ? "▾" : "▸";
+    toggle.title = r.expanded ? "收起" : "展开";
+    toggle.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      void toggleTreeDir(r.path);
+    });
+    const name = document.createElement("span");
+    name.textContent = r.name;
+    name.title = r.path;
+    row.append(toggle, name);
+    row.addEventListener("click", async () => {
+      await loadDir(r.path);
+      renderFileTree();
+    });
+    filesTree.appendChild(row);
+  }
+}
+
+/** 面板打开时把根目录展开一次：树不能是空的，否则用户以为没有目录 */
+async function initFileTree() {
+  const node = ftree.get("/") ?? { children: null };
+  ftree.set("/", { ...node, expanded: true });
+  try {
+    await ftreeChildren("/");
+  } catch (e) {
+    // 把原因同时挂到树上：树是空的时，光看「空」分不出「没有目录」还是「读失败了」
+    filesTree.dataset.err = String(e);
+    setFilesMsg(`读取目录树失败：${e}`);
+  }
+  renderFileTree();
+}
+
 const filesSessionSelect = document.getElementById("files-session");
 
 /** 文件面板用的连接参数：选了会话就用会话的，否则跟随表单。 */
@@ -2614,7 +2703,13 @@ filesSessionSelect.addEventListener("change", async () => {
 });
 
 filesUp.addEventListener("click", () => loadDir(parentPath(sftpPath)));
-filesRefresh.addEventListener("click", () => loadDir(sftpPath));
+filesRefresh.addEventListener("click", async () => {
+  await loadDir(sftpPath);
+  // 目录树也跟着刷：缓存里的子目录可能已经变了（`FIL-001`）。
+  // 刷新会把树收回到根层——保留展开状态得记住每条路径，收益不值这个复杂度。
+  ftree.clear();
+  await initFileTree();
+});
 
 /** 选中某一行（只改状态，不发请求）。 */
 // 改权限位（`FIL-002` 的 `SETSTAT`）。输入用八进制——`chmod 644` 是所有人都会的写法，
@@ -2929,6 +3024,7 @@ document.getElementById("files-toggle").addEventListener("click", async () => {
   }
   openSidePanel(filesPanel);
   await loadDir("/");
+  await initFileTree();
 });
 
 /**
@@ -2959,6 +3055,7 @@ async function autoOpenFiles() {
     filesSessionSelect.value = picked;
   }
   openSidePanel(filesPanel);
+  await initFileTree();
   const remembered = filesPaths.get(filesSessionId) ?? "/";
   if (await loadDir(remembered)) return;
   if (remembered === "/") return;
@@ -4416,7 +4513,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-73",
+  ui: "wt-ui-74",
   /** 「本次记住」存了几条（验收用：只回数量，不回口令） */
   sessionPasswords() {
     return sessionPasswords.size;

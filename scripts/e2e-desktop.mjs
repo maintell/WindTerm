@@ -4948,6 +4948,96 @@ try {
   );
   await closeAllDialogs();
 
+  // 19z. 侧栏目录树（`FIL-001`）
+  //
+  // 只列目录、按需展开：一个目录点开才去 `sftp_list`，不预先爬整棵树。
+  await closeAllDialogs();
+  await closeAllTabs();
+  await cdp.eval(`window.__TAURI__.core.invoke("mock_seed_file", { path: "/treeA/", content: "" })`);
+  await cdp.eval(`window.__TAURI__.core.invoke("mock_seed_file", { path: "/treeA/inner/", content: "" })`);
+  await cdp.eval(`(() => {
+    const set = (id, v) => {
+      const el = document.getElementById(id);
+      el.value = v;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    set("host", "127.0.0.1");
+    set("port", ${JSON.stringify(String(sshPort))});
+    set("user", "tester");
+    set("password", "secret");
+    set("files-session", "");
+    return true;
+  })()`);
+  await ensureFilesPanel(true);
+  // 刷新按钮会重建目录树（顺带把这条真实路径也验了）
+  await clickElement("#files-refresh");
+  const treeRoot = await waitFor(
+    async () => {
+      const paths = await cdp.eval(`
+        [...document.querySelectorAll("#files-tree .ftree-row")].map((r) => r.dataset.path)
+      `);
+      return paths.includes("/treeA") ? paths : null;
+    },
+    { timeout: 20000, label: "目录树根层" },
+  ).catch(() => null);
+  const treeDiag =
+    treeRoot !== null
+      ? treeRoot.join("、")
+      : `树是空的；msg=${await cdp.eval(`document.getElementById("files-msg").textContent`)} err=${await cdp.eval(`document.getElementById("files-tree").dataset.err ?? ""`)}`;
+  check("侧栏目录树列出根目录下的目录（FIL-001）", treeRoot !== null, treeDiag);
+
+  // 展开 treeA：出现孙目录 inner
+  await cdp.eval(`(() => {
+    const row = [...document.querySelectorAll("#files-tree .ftree-row")].find((r) =>
+      r.dataset.path === "/treeA",
+    );
+    row?.querySelector(".ftree-toggle")?.click();
+    return true;
+  })()`);
+  const treeChild = await waitFor(
+    async () => {
+      const paths = await cdp.eval(`
+        [...document.querySelectorAll("#files-tree .ftree-row")].map((r) => r.dataset.path)
+      `);
+      return paths.includes("/treeA/inner") ? paths : null;
+    },
+    { timeout: 15000, label: "展开子目录" },
+  ).catch(() => null);
+  check(
+    "展开目录时才去读子目录（懒加载，FIL-001）",
+    treeChild !== null,
+    treeChild ? treeChild.join("、") : "没展开",
+  );
+
+  // 点树里的目录：列表跟着进那一层，并且该节点被标成选中
+  await cdp.eval(`(() => {
+    const row = [...document.querySelectorAll("#files-tree .ftree-row")].find((r) =>
+      r.dataset.path === "/treeA",
+    );
+    row?.click();
+    return true;
+  })()`);
+  const treeNav = await waitFor(
+    async () => {
+      const s = await cdp.eval(`({
+        path: document.getElementById("files-path").textContent,
+        selected: document.querySelector("#files-tree .ftree-row.selected")?.dataset.path ?? null,
+      })`);
+      return s.path === "/treeA" ? s : null;
+    },
+    { timeout: 15000, label: "点树导航" },
+  ).catch(() => null);
+  check(
+    "点目录树能跳到该目录（FIL-001）",
+    treeNav !== null,
+    treeNav ? treeNav.path : "没跳过去",
+  );
+  check(
+    "树里高亮当前所在目录（FIL-001）",
+    treeNav?.selected === "/treeA",
+    `${treeNav?.selected ?? "没有选中"}`,
+  );
+
   // 18. 页面无未捕获异常
   check("页面无未捕获异常", cdp.exceptions.length === 0, cdp.exceptions.join(" | ") || "0 条");
 

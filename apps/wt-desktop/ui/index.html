@@ -188,6 +188,19 @@
         cursor: pointer;
       }
       #files button:hover { border-color: var(--accent); }
+      /* 目录树（FIL-001）：只列目录，固定高度可滚，别把列表面板挤没 */
+      #files-tree {
+        max-height: 120px;
+        overflow: auto;
+        border-bottom: 1px solid #2a2a30;
+        font-size: 12px;
+        flex: none;
+      }
+      #files-tree:empty { display: none; }
+      #files-tree .ftree-row { display: flex; align-items: center; gap: 2px; padding: 1px 6px; cursor: pointer; }
+      #files-tree .ftree-row:hover { background: #24242a; }
+      #files-tree .ftree-row.selected { background: #2f4f7f; }
+      #files-tree .ftree-toggle { width: 12px; color: #8a8a92; }
       #files-list { flex: 1; overflow: auto; }
       /* 拖拽进入时给个明确的目标提示，否则用户不知道能往哪放 */
       #files-list.dropping { outline: 2px dashed var(--accent); outline-offset: -2px; }
@@ -1046,6 +1059,7 @@
             <button id="files-upload-btn" title="上传本地文件到当前目录">上传</button>
             <button id="files-refresh" title="刷新">⟳</button>
           </div>
+          <div id="files-tree" aria-label="远端目录树"></div>
           <div id="files-list"></div>
           <div id="files-foot"><span id="files-msg"></span></div>
           <input id="files-upload" type="file" multiple hidden />
