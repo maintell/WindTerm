@@ -3760,7 +3760,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-47",
+  ui: "wt-ui-48",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";
@@ -3867,6 +3867,34 @@ window.__wt = {
   get fontSize() {
     return fontSize;
   },
+  /**
+   * 找包含某段文字的行号（在回滚缓冲里从第 0 行扫）。验收用。
+   *
+   * `TER-024`（24 位色）与 `TER-025`（CJK 占两列）没法从屏幕文本看出来，
+   * 只能读 xterm 的 buffer——那里才有颜色与单元格宽度。
+   */
+  findRow(text) {
+    const buf = active?.term.buffer.active;
+    if (!buf) return null;
+    for (let i = 0; i < buf.length; i += 1) {
+      const line = buf.getLine(i);
+      if (line && line.translateToString(true).includes(text)) return i;
+    }
+    return null;
+  },
+  /** 读某个单元格：文字、占几列、前景色（24 位色时 `fg` 就是 0xRRGGBB）。验收用。 */
+  cellAt(row, col) {
+    const line = active?.term.buffer.active.getLine(row);
+    const cell = line?.getCell(col);
+    if (!cell) return null;
+    return {
+      text: cell.getChars(),
+      width: cell.getWidth(),
+      fg: cell.getFgColor(),
+      fgIsRgb: cell.isFgRGB(),
+    };
+  },
+
   /** 终端输出编码（`TER-006`，验收读它而不是去解析下拉框） */
   get encoding() {
     return encoding;

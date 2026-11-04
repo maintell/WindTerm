@@ -903,7 +903,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-47",
+    uiVersion === "wt-ui-48",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -3003,6 +3003,14 @@ try {
     { timeout: 15000, label: "按 GBK 解码出中文" },
   );
   check("切到 GBK 后能把 GBK 字节解成中文", gbkText !== null);
+  // 编码是持久化的：留着 GBK 会把后面用例的 UTF-8 输出解成乱码（涓枃），
+  // 所以验完立刻切回 UTF-8——不看对话框是否打开，元素本身就在
+  await cdp.eval(`(() => {
+    const sel = document.getElementById("encoding");
+    sel.value = "utf-8";
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    return window.__wt.encoding;
+  })()`);
   await closeAllTabs();
 
   // 19e. 会话上下文菜单（`SES-014`）：重命名 / 复制 / 新建子文件夹
@@ -3306,6 +3314,77 @@ try {
     { timeout: 10000, label: "关闭分屏" },
   );
   check("关闭分屏后会话都回到左 pane", splitOff.a === 2, `左 ${splitOff.a} 个`);
+  await closeAllTabs();
+
+  // 19l. Truecolor 与宽字符（`TER-024` / `TER-025`）：从 buffer 里读颜色与单元格宽度
+  await closeAllDialogs();
+  await closeAllTabs();
+  await clickSessionNode("mock-ssh");
+  await fillInput("#port", String(sshPort));
+  await clickElement("#ssh");
+  await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      return s.startsWith("已连接") ? s : null;
+    },
+    { timeout: 30000, label: "Truecolor 用例建会话" },
+  );
+  await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.screen()`);
+      return t.includes("WELCOME") ? true : null;
+    },
+    { timeout: 15000, label: "会话横幅" },
+  );
+
+  const tcHandle = await cdp.eval(`window.__wt.handle`);
+  // 一次性写入触发词（逐键会变成一串 echo:）
+  await cdp.eval(`window.__TAURI__.core.invoke("term_write", {
+    handle: ${JSON.stringify(tcHandle)}, data: "__truecolor__",
+  })`).catch(() => null);
+
+  const tcCell = await waitFor(
+    async () => {
+      const c = await cdp.eval(`(() => {
+        const row = window.__wt.findRow("X");
+        return row === null ? null : window.__wt.cellAt(row, 0);
+      })()`);
+      return c && c.text === "X" ? c : null;
+    },
+    { timeout: 15000, label: "真彩色输出" },
+  );
+  check(
+    "24 位色真的落到单元格上（TER-024）",
+    tcCell.fgIsRgb === true && tcCell.fg === 0x123456,
+    JSON.stringify(tcCell),
+  );
+
+  await cdp.eval(`window.__TAURI__.core.invoke("term_write", {
+    handle: ${JSON.stringify(tcHandle)}, data: "__wide__",
+  })`).catch(() => null);
+  const wideCells = await waitFor(
+    async () => {
+      const c = await cdp.eval(`(() => {
+        const row = window.__wt.findRow("中文");
+        if (row === null) return null;
+        return {
+          first: window.__wt.cellAt(row, 0),
+          cont: window.__wt.cellAt(row, 1),
+          second: window.__wt.cellAt(row, 2),
+        };
+      })()`);
+      return c && c.first?.text === "中" ? c : null;
+    },
+    { timeout: 15000, label: "宽字符输出" },
+  );
+  check(
+    "CJK 字符各占两列、后面不再是独立单元格（TER-025）",
+    wideCells.first.width === 2 &&
+      wideCells.cont.width === 0 &&
+      wideCells.second.text === "文" &&
+      wideCells.second.width === 2,
+    JSON.stringify(wideCells),
+  );
   await closeAllTabs();
 
   // 19j. 已知主机（`SEC-005`）：能列出指纹，也能忘掉某条记录

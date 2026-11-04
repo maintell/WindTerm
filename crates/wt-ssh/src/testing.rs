@@ -10,7 +10,8 @@
 //! - 密码认证：用户 `tester` / 密码 `secret`
 //! - 公钥认证：接受任意公钥
 //! - `shell_request`：先发 `WELCOME\r\n`
-//! - 收到数据：回 `echo:<原文>`；输入里含 `__gbk__` 时改回 GBK 字节的 `中文`（验编码切换）
+//! - 收到数据：回 `echo:<原文>`；输入含 `__gbk__` 回 GBK 字节的「中文」（验编码）、
+//!   `__truecolor__` 回 24 位色序列（验 Truecolor）、`__wide__` 回两个 CJK 字符（验宽字符）
 //! - `exec_request`：回 `ran:<命令>\r\n`，退出码 0
 
 use std::collections::HashMap;
@@ -482,6 +483,16 @@ impl russh::server::Handler for MockHandler {
         // 这比断言「下拉框变了」有意义得多。
         if String::from_utf8_lossy(data).contains("__gbk__") {
             session.data(channel, b"\xd6\xd0\xce\xc4\r\n".to_vec())?;
+            return Ok(());
+        }
+        // Truecolor（`TER-024`）：回一个 24 位前景色，验收去读单元格的实际颜色
+        if String::from_utf8_lossy(data).contains("__truecolor__") {
+            session.data(channel, b"\x1b[38;2;18;52;86mX\x1b[0m\r\n".to_vec())?;
+            return Ok(());
+        }
+        // 宽字符（`TER-025`）：两个 CJK 字符各占两列，验收读单元格宽度与光标列
+        if String::from_utf8_lossy(data).contains("__wide__") {
+            session.data(channel, "中文\r\n".as_bytes().to_vec())?;
             return Ok(());
         }
         let echo = format!("echo:{}", String::from_utf8_lossy(data)).into_bytes();

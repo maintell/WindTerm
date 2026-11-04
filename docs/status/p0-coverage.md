@@ -34,8 +34,8 @@
 | `TER-020` 快捷键体系 | 🟡 | e2e 重绑/冲突检测 | 只有 9 个动作（规格 30+）、文件级导入导出未做 |
 | `TER-022` 鼠标上报 | 🟡 | 由 xterm.js 提供 | 没有专项验收（1000/1002/1003/1006、Shift 强制选择） |
 | `TER-023` Bracketed paste | ✅ | e2e `?2004` 时粘贴被包裹 | — |
-| `TER-024` Truecolor | 🟡 | 由 xterm.js 提供 | `COLORTERM` 未显式设置，未做专项断言 |
-| `TER-025` Unicode 宽字符 | 🟡 | 由 xterm.js 提供 | 未做 CJK 占两列的专项验收 |
+| `TER-024` Truecolor | ✅ | e2e 让 mock 回 `\e[38;2;18;52;86m`，读 buffer 单元格断言 `isFgRGB` 且颜色恰为 `#123456` | `COLORTERM` 未显式设置（不影响渲染） |
+| `TER-025` Unicode 宽字符 | ✅ | e2e 让 mock 回两个 CJK 字符，读单元格断言首字 `width=2`、次列 `width=0`（续列）、第三列起是第二个字 | Emoji 组合与零宽字符未专项验收 |
 | `TER-034` 大量输出流控 | ✅ | ack 未确认字节背压 + e2e 统计归零 | 极端慢消费者未压测 |
 | `FIL-001` 图形 SFTP 浏览器 | 🟡 | e2e 列目录/下载/上传/多会话 | 「SSH 连上即自动打开面板」未做 |
 | `FIL-002` SFTP 协议 | 🟡 | `wt-ssh/tests/sftp.rs`、报文级单测 | 并发请求窗口、符号链接、权限位未做 |
