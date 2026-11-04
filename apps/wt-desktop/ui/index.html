@@ -272,6 +272,97 @@
       .tab .x { color: #8a8a92; }
       .tab .x:hover { color: #e8e8ea; }
       #term { flex: 1; min-width: 0; min-height: 0; position: relative; }
+      #editor {
+        flex: 1;
+        min-width: 0;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        background: #1a1a1c;
+      }
+      #editor[hidden] { display: none; }
+      #ed-tabs {
+        display: flex;
+        gap: 2px;
+        padding: 2px 4px 0;
+        overflow-x: auto;
+        border-bottom: 1px solid #33333a;
+        flex: none;
+      }
+      #ed-tabs .edtab {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 2px 8px;
+        font-size: 12px;
+        color: var(--muted);
+        background: #24242a;
+        border: 1px solid #33333a;
+        border-bottom: none;
+        border-radius: 4px 4px 0 0;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      #ed-tabs .edtab.active { color: var(--fg); background: #2f2f38; }
+      #ed-tabs .edtab .dirty { color: #ffd479; }
+      #ed-bar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 6px;
+        border-bottom: 1px solid #2a2a30;
+        font-size: 12px;
+        color: var(--muted);
+        flex: none;
+      }
+      #ed-bar input:not([type="checkbox"]) {
+        background: #2a2a30;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 4px;
+        padding: 1px 6px;
+        font: inherit;
+        width: 130px;
+      }
+      #ed-bar button {
+        background: #2a2a30;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 4px;
+        padding: 1px 8px;
+        font: inherit;
+        cursor: pointer;
+      }
+      #ed-bar #ed-save { border-color: var(--accent); }
+      #ed-re-row { display: flex; align-items: center; gap: 4px; }
+      #ed-body { flex: 1; min-height: 0; display: flex; overflow: hidden; }
+      #ed-gutter {
+        margin: 0;
+        padding: 6px 6px 6px 8px;
+        color: #6a6a72;
+        background: #161618;
+        font: 12px/1.5 ui-monospace, Consolas, monospace;
+        text-align: right;
+        overflow: hidden;
+        user-select: none;
+        flex: none;
+      }
+      #ed-text {
+        flex: 1;
+        min-width: 0;
+        margin: 0;
+        padding: 6px 8px;
+        background: #1a1a1c;
+        color: #e8e8ea;
+        border: none;
+        outline: none;
+        resize: none;
+        font: 12px/1.5 ui-monospace, Consolas, monospace;
+        white-space: pre;
+        overflow: auto;
+        tab-size: 2;
+      }
       #find-bar {
         display: flex;
         align-items: center;
@@ -828,6 +919,25 @@
           <button id="find-next" title="下一个">↓</button>
           <button id="find-close" title="关闭（Esc）">×</button>
         </div>
+        <!-- 内嵌文本编辑器（FIL-011）：独立面板，打开时让位给终端 -->
+        <div id="editor" hidden>
+          <div id="ed-tabs"></div>
+          <div id="ed-bar">
+            <input id="ed-find" placeholder="查找" spellcheck="false" />
+            <label id="ed-re-row" title="把查找内容当正则"><input type="checkbox" id="ed-re" />正则</label>
+            <button type="button" id="ed-prev">上一个</button>
+            <button type="button" id="ed-next">下一个</button>
+            <input id="ed-replace" placeholder="替换为" spellcheck="false" />
+            <button type="button" id="ed-replace-one">替换</button>
+            <button type="button" id="ed-replace-all">全部替换</button>
+            <button type="button" id="ed-save">保存</button>
+            <span id="ed-info"></span>
+          </div>
+          <div id="ed-body">
+            <pre id="ed-gutter"></pre>
+            <textarea id="ed-text" spellcheck="false" wrap="off"></textarea>
+          </div>
+        </div>
         <div id="term"></div>
       </div>
     </div>
@@ -843,6 +953,7 @@
       <pre id="edit-info"></pre>
       <div class="key-row">
         <button type="button" id="edit-open">用系统程序打开</button>
+        <button type="button" id="edit-inline">在内嵌编辑器打开</button>
         <button type="button" id="edit-save">写回远端</button>
       </div>
       <menu>

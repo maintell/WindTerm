@@ -878,7 +878,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-39",
+    uiVersion === "wt-ui-40",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -2087,6 +2087,68 @@ try {
     refreshed === editedText,
     `${newest.f} → ${JSON.stringify(refreshed)}`,
   );
+  // 16d-4c. 内嵌编辑器（`FIL-011`）：打开、改、查找替换、保存
+  // 先记下上一次的路径：`lastEdit` 在上一段里已经有值了，只等「非 null」会立刻返回，
+  // 编辑器打开的会是上一份拷贝（那时读的就是错的文件）。
+  const prevEditPath = await cdp.eval(`window.__wt.lastEdit?.localPath ?? null`);
+  await clickFileRow("notes.txt");
+  await clickElement("#files-edit");
+  await waitFor(
+    async () => {
+      const e = await cdp.eval(`window.__wt.lastEdit`);
+      return e && e.localPath !== prevEditPath ? e : null;
+    },
+    { timeout: 20000, label: "编辑下载" },
+  );
+  await clickElement("#edit-inline");
+  const edOpen = await waitFor(
+    async () => {
+      const e = await cdp.eval(`window.__wt.editor`);
+      return e.open && e.docs.length ? e : null;
+    },
+    { timeout: 15000, label: "内嵌编辑器打开" },
+  );
+  check(
+    "打开内嵌编辑器并显示文件内容",
+    edOpen.text !== null && edOpen.text.length > 0,
+    `${edOpen.active}（${edOpen.docs[0].chars} 字）`,
+  );
+
+  // 查找替换（正则）：把 "e2e" 全换成 "E2E"
+  await fillInput("#ed-find", "e2e");
+  await fillInput("#ed-replace", "E2E");
+  await clickElement("#ed-replace-all");
+  const replaced = await waitFor(
+    async () => {
+      const e = await cdp.eval(`window.__wt.editor`);
+      return e.text?.includes("E2E") && e.docs[0]?.dirty ? e : null;
+    },
+    { timeout: 8000, label: "全部替换" },
+  );
+  check(
+    "全部替换改到内容并标记未保存",
+    replaced.text.includes("E2E") && replaced.docs[0].dirty === true,
+    replaced.text.slice(0, 40),
+  );
+
+  await clickElement("#ed-save");
+  const edSaved = await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      return s.startsWith("已保存") ? s : null;
+    },
+    { timeout: 15000, label: "编辑器保存" },
+  );
+  // 回读本地副本，确认真的写进去了
+  const edLocal = await cdp.eval(`window.__wt.lastEdit`);
+  const edOnDisk = readFileSync(edLocal.localPath, "utf8");
+  check(
+    "编辑器保存后本地文件内容变了",
+    edOnDisk.includes("E2E") && edSaved !== null,
+    `${edLocal.localPath} → ${JSON.stringify(edOnDisk.slice(0, 60))}`,
+  );
+  await cdp.eval(`document.querySelector("#ed-tabs .edtab .x").click()`);
+
   // 16d-5. 多会话并存（FIL-001）：文件面板可以对着某个会话，而不是只能跟随连接表单
   const filesSessionId = await cdp.eval(`(async () => {
     const dto = await window.__TAURI__.core.invoke("sessions_load");

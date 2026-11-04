@@ -826,6 +826,49 @@ async fn sftp_edit_save(
     Ok(data.len())
 }
 
+/// 编辑器能打开的上限（`FIL-011` 的「大文件保护」）。
+///
+/// textarea 撑到几 MB 就会卡住整个渲染进程——与其让界面假死，
+/// 不如明确拒绝并告诉用户该用外部编辑器。
+const MAX_EDIT_BYTES: u64 = 2 * 1024 * 1024;
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalTextDto {
+    text: String,
+    size: u64,
+}
+
+/// 读一个本地文本文件给内嵌编辑器（`FIL-011`）。
+#[tauri::command]
+fn local_read_text(path: String) -> Result<LocalTextDto, String> {
+    let meta = std::fs::metadata(&path).map_err(|e| format!("[FILE_NOT_FOUND] {e}"))?;
+    if meta.len() > MAX_EDIT_BYTES {
+        return Err(format!(
+            "[FILE_TOO_LARGE] 文件 {} 字节，超过内嵌编辑器的 {} 字节上限；用外部编辑器打开",
+            meta.len(),
+            MAX_EDIT_BYTES
+        ));
+    }
+    let bytes = std::fs::read(&path).map_err(|e| format!("读取失败：{e}"))?;
+    // 非 UTF-8 不猜编码：编辑器只有一个文本视图，硬转会把内容弄坏
+    let text = String::from_utf8(bytes).map_err(|_| {
+        "[FILE_NOT_UTF8] 这个文件不是 UTF-8 文本，内嵌编辑器暂时只编辑 UTF-8；用外部编辑器打开".to_string()
+    })?;
+    Ok(LocalTextDto {
+        text,
+        size: meta.len(),
+    })
+}
+
+/// 把编辑器的内容写回本地文件（`FIL-011`）。
+#[tauri::command]
+fn local_write_text(path: String, text: String) -> Result<u64, String> {
+    let bytes = text.into_bytes();
+    std::fs::write(&path, &bytes).map_err(|e| format!("写入 {path} 失败：{e}"))?;
+    Ok(bytes.len() as u64)
+}
+
 /// 用系统默认程序打开一个本地文件（`FIL-005` 的「打开编辑器」）。
 #[tauri::command]
 fn open_in_system(path: String) -> Result<(), String> {
@@ -2729,6 +2772,8 @@ fn main() {
             key_inspect,
             sftp_edit_download,
             sftp_edit_save,
+            local_read_text,
+            local_write_text,
             open_in_system
         ])
         .run(tauri::generate_context!())

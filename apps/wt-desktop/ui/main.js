@@ -1582,6 +1582,12 @@ document.getElementById("edit-open").addEventListener("click", async () => {
   }
 });
 
+document.getElementById("edit-inline").addEventListener("click", async () => {
+  if (!lastEdit) return;
+  editDialog.close();
+  await openEditor(lastEdit.localPath, lastEdit.remotePath.split("/").pop());
+});
+
 document.getElementById("edit-save").addEventListener("click", async () => {
   if (!lastEdit) return;
   try {
@@ -1601,6 +1607,247 @@ document.getElementById("edit-save").addEventListener("click", async () => {
 });
 
 document.getElementById("edit-close").addEventListener("click", () => editDialog.close());
+
+// ── 内嵌文本编辑器（`FIL-011`）────────────────────────────
+//
+// 用 textarea 而不是 CodeMirror：前端是零构建、vendor 内联的，
+// 引一个编辑器框架要连带打包器和体积。代价是没有语法高亮——这一条如实标在 README 里，
+// 别让「有编辑器」被读成「有高亮的编辑器」。
+
+const editorEl = document.getElementById("editor");
+const edTabsEl = document.getElementById("ed-tabs");
+const edTextEl = document.getElementById("ed-text");
+const edGutterEl = document.getElementById("ed-gutter");
+const edInfoEl = document.getElementById("ed-info");
+const edFindEl = document.getElementById("ed-find");
+const edReplaceEl = document.getElementById("ed-replace");
+const edReEl = document.getElementById("ed-re");
+
+/** 打开的文档（每个一个标签）；`dirty` 表示有未保存修改 */
+let edDocs = [];
+let edActiveId = null;
+
+function edActive() {
+  return edDocs.find((d) => d.id === edActiveId) ?? null;
+}
+
+function edSyncBody() {
+  const doc = edActive();
+  if (!doc) {
+    edTextEl.value = "";
+    edGutterEl.textContent = "";
+    edInfoEl.textContent = "";
+    return;
+  }
+  if (edTextEl.value !== doc.text) edTextEl.value = doc.text;
+  const lines = doc.text.split("\n").length;
+  edGutterEl.textContent = Array.from({ length: lines }, (_, i) => i + 1).join("\n");
+  edInfoEl.textContent = `${lines} 行 · ${doc.text.length} 字${doc.dirty ? " · 未保存" : ""}`;
+  edGutterEl.scrollTop = edTextEl.scrollTop;
+}
+
+function edRenderTabs() {
+  edTabsEl.textContent = "";
+  for (const doc of edDocs) {
+    const tab = document.createElement("div");
+    tab.className = `edtab${doc.id === edActiveId ? " active" : ""}`;
+    const name = document.createElement("span");
+    name.textContent = doc.name;
+    tab.appendChild(name);
+    if (doc.dirty) {
+      const dot = document.createElement("span");
+      dot.className = "dirty";
+      dot.textContent = "●";
+      tab.appendChild(dot);
+    }
+    const x = document.createElement("span");
+    x.className = "x";
+    x.textContent = "×";
+    x.title = "关闭";
+    x.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      void edCloseDoc(doc.id);
+    });
+    tab.appendChild(x);
+    tab.addEventListener("click", () => {
+      edActiveId = doc.id;
+      edRenderTabs();
+      edSyncBody();
+    });
+    edTabsEl.appendChild(tab);
+  }
+}
+
+function edShow() {
+  editorEl.hidden = false;
+  termHost.hidden = true;
+  termFoot.hidden = true;
+  edRenderTabs();
+  edSyncBody();
+  edTextEl.focus();
+}
+
+function edHideIfEmpty() {
+  if (edDocs.length) return;
+  editorEl.hidden = true;
+  termHost.hidden = false;
+  termFoot.hidden = !active;
+}
+
+/** 打开一个本地文件到编辑器（`FIL-011`）。重复打开同一个路径只切标签 */
+async function openEditor(path, name) {
+  const existing = edDocs.find((d) => d.path === path);
+  if (existing) {
+    edActiveId = existing.id;
+    edShow();
+    return;
+  }
+  try {
+    const r = await invoke("local_read_text", { path });
+    const doc = {
+      id: `ed${Date.now()}${Math.random().toString(16).slice(2, 6)}`,
+      path,
+      name: name ?? path.split(/[\\/]/).pop(),
+      text: r.text,
+      dirty: false,
+    };
+    edDocs.push(doc);
+    edActiveId = doc.id;
+    edShow();
+    setStatus(`已打开 ${doc.name}（${r.size} 字节）`);
+  } catch (e) {
+    setStatus(`打开失败：${e}`);
+  }
+}
+
+async function edCloseDoc(id) {
+  const doc = edDocs.find((d) => d.id === id);
+  if (!doc) return;
+  if (doc.dirty) {
+    const ok = await askConfirm("有未保存的修改", `${doc.name} 还没保存，确定关闭？`);
+    if (!ok) return;
+  }
+  edDocs = edDocs.filter((d) => d.id !== id);
+  if (edActiveId === id) edActiveId = edDocs[0]?.id ?? null;
+  edRenderTabs();
+  edSyncBody();
+  edHideIfEmpty();
+}
+
+function edSave() {
+  const doc = edActive();
+  if (!doc) return;
+  void (async () => {
+    try {
+      const n = await invoke("local_write_text", { path: doc.path, text: doc.text });
+      doc.dirty = false;
+      edRenderTabs();
+      edSyncBody();
+      setStatus(`已保存 ${doc.name}（${n} 字节）`);
+    } catch (e) {
+      setStatus(`保存失败：${e}`);
+    }
+  })();
+}
+
+function edPattern() {
+  const q = edFindEl.value;
+  if (!q) return null;
+  try {
+    // 非正则模式要转义：用户查 `a.b` 不该match `axb`
+    const src = edReEl.checked ? q : q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(src, "g");
+  } catch (e) {
+    setStatus(`正则无效：${e}`);
+    return null;
+  }
+}
+
+function edFindStep(dir) {
+  const doc = edActive();
+  const re = edPattern();
+  if (!doc || !re) return;
+  const from = dir > 0 ? edTextEl.selectionEnd : 0;
+  const text = doc.text;
+  const forward = dir > 0 ? text.slice(from) : text;
+  re.lastIndex = 0;
+  const m = re.exec(forward);
+  if (!m) {
+    setStatus("没有匹配");
+    return;
+  }
+  const start = (dir > 0 ? from : 0) + m.index;
+  edTextEl.focus();
+  edTextEl.setSelectionRange(start, start + m[0].length);
+  setStatus(`匹配 ${JSON.stringify(m[0])}`);
+}
+
+function edReplaceOne() {
+  const doc = edActive();
+  if (!doc) return;
+  const start = edTextEl.selectionStart;
+  const end = edTextEl.selectionEnd;
+  if (start === end) {
+    edFindStep(1);
+    return;
+  }
+  doc.text = doc.text.slice(0, start) + edReplaceEl.value + doc.text.slice(end);
+  doc.dirty = true;
+  edSyncBody();
+  edRenderTabs();
+  edTextEl.setSelectionRange(start + edReplaceEl.value.length, start + edReplaceEl.value.length);
+}
+
+function edReplaceAll() {
+  const doc = edActive();
+  const re = edPattern();
+  if (!doc || !re) return;
+  const before = doc.text;
+  const after = before.replace(re, edReplaceEl.value);
+  if (after === before) {
+    setStatus("没有匹配");
+    return;
+  }
+  doc.text = after;
+  doc.dirty = true;
+  edSyncBody();
+  edRenderTabs();
+  setStatus("已全部替换（记得保存）");
+}
+
+edTextEl.addEventListener("input", () => {
+  const doc = edActive();
+  if (!doc) return;
+  doc.text = edTextEl.value;
+  doc.dirty = true;
+  edRenderTabs();
+  edSyncBody();
+});
+
+edTextEl.addEventListener("scroll", () => {
+  edGutterEl.scrollTop = edTextEl.scrollTop;
+});
+
+// Tab 插两个空格；Ctrl+S 保存（别让浏览器弹「保存网页」）
+edTextEl.addEventListener("keydown", (ev) => {
+  if (ev.key === "Tab") {
+    ev.preventDefault();
+    const start = edTextEl.selectionStart;
+    edTextEl.setRangeText("  ", start, edTextEl.selectionEnd, "end");
+    edTextEl.dispatchEvent(new Event("input"));
+    return;
+  }
+  if (ev.ctrlKey && (ev.key === "s" || ev.key === "S")) {
+    ev.preventDefault();
+    edSave();
+  }
+});
+
+document.getElementById("ed-save").addEventListener("click", edSave);
+document.getElementById("ed-next").addEventListener("click", () => edFindStep(1));
+document.getElementById("ed-prev").addEventListener("click", () => edFindStep(-1));
+document.getElementById("ed-replace-one").addEventListener("click", edReplaceOne);
+document.getElementById("ed-replace-all").addEventListener("click", edReplaceAll);
 
 // ── 密钥生成/导入（`LOC-014`）────────────────────────────
 //
@@ -3068,7 +3315,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-39",
+  ui: "wt-ui-40",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";
@@ -3178,6 +3425,16 @@ window.__wt = {
   /** 终端输出编码（`TER-006`，验收读它而不是去解析下拉框） */
   get encoding() {
     return encoding;
+  },
+  /** 内嵌编辑器（`FIL-011`）：打开的文档与当前内容 */
+  get editor() {
+    const doc = edActive();
+    return {
+      open: !editorEl.hidden,
+      docs: edDocs.map((d) => ({ name: d.name, dirty: d.dirty, chars: d.text.length })),
+      active: doc?.name ?? null,
+      text: doc?.text ?? null,
+    };
   },
   /** 正在编辑的远端文件（`FIL-005`）：验收读它 */
   get lastEdit() {
