@@ -666,7 +666,8 @@
       .set-path { color: #6f9bd1; font-size: 10px; margin-right: 2px; }
       .set-path[hidden] { display: none; }
       .set-row mark { background: #7a5a12; color: #ffe9b0; padding: 0 1px; border-radius: 2px; }
-      #look-font-warn[hidden] { display: none; }
+      #look-font-warn[hidden],
+      #look-mono-warn[hidden] { display: none; }
       .set-row select,
       .set-row input {
         background: #2a2a30;
@@ -1194,6 +1195,7 @@
             <option value="monospace">系统等宽</option>
           </select>
           <span id="look-font-warn" class="set-warn" hidden></span>
+          <span id="look-mono-warn" class="set-warn" hidden></span>
         </div>
         <div class="set-row" data-kw="字号 font size 字">
           <span class="set-name">字号</span>

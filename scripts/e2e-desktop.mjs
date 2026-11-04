@@ -4552,6 +4552,52 @@ try {
   ).catch(() => null);
   check("换回能用的字体后提示收起（TER-005）", fontWarnGone === true, fontWarnGone === true);
 
+  // 非等宽字体（`TER-005`）：Arial 本机有、但不是等宽——表格与 TUI 会错位，必须说出来
+  await cdp.eval(`(() => {
+    const sel = document.getElementById("look-font");
+    const o = document.createElement("option");
+    o.value = '"Arial", monospace';
+    o.textContent = "Arial";
+    sel.appendChild(o);
+    sel.value = o.value;
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    return sel.value;
+  })()`);
+  const monoWarn = await waitFor(
+    async () => {
+      const s = await cdp.eval(`(() => {
+        const el = document.getElementById("look-mono-warn");
+        return { hidden: el.hidden, text: el.textContent };
+      })()`);
+      return s.hidden === false ? s : null;
+    },
+    { timeout: 8000, label: "非等宽字体警告" },
+  ).catch(() => null);
+  check(
+    "选了非等宽字体会明确警告（TER-005）",
+    monoWarn !== null && monoWarn.text.includes("不是等宽"),
+    monoWarn ? monoWarn.text : "没有出现警告",
+  );
+
+  await cdp.eval(`(() => {
+    const sel = document.getElementById("look-font");
+    const o = document.createElement("option");
+    o.value = "monospace";
+    o.textContent = "系统等宽";
+    sel.appendChild(o);
+    sel.value = "monospace";
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    return sel.value;
+  })()`);
+  const monoGone = await waitFor(
+    async () => {
+      const h = await cdp.eval(`document.getElementById("look-mono-warn").hidden`);
+      return h === true ? true : null;
+    },
+    { timeout: 8000, label: "等宽警告收起" },
+  ).catch(() => null);
+  check("换回等宽字体后警告收起（TER-005）", monoGone === true, monoGone === true);
+
   // 复原：字体是写进 config.toml 的全局设置
   await cdp.eval(`(() => {
     const sel = document.getElementById("look-font");

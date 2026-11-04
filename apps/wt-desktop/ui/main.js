@@ -3164,6 +3164,7 @@ const encodingSelect = document.getElementById("encoding");
 const lookThemeSelect = document.getElementById("look-theme");
 const lookFontSelect = document.getElementById("look-font");
 const lookFontWarn = document.getElementById("look-font-warn");
+const lookMonoWarn = document.getElementById("look-mono-warn");
 const lookSizeInput = document.getElementById("look-size");
 const lookHeightInput = document.getElementById("look-height");
 const lookScrollbackInput = document.getElementById("look-scrollback");
@@ -3683,15 +3684,37 @@ function familyAvailable(name) {
  * 首选的字体本机没有时，浏览器会**静默**往后回退：字号、行高都对，字形却变了，
  * 用户只会觉得「字怎么怪怪的」。这里把实际用的那个说出来。
  */
+/**
+ * 这个字体是不是等宽的（`TER-005`）：同一段里 `i` 与 `W` 的宽度相等才算。
+ *
+ * 比例字体不会报错，只会让终端里的表格、`ps`/`top` 那种对齐输出全歪——比「字体没找到」
+ * 更难察觉，所以要在设置里说一句。
+ */
+function familyIsMonospace(name) {
+  const ctx = document.createElement("canvas").getContext("2d");
+  if (!ctx) return true;
+  ctx.font = `48px "${name}", monospace`;
+  return Math.abs(ctx.measureText("i").width - ctx.measureText("W").width) < 0.5;
+}
+
 function refreshFontWarn() {
   const wanted = String(look.fontFamily).split(",")[0].trim().replace(/^["']|["']$/g, "");
   const actual = firstAvailableFamily(look.fontFamily);
   const ok = actual !== null && actual.toLowerCase() === wanted.toLowerCase();
   lookFontWarn.hidden = ok;
-  if (ok) return;
-  lookFontWarn.textContent = actual
-    ? `本机没有「${wanted}」，实际用的是「${actual}」`
-    : `本机没有「${wanted}」，已回退到系统等宽字体`;
+  if (!ok) {
+    lookFontWarn.textContent = actual
+      ? `本机没有「${wanted}」，实际用的是「${actual}」`
+      : `本机没有「${wanted}」，已回退到系统等宽字体`;
+  }
+
+  // 等宽检查（`TER-005`）：实际生效的那个字体是不是等宽。通用族名也照测——
+  // `monospace` 会通过，`sans-serif` 不会，这正是我们想要的判断。
+  const monoOk = !actual || familyIsMonospace(actual);
+  lookMonoWarn.hidden = monoOk;
+  if (!monoOk) {
+    lookMonoWarn.textContent = `「${actual}」不是等宽字体，表格与 TUI 会错位`;
+  }
 }
 
 function initLookControls() {
@@ -4365,7 +4388,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-71",
+  ui: "wt-ui-72",
   /** 「本次记住」存了几条（验收用：只回数量，不回口令） */
   sessionPasswords() {
     return sessionPasswords.size;
