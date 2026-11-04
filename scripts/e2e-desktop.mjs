@@ -75,6 +75,8 @@ const child = spawn(EXE, [], {
     WT_MOCK_SSH: "1",
     // 再起一台当跳板机：SES-024 要验「经跳板连目标」，单台 mock 验不了
     WT_MOCK_SSH_JUMP: "1",
+    // 第三台：SES-025 的多跳（目标 ← 跳板机 ← 再一台跳板机）
+    WT_MOCK_SSH_JUMP2: "1",
     WT_DATA_DIR: DATA_DIR,
     WT_DOWNLOAD_DIR: DOWNLOAD_DIR,
     // 打开后端埋点：失败时能直接看到命令停在哪一步，不用再改一遍代码重跑
@@ -96,6 +98,18 @@ async function mockSshPort() {
       return hit ? Number(hit[1]) : null;
     },
     { timeout: 15000, label: "mock SSH 端口" },
+  );
+  return m;
+}
+
+/** 第三台 mock（第二跳跳板机）的端口 */
+async function mockJump2Port() {
+  const m = await waitFor(
+    () => {
+      const hit = stdout.match(/WT_MOCK_SSH_JUMP2_PORT=(\d+)/);
+      return hit ? Number(hit[1]) : null;
+    },
+    { timeout: 15000, label: "mock 第二跳端口" },
   );
   return m;
 }
@@ -771,7 +785,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-25",
+    uiVersion === "wt-ui-26",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -2599,6 +2613,77 @@ try {
     panelCleared.includes("没有密码") && vaultAfterDelete.includes("0 条"),
     vaultAfterDelete,
   );
+
+  // 19b. 多跳（`SES-025`）：目标 ← bastion ← bastion2。
+  //      界面只选「用哪条会话当跳板机」，它自己的跳板由会话属性决定，
+  //      所以这里不改任何界面结构，只把两条会话连成链。
+  const jump2Port = await mockJump2Port();
+  const ids = await cdp.eval(`(async () => {
+    const dto = await window.__TAURI__.core.invoke("sessions_load");
+    const pick = (n) => dto.sessions.find((s) => s.name === n)?.id ?? null;
+    return { mock: pick("mock-ssh"), bastion: pick("bastion") };
+  })()`);
+  await cdp.eval(`window.__TAURI__.core.invoke("session_save", { req: {
+    name: "bastion2", host: "127.0.0.1", port: ${JSON.stringify(jump2Port)}, user: "tester",
+  } })`);
+  const jump2Id = await cdp.eval(`(async () => {
+    const dto = await window.__TAURI__.core.invoke("sessions_load");
+    return dto.sessions.find((s) => s.name === "bastion2")?.id ?? null;
+  })()`);
+  // bastion 的跳板指向 bastion2 —— 两条会话属性就构成三跳
+  await cdp.eval(`window.__TAURI__.core.invoke("session_save", { req: {
+    id: ${JSON.stringify(ids.bastion)}, name: "bastion", host: "127.0.0.1",
+    port: ${JSON.stringify(jumpPort)}, user: "tester",
+    jumpSessionId: ${JSON.stringify(jump2Id)},
+  } })`);
+  // 跳板机自己的凭据进保险库（逐跳各存各的，不继承目标会话）
+  for (const [sid, nm] of [[ids.bastion, "bastion"], [jump2Id, "bastion2"]]) {
+    await cdp.eval(`window.__TAURI__.core.invoke("credential_save", {
+      sessionId: ${JSON.stringify(sid)}, name: ${JSON.stringify(nm)}, password: "secret",
+    })`);
+  }
+
+  await closeAllTabs();
+  await clickSessionNode("mock-ssh");
+  await fillInput("#port", String(sshPort));
+  // 选中 mock-ssh（它的跳板是 bastion），再确认跳板会话停在 bastion
+  const chainUi = await cdp.eval(`(() => {
+    const sel = document.getElementById("jump-session");
+    const opt = [...sel.options].find((o) => o.textContent === "bastion");
+    if (!opt) return { ok: false };
+    sel.value = opt.value;
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    return { ok: true, host: document.getElementById("jump-host").value };
+  })()`);
+  check(
+    "多跳：跳板机下拉里能选中第一跳",
+    chainUi.ok === true && chainUi.host === `127.0.0.1:${jumpPort}`,
+    JSON.stringify(chainUi),
+  );
+
+  await clickElement("#ssh");
+  const hop3 = await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      if (s.startsWith("已连接")) return s;
+      if (s === "连接失败") {
+        const scr = await cdp.eval(`window.__wt.screen()`);
+        throw new Error(`三跳连接失败：${scr.split(/\r?\n/).filter(Boolean).slice(-3).join(" | ")}`);
+      }
+      return null;
+    },
+    { timeout: 40000, label: "三跳连接" },
+  );
+  check("经两跳跳板机也能连上目标", hop3.includes("tester@"), hop3);
+  const hop3Screen = await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.screen()`);
+      return t.includes("WELCOME") ? t : null;
+    },
+    { timeout: 15000, label: "三跳后的目标横幅" },
+  );
+  check("第三跳拿到的是目标机的 shell，不是跳板机的", hop3Screen !== null);
+  await closeAllTabs();
 
   // 20. 连不上的错误路径：必须给出稳定错误码，不能静默失败
   await closeAllTabs();

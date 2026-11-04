@@ -40,7 +40,7 @@ pub async fn connect_via(
     target_auth: &Auth<'_>,
     policy: HostKeyPolicy,
 ) -> Result<SshConnection, WtError> {
-    hop_to(jump, 1, jump_link, target, target_auth, policy).await
+    connect_over_hop(jump, 1, jump_link, target, target_auth, policy).await
 }
 
 /// 一跳：怎么连它 + 它自己的凭据（`SES-025` 多跳）。
@@ -81,19 +81,19 @@ pub async fn connect_chain(
     for (i, hop) in rest.iter().enumerate() {
         let next_link = format!("{}:{}", hop.cfg.host, hop.cfg.port);
         // 上一跳把 TCP 打到下一跳，第 i+2 跳就在这条通道上握手
-        conn = hop_to(&conn, i + 1, &link, &hop.cfg, &hop.auth, policy.clone()).await?;
+        conn = connect_over_hop(&conn, i + 1, &link, &hop.cfg, &hop.auth, policy.clone()).await?;
         link = next_link;
     }
 
     // 最后一段：从最后一跳连到目标
-    hop_to(&conn, hops.len(), &link, target, target_auth, policy).await
+    connect_over_hop(&conn, hops.len(), &link, target, target_auth, policy).await
 }
 
 /// 从 `from` 这台（第 `from_hop` 跳）开通道到 `to`，并在通道上完成握手与认证。
 ///
-/// 抽出来是为了让单跳（`connect_via`）与多跳（`connect_chain`）共用同一段：
-/// 两处各写一遍，错误文案与跳号迟早会分叉。
-async fn hop_to(
+/// 单跳（`connect_via`）、多跳（`connect_chain`）与界面侧的 accept-new 版本都走它：
+/// 三处各写一遍，错误文案与跳号迟早会分叉。
+pub async fn connect_over_hop(
     from: &SshConnection,
     from_hop: usize,
     from_link: &str,

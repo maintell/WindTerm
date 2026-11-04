@@ -94,7 +94,7 @@ UI 渲染为：
 | 设计里有 | 现在 | 影响 |
 |---|---|---|
 | `StreamProvider` 抽象 + 链式组合（§1） | 直接调 `open_direct_tcpip_channel` + `SshConnection::connect_over` | 单跳够用；多跳（`SES-025`）要么递归包，要么补上 provider 抽象 |
-| 递归多跳（最多 5 跳） | ✅ 引擎与 CLI 已做（`wt_ssh::connect_chain`，逐跳 `direct-tcpip` + 握手；`--jump` 可重复，上限 5 与 `wt_core` 一致） | 界面仍只能配一跳：`options.jumpSessionId` 是一个值，扩成链要改会话属性面板 |
+| 递归多跳（最多 5 跳） | ✅ 引擎 + CLI + 界面都支持：引擎是 `wt_ssh::connect_chain`（逐跳 `direct-tcpip` + 握手）；CLI 用可重复的 `--jump`；界面把选中的跳板会话沿 `options.jumpSessionId` 展开成链（`resolve_jumps`），手填跳板仍是单跳 | 主机密钥策略两边不同：CLI 严格、界面 accept-new（未知就记下）——数据面共用 `connect_over_hop`，只有策略不同 |
 | 连接池复用（§2.1，`SES-024` AC-3） | ❌ 每条目标连接都重新登录跳板机 | 跳板机上会看到多条 SSH 连接；AC-3 未满足 |
 | 每跳错误定位（§2.3） | ✅ 错误统一加「第 N 跳（host:port）：」前缀，**保留原错误码** | 换码会让「认证失败」被归成网络问题，界面就分不清该改密码还是改网络 |
 | `AllowTcpForwarding no` 专项报错 | ✅ `SSH_FORWARD_DENIED`，消息直接点名原因 | — |

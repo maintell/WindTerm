@@ -1915,6 +1915,9 @@ function jumpReq() {
     port,
     user: jumpUserInput.value.trim(),
     password: jumpPassInput.value,
+    // 选了会话就把它交给后端：它自己可能还有跳板（`SES-025`），
+    // 链由会话属性决定，界面不为每一跳加控件
+    sessionId: jumpSessionSelect.value || null,
   };
 }
 
@@ -2034,7 +2037,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-25",
+  ui: "wt-ui-26",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";
