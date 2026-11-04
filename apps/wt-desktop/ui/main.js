@@ -1836,15 +1836,21 @@ document.getElementById("edit-inline").addEventListener("click", async () => {
 document.getElementById("edit-save").addEventListener("click", async () => {
   if (!lastEdit) return;
   try {
-    const n = await invoke("sftp_edit_save", {
+    const r = await invoke("sftp_edit_save", {
       ...editReq(),
       path: lastEdit.remotePath,
       localPath: lastEdit.localPath,
       expectedSize: lastEdit.size,
     });
     // 写回之后远端大小变了，下次写回要按新的算，否则第二次必然误报冲突
-    lastEdit.size = n;
-    setStatus(`已写回远端（${n} 字节）`);
+    lastEdit.size = r.bytes;
+    // 原子与否必须说出来：降级路径中间有一瞬间文件是不存在的，
+    // 用户正在盯 inotify 或跑构建的话，那是要命的信息
+    setStatus(
+      r.atomic
+        ? `已写回远端（${r.bytes} 字节，原子替换）`
+        : `已写回远端（${r.bytes} 字节）；服务端不支持原子替换，期间有一瞬间文件不存在`,
+    );
     await loadDir(sftpPath);
   } catch (e) {
     setStatus(`写回失败：${e}`);
@@ -4028,7 +4034,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-59",
+  ui: "wt-ui-60",
   /** 「本次记住」存了几条（验收用：只回数量，不回口令） */
   sessionPasswords() {
     return sessionPasswords.size;

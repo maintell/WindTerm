@@ -938,11 +938,23 @@ async fn sftp_edit_download(
     })
 }
 
+/// 写回远端的结果。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EditSaveDto {
+    bytes: usize,
+    /// 是否走了原子替换；`false` 表示退化成「先删后改名」，中间有一瞬间目标不存在
+    atomic: bool,
+}
+
 /// 把本地副本写回远端（`FIL-005`）。
 ///
 /// 写之前比一次远端大小：期间被别人改过就不覆盖——「悄悄盖掉别人的修改」
-/// 是这类编辑器最坏的行为。注意**不是原子写**（SFTP v3 的 rename 覆盖语义不可靠），
-/// 这一点在 README 里标了。
+/// 是这类编辑器最坏的行为。
+///
+/// 写本身走 `write_file_atomic`（`FIL-002` 的关键约束）：先写临时文件再 rename，
+/// 观察者只会看到旧内容或新内容，不会看到空文件。服务端不肯覆盖时返回
+/// `atomic: false`，界面据此如实提示。
 #[tauri::command]
 async fn sftp_edit_save(
     state: State<'_, AppState>,
@@ -951,7 +963,7 @@ async fn sftp_edit_save(
     local_path: String,
     expected_size: usize,
     jump: Option<JumpReq>,
-) -> Result<usize, String> {
+) -> Result<EditSaveDto, String> {
     let data = std::fs::read(&local_path).map_err(|e| format!("读取本地副本失败：{e}"))?;
     let sftp = open_sftp(&state, req, jump).await?;
 
@@ -973,10 +985,14 @@ async fn sftp_edit_save(
         }
     }
 
-    sftp.write_file(&path, &data)
+    let atomic = sftp
+        .write_file_atomic(&path, &data)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(data.len())
+    Ok(EditSaveDto {
+        bytes: data.len(),
+        atomic,
+    })
 }
 
 /// 编辑器能打开的上限（`FIL-011` 的「大文件保护」）。

@@ -187,3 +187,46 @@ async fn sftp_and_shell_share_one_connection() {
 
     assert_eq!(sftp.read_file("/a.txt").await.unwrap(), b"a");
 }
+
+#[tokio::test]
+async fn atomic_write_replaces_content_and_leaves_no_temp_file() {
+    let server = MockSshServer::start().await;
+    {
+        let mut fs = server.fs.lock().await;
+        fs.insert("/a.txt".into(), b"original".to_vec());
+    }
+    let conn = SshConnection::connect_password(&cfg(server.port), "secret", HostKeyPolicy::AcceptAll)
+        .await
+        .expect("连接应成功");
+    let sftp = SftpClient::open(conn).await.expect("应能打开 sftp 子系统");
+
+    // `FIL-002`：保存远端文件必须是「写临时文件 + rename」，不能就地截断目标
+    let atomic = sftp
+        .write_file_atomic("/a.txt", b"new content")
+        .await
+        .expect("原子写应成功");
+    assert!(atomic, "mock 的 rename 会覆盖目标，应报告 atomic=true");
+    assert_eq!(sftp.read_file("/a.txt").await.unwrap(), b"new content");
+
+    let keys: Vec<String> = server.fs.lock().await.keys().cloned().collect();
+    assert!(
+        !keys.iter().any(|k| k.contains(".wt-tmp-")),
+        "临时文件必须被 rename 掉，不该留在远端：{keys:?}"
+    );
+}
+
+#[tokio::test]
+async fn atomic_write_can_create_a_new_file() {
+    let server = MockSshServer::start().await;
+    let conn = SshConnection::connect_password(&cfg(server.port), "secret", HostKeyPolicy::AcceptAll)
+        .await
+        .expect("连接应成功");
+    let sftp = SftpClient::open(conn).await.expect("应能打开 sftp 子系统");
+
+    let atomic = sftp
+        .write_file_atomic("/fresh.txt", b"hello")
+        .await
+        .expect("目标不存在时也该成功");
+    assert!(atomic);
+    assert_eq!(sftp.read_file("/fresh.txt").await.unwrap(), b"hello");
+}

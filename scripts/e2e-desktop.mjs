@@ -2103,13 +2103,15 @@ try {
   const editedText = "edited by e2e";
   writeFileSync(editDl.localPath, editedText);
   await clickElement("#edit-save");
-  await waitFor(
+  const saveStatus = await waitFor(
     async () => {
       const s = await cdp.eval(`document.getElementById("status").textContent`);
       return s.startsWith("已写回远端") ? s : null;
     },
     { timeout: 20000, label: "写回远端" },
   );
+  // `FIL-002` 的关键约束：保存远端文件必须「写临时文件 + rename」，不能就地截断
+  check("写回远端走的是原子替换（FIL-002）", saveStatus.includes("原子替换"), saveStatus);
   await clickElement("#edit-close");
   // 重新下载一次，确认远端真的被改了
   await clickFileRow("notes.txt");

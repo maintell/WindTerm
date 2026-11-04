@@ -41,6 +41,17 @@ pub struct SftpClient {
     owner: Option<SshConnection>,
 }
 
+/// 临时文件名后缀：纳秒 + 进程内计数，保证同一秒内多次写也不撞。
+fn unique_suffix() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{nanos}-{}", N.fetch_add(1, Ordering::Relaxed))
+}
+
 impl SftpClient {
     /// 在已有 SSH 连接上打开 sftp 子系统（接管连接所有权）。
     pub async fn open(conn: SshConnection) -> Result<Self, WtError> {
@@ -74,6 +85,56 @@ impl SftpClient {
             .collect();
 
         Ok(sort_entries(entries))
+    }
+
+    /// 原子写整个文件：先写临时文件，再 `rename` 覆盖目标。
+    ///
+    /// **为什么不能直接 `create` 覆盖**（`FIL-002` 的关键约束）：`create` 会先把
+    /// 目标截成 0 字节，写的这段时间里任何人（另一个客户端、服务端的 `inotifywait`、
+    /// 甚至本进程里的文件面板）都能看到一个空文件或半截内容。`rename` 在 OpenSSH 的
+    /// `sftp-server` 上直通 `rename(2)`，替换是原子的：观察者只会看到旧内容或新内容。
+    ///
+    /// 返回 `true` 表示走的是原子替换；`false` 表示服务端严格按 SFTP v3 在「目标已存在」
+    /// 时拒绝 rename，只能退回「先删后改名」——那有一段短暂的不一致窗口，调用方应当
+    /// 如实告诉用户，而不是假装原子。
+    pub async fn write_file_atomic(&self, path: &str, data: &[u8]) -> Result<bool, WtError> {
+        use tokio::io::AsyncWriteExt;
+        let tmp = format!("{path}.wt-tmp-{}", unique_suffix());
+        let write_tmp = async {
+            let mut file = self.inner.create(&tmp).await.map_err(|e| {
+                sftp_error(&format!("无法创建临时文件 {tmp}"), e.to_string())
+            })?;
+            file.write_all(data).await.map_err(|e| {
+                sftp_error(&format!("写入临时文件 {tmp} 失败"), e.to_string())
+            })?;
+            file.shutdown().await.map_err(|e| {
+                sftp_error(&format!("关闭临时文件 {tmp} 失败"), e.to_string())
+            })?;
+            Ok::<(), WtError>(())
+        }
+        .await;
+        if let Err(e) = write_tmp {
+            let _ = self.remove_file(&tmp).await;
+            return Err(e);
+        }
+        match self.inner.rename(&tmp, path).await {
+            Ok(()) => Ok(true),
+            Err(_) => {
+                // 目标已存在且服务端不肯替换：删掉再改名。中间那一瞬间目标是不存在的，
+                // 所以返回 false 让上层把话说清楚。
+                let _ = self.remove_file(path).await;
+                match self.inner.rename(&tmp, path).await {
+                    Ok(()) => Ok(false),
+                    Err(e) => {
+                        let _ = self.remove_file(&tmp).await;
+                        Err(sftp_error(
+                            &format!("无法把临时文件替换成 {path}"),
+                            e.to_string(),
+                        ))
+                    }
+                }
+            }
+        }
     }
 
     /// 读整个文件。
