@@ -2495,6 +2495,94 @@ try {
   ).catch(() => null);
   check("动态代理删除后从列表消失", dynDeleted === true);
 
+  // 16f-1b. 导出/导入隧道配置（`NET-004`）：建一条 → 导出 → 删掉 → 导入回来
+  check(
+    "隧道面板有导出/导入入口（NET-004）",
+    await cdp.eval(`!!document.getElementById("tunnels-export") &&
+      !!document.getElementById("tunnels-import")`),
+    "两个按钮都在",
+  );
+  await cdp.eval(`(() => {
+    const set = (id, v) => {
+      const el = document.getElementById(id);
+      el.value = v;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const kind = document.getElementById("tunnel-kind");
+    // 注意：表单里是 local/dynamic/remote，统计 DTO 里才是 L/D/R——两套名字，别混
+    kind.value = "local";
+    kind.dispatchEvent(new Event("change", { bubbles: true }));
+    set("tunnel-listen", "0");
+    set("tunnel-target", ${JSON.stringify(`127.0.0.1:${echo.port}`)});
+    document.getElementById("tunnel-lan").checked = false;
+    // 承载连接显式「跟随表单」：走会话路径要保险库口令，而这一步它可能是锁着的
+    set("tunnel-session", "");
+    set("host", "127.0.0.1");
+    set("port", ${JSON.stringify(String(sshPort))});
+    set("user", "tester");
+    set("password", "secret");
+    return kind.value;
+  })()`);
+  await clickUntil(
+    () => clickElement("#tunnel-add"),
+    async () => (await cdp.eval(`window.__wt.tunnels.length`)) === 1,
+    { timeout: 10000, tries: 3, label: "导出用例建隧道" },
+  ).catch(async (e) => {
+    const msg = await cdp.eval(`document.getElementById("tunnel-msg").textContent`);
+    throw new Error(`${e.message}；隧道面板说：${msg}`);
+  });
+  const tunPath = await cdp.eval(`window.__TAURI__.core.invoke("tunnels_export")`);
+  const tunFile = JSON.parse(readFileSync(tunPath, "utf8"));
+  check(
+    "隧道配置能导出成 JSON（NET-004）",
+    tunFile.format === "windterm-tunnels" && tunFile.tunnels.length === 1,
+    `${tunPath}（${tunFile.tunnels?.length ?? 0} 条）`,
+  );
+
+  // 用后端命令删，不走列表按钮：列表每秒重排一次，按钮坐标会过期（这一条踩过）
+  const tunList = await cdp.eval(`window.__TAURI__.core.invoke("tunnel_stats")`);
+  const tunId = tunList[0].id;
+  await cdp.eval(`window.__TAURI__.core.invoke("tunnel_delete", { id: ${JSON.stringify(tunId)} })`);
+  // 判据读后端的真值，不读 `__wt.tunnels`：后者靠面板的 1 秒轮询刷新，
+  // 直接调命令时它不会立刻变（这一条踩过一次）
+  const tunGone = await waitFor(
+    async () => {
+      const rows = await cdp.eval(`window.__TAURI__.core.invoke("tunnel_stats")`);
+      return rows.length === 0 ? true : null;
+    },
+    { timeout: 8000, label: "删掉导出用例的隧道" },
+  ).catch(() => null);
+  check("删除后配置从库里消失（NET-004）", tunGone === true, `${tunGone === true ? "已删除" : "还在"}`);
+
+  // 导入时改 id 与名字：只导同一份文件是「更新」，证明不了「导入会新建」
+  const clone = JSON.parse(JSON.stringify(tunFile));
+  clone.tunnels[0].id = "imported-l-1";
+  clone.tunnels[0].name = "imported-L";
+  const importedCount = await cdp.eval(`window.__TAURI__.core.invoke("tunnels_import",
+    { json: ${JSON.stringify(JSON.stringify(clone))} })`);
+  const tunBack = await waitFor(
+    async () => {
+      const names = await cdp.eval(`window.__TAURI__.core.invoke("tunnel_stats")
+        .then((rows) => rows.map((t) => t.name))`);
+      return names.includes("imported-L") ? names : null;
+    },
+    { timeout: 8000, label: "导入后回到列表" },
+  ).catch(() => null);
+  check(
+    "导入能把隧道配置建回来（NET-004）",
+    importedCount === 1 && tunBack !== null,
+    `导入 ${importedCount} 条，列表 ${tunBack ? tunBack.join("、") : "没有"}`,
+  );
+  await cdp.eval(`window.__TAURI__.core.invoke("tunnel_delete", { id: "imported-l-1" })`);
+  await waitFor(
+    async () => {
+      const rows = await cdp.eval(`window.__TAURI__.core.invoke("tunnel_stats")`);
+      return rows.length === 0 ? true : null;
+    },
+    { timeout: 8000, label: "收尾删除隧道" },
+  );
+
+
   // 16f-2. SOCKS5 代理认证（NET-003 AC-3）
   await cdp.eval(`(() => {
     const kind = document.getElementById("tunnel-kind");

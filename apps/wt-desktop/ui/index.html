@@ -1069,6 +1069,9 @@
               ><input type="checkbox" id="tunnel-auto" />解锁保险库后自动拉起</label
             >
             <button id="tunnel-add">启动</button>
+            <button id="tunnels-export" title="把全部隧道配置导出成 JSON">导出</button>
+            <button id="tunnels-import" title="从 JSON 导入隧道配置">导入</button>
+            <input type="file" id="tunnel-file" accept=".json,application/json" hidden />
           </div>
           <div id="tunnel-list"></div>
           <div id="tunnel-foot"><span id="tunnel-msg"></span></div>

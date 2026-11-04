@@ -3344,6 +3344,34 @@ function refreshTunnelSessionSelect() {
   tunnelSessionSelect.value = keep;
 }
 
+// 导出/导入（`NET-004`）：只导配置，不导口令——带 SOCKS5 认证的隧道本来就不落库。
+document.getElementById("tunnels-export").addEventListener("click", async () => {
+  try {
+    // 落点由后端决定（下载目录 + 时间戳），必须把路径说出来：
+    // 不给路径的「已导出」等于没告诉用户东西在哪
+    const path = await invoke("tunnels_export");
+    setTunnelMsg(`已导出：${path}`);
+  } catch (e) {
+    setTunnelMsg(`导出失败：${e}`);
+  }
+});
+
+const tunnelFileInput = document.getElementById("tunnel-file");
+document.getElementById("tunnels-import").addEventListener("click", () => tunnelFileInput.click());
+tunnelFileInput.addEventListener("change", async () => {
+  const file = tunnelFileInput.files?.[0];
+  // 清空，否则同一个文件第二次选不会触发 change
+  tunnelFileInput.value = "";
+  if (!file) return;
+  try {
+    const n = await invoke("tunnels_import", { json: await file.text() });
+    setTunnelMsg(`已导入 ${n} 条隧道`);
+    await refreshTunnels();
+  } catch (e) {
+    setTunnelMsg(`导入失败：${e}`);
+  }
+});
+
 async function refreshTunnels() {
   try {
     renderTunnels(await invoke("tunnel_stats"));
@@ -4388,7 +4416,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-72",
+  ui: "wt-ui-73",
   /** 「本次记住」存了几条（验收用：只回数量，不回口令） */
   sessionPasswords() {
     return sessionPasswords.size;

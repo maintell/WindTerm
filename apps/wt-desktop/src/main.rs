@@ -1204,6 +1204,64 @@ fn session_export(session_id: String) -> Result<String, String> {
     Ok(path.display().to_string())
 }
 
+/// 把全部隧道配置导出成 JSON（`NET-004`）。
+///
+/// 落点与会话导出一致（下载目录 + 时间戳 + 冲突加序号），并把路径回给界面。
+/// **不含任何口令**：带 SOCKS5 认证的隧道本来就不落库，库里根本没有口令可导。
+#[tauri::command]
+fn tunnels_export() -> Result<String, String> {
+    let snapshot = wt_store::Store::open(&sessions_db_path())
+        .map_err(|e| e.to_string())?
+        .load_snapshot()
+        .map_err(|e| e.to_string())?;
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let payload = serde_json::json!({
+        "format": "windterm-tunnels",
+        "version": 1,
+        "exportedAt": secs,
+        "tunnels": snapshot.tunnels,
+    });
+    let text = serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?;
+    let path = unique_path(&download_dir(), &format!("windterm-tunnels-{secs}.json"));
+    std::fs::write(&path, text).map_err(|e| format!("写入 {} 失败：{e}", path.display()))?;
+    Ok(path.display().to_string())
+}
+
+/// 从 JSON 导入隧道配置（`NET-004`），返回导入条数。
+///
+/// **先整批校验再写库**：导到一半失败会留下一半配置，用户看着像「导成功了但少几条」，
+/// 比直接报错难查得多。
+#[tauri::command]
+fn tunnels_import(state: State<'_, AppState>, json: String) -> Result<usize, String> {
+    let value: serde_json::Value = serde_json::from_str(&json)
+        .map_err(|e| format!("[TUN_BAD_FILE] 不是合法的 JSON：{e}"))?;
+    if value.get("format").and_then(|v| v.as_str()) != Some("windterm-tunnels") {
+        return Err("[TUN_BAD_FILE] 这不是 WindTerm 导出的隧道文件".into());
+    }
+    let list: Vec<wt_core::TunnelSpec> = serde_json::from_value(
+        value
+            .get("tunnels")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    )
+    .map_err(|e| format!("[TUN_BAD_FILE] 隧道列表解析失败：{e}"))?;
+    for t in &list {
+        t.validate()
+            .map_err(|e| format!("[TUN_BAD_FILE] {}", e.message))?;
+    }
+    let mut store = wt_store::Store::open(&sessions_db_path()).map_err(|e| e.to_string())?;
+    for t in &list {
+        store.upsert_tunnel(t).map_err(|e| e.to_string())?;
+        // 内存缓存也要更新：`tunnel_stats` 读的是它，只写库的话导入完列表还是空的
+        // （表现为「导入成功但一条都没出现」）。
+        set_tunnel_spec_cache(&state, t.clone(), true);
+    }
+    Ok(list.len())
+}
+
 /// 把会话移到某个文件夹（`folderId` 为空表示移到根）。`SES-014` 的「移动到」。
 #[tauri::command]
 fn session_move(session_id: String, folder_id: Option<String>) -> Result<(), String> {
@@ -3088,6 +3146,8 @@ fn main() {
             session_move_many,
             session_reorder,
             session_export,
+            tunnels_export,
+            tunnels_import,
             prefs_load,
             prefs_save,
             known_hosts_list,
