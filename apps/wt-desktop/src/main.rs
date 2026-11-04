@@ -561,6 +561,46 @@ fn folder_save(req: FolderSaveReq) -> Result<String, String> {
     Ok(id)
 }
 
+/// 把一条会话导出成 JSON（`SES-014`）。
+///
+/// 落点是下载目录而不是「另存为」对话框：界面还没有可用的文件选择器，
+/// 先固定落点并**把路径说出来**，比弹一个半成品对话框可靠得多。
+/// 名字冲突时自动加序号（复用下载那套 `unique_path`），不覆盖已有文件。
+#[tauri::command]
+fn session_export(session_id: String) -> Result<String, String> {
+    let snapshot = wt_store::Store::open(&sessions_db_path())
+        .map_err(|e| e.to_string())?
+        .load_snapshot()
+        .map_err(|e| e.to_string())?;
+    let session = snapshot
+        .sessions
+        .into_iter()
+        .find(|s| s.id.as_str() == session_id)
+        .ok_or_else(|| "[SESSION_NOT_FOUND] 会话不存在（可能已被删除）".to_string())?;
+
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let safe: String = session
+        .name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let file = format!("{safe}-{secs}.json");
+
+    let payload = serde_json::json!({
+        "format": "windterm-session",
+        "version": 1,
+        "exportedAt": secs,
+        "session": session,
+    });
+    let text = serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?;
+    let path = unique_path(&download_dir(), &file);
+    std::fs::write(&path, text).map_err(|e| format!("写入 {} 失败：{e}", path.display()))?;
+    Ok(path.display().to_string())
+}
+
 /// 把会话移到某个文件夹（`folderId` 为空表示移到根）。`SES-014` 的「移动到」。
 #[tauri::command]
 fn session_move(session_id: String, folder_id: Option<String>) -> Result<(), String> {
@@ -2284,7 +2324,8 @@ fn main() {
             session_save,
             session_delete,
             folder_save,
-            session_move
+            session_move,
+            session_export
         ])
         .run(tauri::generate_context!())
         .expect("启动 WindTerm 失败");

@@ -125,7 +125,7 @@ def test_ssh_connect(server, wt):
 | 面板页脚会盖住列表最后一行 | `#tunnels` 没有 `overflow`，内容超出 `max-height` 时页脚溢出、正好压住列表末行的「删除」按钮——表现是「点了没反应、也不报错」。修法：面板自身可滚动（`overflow-y: auto`），别让子元素溢出到邻居身上 |
 | `cdp.eval` 的模板字符串里不要再套反引号 | 嵌套模板会把外层截断，报 `SyntaxError: missing ) after argument list`；改完先跑 `node --check` |
 
-当前覆盖 129 项断言：
+当前覆盖 130 项断言：
 
 - 本地终端：页面加载与 Tauri 桥接、启动自检、点击建会话、句柄可取、首屏输出渲染、
   焦点在终端、键盘输入、命令输出、统计字段非零值、前后端行列一致、ack 回流归零、
@@ -138,7 +138,8 @@ def test_ssh_connect(server, wt):
   所以这条断言验的是解码而不是下拉框）；
 - 会话上下文菜单（`SES-014`）：右键会话出现「重命名 / 复制 / 移动到…」、复制后树里
   出现新条目、右键文件夹能新建子文件夹（**文件夹节点不是 `.node.session`**，
-  断言要读 `.node.folder`，否则永远等不到）；
+  断言要读 `.node.folder`，否则永远等不到）；导出：状态栏给出的路径能被回读，
+  JSON 里 `format` 与 `session.name` 都对得上（只断言「有提示」证明不了文件真落盘）；
 - 终端外观与回滚（`TER-005` / `TER-008`）：内置配色不少于 20 套、切主题 / 改回滚行数 /
   改字号都**落到 xterm 上**（`__wt.look` 带回 `appliedBackground` 与 `appliedScrollback`，
   只验下拉框的话把 theme 传空也能过）；改完把字号复原，别把后面用例的屏幕尺寸带偏；

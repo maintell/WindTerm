@@ -826,7 +826,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-29",
+    uiVersion === "wt-ui-30",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -2722,6 +2722,24 @@ try {
     { timeout: 10000, label: "复制会话" },
   );
   check("复制会话后树里出现新条目", copied.includes("mock-ssh 副本"), `${copied.length} 条`);
+
+  // 导出：落点是下载目录，界面把完整路径说出来——再回读那个文件确认真的是它
+  await rightClickNode("mock-ssh");
+  await clickCtxItem("导出");
+  const exported = await waitFor(
+    async () => {
+      const st = await cdp.eval(`document.getElementById("status").textContent`);
+      return st.startsWith("已导出：") ? st : null;
+    },
+    { timeout: 10000, label: "导出会话" },
+  );
+  const exportedPath = exported.replace(/^已导出：/, "").trim();
+  const exportedJson = JSON.parse(readFileSync(exportedPath, "utf8"));
+  check(
+    "导出的 JSON 真落盘且是这条会话",
+    exportedJson?.format === "windterm-session" && exportedJson?.session?.name === "mock-ssh",
+    exportedPath,
+  );
 
   await rightClickNode("Lab");
   await clickCtxItem("新建子文件夹");

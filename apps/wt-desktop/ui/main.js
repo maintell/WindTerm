@@ -833,6 +833,16 @@ async function moveSession(s) {
   }
 }
 
+async function exportSession(s) {
+  try {
+    const path = await invoke("session_export", { sessionId: s.id });
+    // 把落点说出来：不给路径的「已导出」等于没告诉用户东西在哪
+    setStatus(`已导出：${path}`);
+  } catch (e) {
+    setStatus(`导出失败：${e}`);
+  }
+}
+
 async function newSubFolder(parentId) {
   const name = await askName("新建子文件夹", "");
   if (!name) return;
@@ -870,6 +880,7 @@ treeBody.addEventListener("contextmenu", (ev) => {
       { label: "重命名", run: () => renameSession(s) },
       { label: "复制", run: () => duplicateSession(s) },
       { label: "移动到…", run: () => moveSession(s) },
+      { label: "导出", run: () => exportSession(s) },
     ]);
   } else if (folderId) {
     const f = (lastTree?.folders ?? []).find((x) => x.id === folderId);
@@ -2421,7 +2432,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-29",
+  ui: "wt-ui-30",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";
