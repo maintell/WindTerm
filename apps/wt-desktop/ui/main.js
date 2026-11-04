@@ -465,6 +465,15 @@ function renderTabs() {
       if (ev.button === 0) startTabDrag(view.id, ev.clientX);
     });
 
+    // 双击重命名、右键菜单（`TER-001`）。菜单只列这条标签能做的事，
+    // 不把全局动作塞进来——那会让菜单变成第二个工具栏。
+    tab.addEventListener("dblclick", () => void renameTab(view));
+    tab.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      showTabMenu(view, ev.clientX, ev.clientY);
+    });
+
     tabsEl.appendChild(tab);
   }
 }
@@ -513,6 +522,44 @@ function onTabDragEnd() {
   tabDrag.last = drag;
   // 拖到窗口外松手时 target 还是 null：那种情况就当没拖过，别乱排序
   if (drag?.moved && drag.target) moveTab(drag.id, drag.target);
+}
+
+/** 重命名标签（`TER-001`）。只改显示名，不动会话本身。 */
+async function renameTab(view) {
+  const name = await askName("标签名", view.label);
+  if (!name || name === view.label) return;
+  view.label = name;
+  renderTabs();
+  setStatus(`标签已改名为：${name}`);
+}
+
+/** 关掉除这一条之外的所有标签 */
+async function closeTabsExcept(keep) {
+  for (const v of [...sessions.values()]) {
+    if (v.id !== keep.id) await closeView(v);
+  }
+  if (sessions.has(keep.id)) setActive(keep);
+}
+
+/** 关掉这一条**右侧**的所有标签（顺序就是标签栏顺序） */
+async function closeTabsRight(view) {
+  const order = [...sessions.values()];
+  const at = order.findIndex((v) => v.id === view.id);
+  if (at < 0) return;
+  for (const v of order.slice(at + 1)) await closeView(v);
+}
+
+/** 标签的右键菜单（`TER-001`）。关不掉的项（比如右边没有标签）就不显示数字。 */
+function showTabMenu(view, x, y) {
+  const order = [...sessions.values()];
+  const at = order.findIndex((v) => v.id === view.id);
+  const right = at < 0 ? 0 : order.length - at - 1;
+  showCtxMenu(x, y, [
+    { label: "重命名…", run: () => renameTab(view) },
+    { label: `关闭其他（${order.length - 1}）`, run: () => closeTabsExcept(view) },
+    { label: `关闭右侧（${right}）`, run: () => closeTabsRight(view) },
+    { label: "关闭全部", run: () => closeAllTabs() },
+  ]);
 }
 
 /**
@@ -4186,7 +4233,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-67",
+  ui: "wt-ui-68",
   /** 「本次记住」存了几条（验收用：只回数量，不回口令） */
   sessionPasswords() {
     return sessionPasswords.size;

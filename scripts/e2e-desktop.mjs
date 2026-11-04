@@ -4593,6 +4593,80 @@ try {
   check("SFTP 会话不创建终端标签（SES-009）", tabsAfter === tabsBefore, `${tabsBefore} → ${tabsAfter}`);
   await ensureFilesPanel(false);
 
+  // 19w. 标签右键菜单与双击重命名（`TER-001`）
+  await closeAllDialogs();
+  await closeAllTabs();
+  for (let i = 1; i <= 3; i += 1) {
+    await clickUntil(
+      () => clickElement("#open"),
+      async () => (await cdp.eval(`document.querySelectorAll("#tabs .tab").length`)) >= i,
+      { timeout: 10000, tries: 4, label: `建第 ${i} 个标签` },
+    );
+  }
+
+  // 双击第一个标签 → 重命名对话框
+  const firstTab = await cdp.eval(`(() => {
+    const r = document.querySelectorAll("#tabs .tab")[0].getBoundingClientRect();
+    return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+  })()`);
+  for (const count of [1, 2]) {
+    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...firstTab, button: "left", buttons: 1, clickCount: count });
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...firstTab, button: "left", buttons: 0, clickCount: count });
+  }
+  const dlgOpen = await waitFor(
+    async () =>
+      (await cdp.eval(`document.getElementById("name-dialog").open`)) ? true : null,
+    { timeout: 5000, label: "重命名对话框" },
+  ).catch(() => null);
+  check("双击标签弹出重命名（TER-001）", dlgOpen === true, dlgOpen === true);
+  await confirmName("我的标签");
+  const renamedTabs = await waitFor(
+    async () => {
+      const l = await cdp.eval(`
+        [...document.querySelectorAll("#tabs .tab .label")].map((e) => e.textContent)
+      `);
+      return l.includes("我的标签") ? l : null;
+    },
+    { timeout: 8000, label: "标签改名生效" },
+  ).catch(() => null);
+  check(
+    "标签改名生效（TER-001）",
+    renamedTabs !== null,
+    renamedTabs ? renamedTabs.join(" | ") : "没变",
+  );
+
+  // 右键第二个标签 → 菜单里应有「关闭其他（2）」等项
+  const ctxAt = await cdp.eval(`(() => {
+    const r = document.querySelectorAll("#tabs .tab")[1].getBoundingClientRect();
+    return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+  })()`);
+  await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...ctxAt, button: "right", buttons: 2, clickCount: 1 });
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...ctxAt, button: "right", buttons: 0, clickCount: 1 });
+  const tabMenu = await waitFor(
+    async () => {
+      const items = await cdp.eval(`
+        [...document.querySelectorAll("#ctx-menu button")].map((b) => b.textContent)
+      `);
+      return items.length ? items : null;
+    },
+    { timeout: 5000, label: "标签右键菜单" },
+  ).catch(() => null);
+  check(
+    "标签右键菜单列出可做的事（TER-001）",
+    tabMenu !== null && tabMenu.some((l) => l.startsWith("关闭其他")),
+    tabMenu ? tabMenu.join("、") : "没有菜单",
+  );
+  await clickCtxItem("关闭其他（2）");
+  const afterExcept = await waitFor(
+    async () => {
+      const n = await cdp.eval(`document.querySelectorAll("#tabs .tab").length`);
+      return n === 1 ? n : null;
+    },
+    { timeout: 10000, label: "关闭其他" },
+  ).catch(() => null);
+  check("「关闭其他」只留当前标签（TER-001）", afterExcept === 1, `剩 ${afterExcept ?? "?"} 个`);
+  await closeAllTabs();
+
   // 18. 页面无未捕获异常
   check("页面无未捕获异常", cdp.exceptions.length === 0, cdp.exceptions.join(" | ") || "0 条");
 
