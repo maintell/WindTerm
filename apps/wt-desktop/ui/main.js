@@ -729,6 +729,16 @@ function treeEmpty(text) {
 }
 
 /** 点会话 → 把连接参数填进表单。密码不存库时仍需用户自己填。 */
+/**
+ * 「本次记住」的口令。
+ *
+ * 只活在**这次运行的内存**里：不落盘、不需要主密码，关掉应用就没了。
+ * 键按 `host:port:user` 而不是会话 id——手填表单连的也要能记住。
+ */
+const sessionPasswords = new Map();
+const sessionKey = (host, port, user) =>
+  `${String(host ?? "").trim()}:${Number.parseInt(port, 10) || 22}:${String(user ?? "").trim()}`;
+
 async function selectSession(s) {
   if (s.kind !== "ssh") {
     setStatus(`${s.name} 是 ${s.kind} 会话，暂不支持`);
@@ -746,6 +756,14 @@ async function selectSession(s) {
 
   // 跳板机是会话属性：选中会话就把它带出来（含密码，若保险库已解锁）
   await applyJumpFromSession(s);
+
+  // 「本次记住」的优先：它是刚用过的、肯定没过期
+  const memo = sessionPasswords.get(sessionKey(s.host, s.port, s.username));
+  if (memo) {
+    passInput.value = memo;
+    setStatus(`已填入 ${s.name} 的密码（本次运行记住的）`);
+    return;
+  }
 
   // 保险库解锁时顺手把存过的密码填上，省掉每次手输
   if (vaultUnlocked) {
@@ -3419,10 +3437,10 @@ function syncAuthUi() {
   keyRow.hidden = !useKey;
   jumpRow.hidden = !useJumpBox.checked;
   passInput.hidden = useKey || useAgent;
-  // 密钥/agent 模式没有密码可存：与其让「记住密码」静默失效，不如禁用并收起
+  // 密钥/agent 模式没有密码可存：与其让「保存密码」静默失效，不如禁用并收起
   rememberBox.disabled = useKey || useAgent;
   if (useKey || useAgent) {
-    rememberBox.checked = false;
+    rememberBox.value = "no";
     vaultRow.hidden = true;
   }
   if (useKey) pickKeyBtn.focus();
@@ -3935,8 +3953,9 @@ async function refreshVault() {
 }
 
 rememberBox.addEventListener("change", () => {
-  vaultRow.hidden = !rememberBox.checked;
-  if (rememberBox.checked) {
+  // 只有「永久记住」才需要保险库：「本次记住」放内存，不该为它要一次主密码
+  vaultRow.hidden = rememberBox.value !== "persist";
+  if (rememberBox.value === "persist") {
     refreshVault();
     masterPassInput.focus();
   }
@@ -3967,11 +3986,24 @@ vaultLockBtn.addEventListener("click", async () => {
   setStatus("保险库已锁定");
 });
 
-/** 连接成功后按需保存密码。保存失败不影响已经连上的会话。 */
+/**
+ * 连接成功后按需保存密码（`SEC-002` 三态）。保存失败不影响已经连上的会话。
+ *
+ * - `no`：什么都不做；
+ * - `session`：只放进这次运行的内存——不落盘、也不要主密码，关掉应用就忘；
+ * - `persist`：写进保险库（需要主密码解锁）。
+ */
 async function savePasswordIfAsked() {
-  if (!rememberBox.checked || useKeyBox.checked || !selectedSession) return;
+  const mode = rememberBox.value;
+  if (mode === "no" || useKeyBox.checked) return;
   const pw = passInput.value;
   if (!pw) return;
+  if (mode === "session") {
+    sessionPasswords.set(sessionKey(hostInput.value, portInput.value, userInput.value), pw);
+    setStatus("密码已记住（仅本次运行）");
+    return;
+  }
+  if (!selectedSession) return;
   try {
     await invoke("credential_save", {
       sessionId: selectedSession.id,
@@ -3996,7 +4028,11 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-58",
+  ui: "wt-ui-59",
+  /** 「本次记住」存了几条（验收用：只回数量，不回口令） */
+  sessionPasswords() {
+    return sessionPasswords.size;
+  },
   /** 拖拽命中计数（验收用：分清「事件没到」「没越门槛」「没找着目标」） */
   tabDrag() {
     return { ...tabDrag };

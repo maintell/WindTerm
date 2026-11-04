@@ -2671,9 +2671,35 @@ try {
     },
     { timeout: 5000, label: "退出密钥与 agent 模式" },
   );
-  check("密钥/agent 模式下「记住密码」被禁用，退出后恢复", keyModeOff === true);
+  check("密钥/agent 模式下「保存密码」被禁用，退出后恢复", keyModeOff === true);
 
-  await clickElement("#remember");
+  // 三态（`SEC-002`）：不记住 / 本次记住 / 永久记住
+  const rememberOpts = await cdp.eval(
+    `[...document.getElementById("remember").options].map((o) => o.value)`,
+  );
+  check(
+    "密码保存有三态（不记住 / 本次记住 / 永久记住）",
+    rememberOpts.join(",") === "persist,session,no",
+    rememberOpts.join("、"),
+  );
+
+  const setRemember = (value) =>
+    cdp.eval(`(() => {
+      const el = document.getElementById("remember");
+      el.value = ${JSON.stringify(value)};
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      return el.value;
+    })()`);
+
+  await setRemember("session");
+  const sessionNoVault = await cdp.eval(`document.getElementById("vault-row").hidden`);
+  check(
+    "选「本次记住」不需要主密码（保险库行保持隐藏）",
+    sessionNoVault === true,
+    sessionNoVault,
+  );
+
+  await setRemember("persist");
   const vaultVisible = await waitFor(
     async () => {
       const hidden = await cdp.eval(`document.getElementById("vault-row").hidden`);
@@ -2681,7 +2707,7 @@ try {
     },
     { timeout: 5000, label: "保险库输入行" },
   );
-  check("勾选「记住密码」后出现保险库输入", vaultVisible === true);
+  check("选「永久记住」后出现保险库输入", vaultVisible === true);
 
   const MASTER = "WindTerm-E2E-Passw0rd!";
   await fillInput("#master-pass", MASTER);
@@ -4235,6 +4261,63 @@ try {
     `${tabOrderBefore.join(" | ")} → ${tabOrderAfter ? tabOrderAfter.join(" | ") : "没变"}；drag=${JSON.stringify(await cdp.eval(`window.__wt.tabDrag()`))}`,
   );
   await closeAllTabs();
+
+  // 19r. 「本次记住」与「不记住」（`SEC-002`）
+  //
+  // 「本次记住」不落盘也不进保险库，所以只能从内存里数——`__wt.sessionPasswords()`
+  // 只回条数、不回口令。
+  await closeAllDialogs();
+  await closeAllTabs();
+  const memoBefore = await cdp.eval(`window.__wt.sessionPasswords()`);
+
+  await setRemember("session");
+  await clickSessionNode("mock-ssh");
+  await fillInput("#port", String(sshPort));
+  await fillInput("#password", "secret");
+  await clickElement("#ssh");
+  await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      // 连上之后「本次记住」会把状态栏改写成保存提示，所以两种都算连上了
+      return /已连接|密码已记住/.test(s) ? s : null;
+    },
+    { timeout: 30000, label: "本次记住用例建会话" },
+  );
+  const memoAfter = await waitFor(
+    async () => {
+      const n = await cdp.eval(`window.__wt.sessionPasswords()`);
+      return n > memoBefore ? n : null;
+    },
+    { timeout: 10000, label: "本次记住生效" },
+  ).catch(() => null);
+  check(
+    "「本次记住」把口令放进本次运行的记忆",
+    memoAfter !== null,
+    `${memoBefore} → ${memoAfter ?? "没变"}`,
+  );
+
+  await closeAllTabs();
+  await setRemember("no");
+  await clickSessionNode("mock-ssh");
+  await fillInput("#port", String(sshPort));
+  await fillInput("#password", "secret");
+  await clickElement("#ssh");
+  await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      return s.startsWith("已连接") ? s : null;
+    },
+    { timeout: 30000, label: "不记住用例建会话" },
+  );
+  await waitScreenStable(500);
+  const memoNo = await cdp.eval(`window.__wt.sessionPasswords()`);
+  check(
+    "「不记住」不产生新的记忆",
+    memoNo === (memoAfter ?? memoBefore),
+    `${memoAfter ?? memoBefore} → ${memoNo}`,
+  );
+  await closeAllTabs();
+  await setRemember("persist");
 
   // 18. 页面无未捕获异常
   check("页面无未捕获异常", cdp.exceptions.length === 0, cdp.exceptions.join(" | ") || "0 条");

@@ -949,7 +949,13 @@
       <input id="port" placeholder="端口" value="22" inputmode="numeric" />
       <input id="user" placeholder="用户名" spellcheck="false" />
       <input id="password" type="password" placeholder="密码" />
-      <label id="remember-toggle"><input type="checkbox" id="remember" />记住密码</label>
+      <label id="remember-toggle">密码
+        <select id="remember">
+          <option value="persist">永久记住（存保险库）</option>
+          <option value="session">本次记住（关掉就忘）</option>
+          <option value="no">不记住</option>
+        </select>
+      </label>
       <label id="key-toggle"><input type="checkbox" id="use-key" />用密钥</label>
       <label id="agent-toggle"><input type="checkbox" id="use-agent" />用 agent</label>
       <label id="jump-toggle"><input type="checkbox" id="use-jump" />经跳板机</label>

@@ -139,7 +139,7 @@ def test_ssh_connect(server, wt):
 | 合成可信鼠标事件里没有 `pointerdown` | 实测 WebView2：`Input.dispatchMouseEvent` 会产生 `pointerup`，但**不产生 `pointerdown`**，`auxclick` 也不一定触发。用指针事件写的拖拽/中键关闭在验收里表现为「处理器计数一直是 0」——看着像功能没写。改用 `mousedown`/`mousemove`/`mouseup`，并把 move/up 挂到 `document`（鼠标事件没有指针捕获，光标离开元素就收不到了） |
 | `dataset` 里取出来永远是字符串 | 会话键是数字时，`dataset.id` 拿去 `indexOf` 一个都匹配不上。症状极具迷惑性：拖拽计数全对、`moved` 为真、目标也拿到了，**顺序就是不变**。比较前统一 `String()` |
 
-当前覆盖 188 项断言：
+当前覆盖 192 项断言：
 
 - 本地终端：页面加载与 Tauri 桥接、启动自检、点击建会话、句柄可取、首屏输出渲染、
   焦点在终端、键盘输入、命令输出、统计字段非零值、前后端行列一致、ack 回流归零、
@@ -170,6 +170,9 @@ def test_ssh_connect(server, wt):
   新主密码能解开（读 `vault_unlock` 的返回，不看界面文案）；
 - 已知主机（`SEC-005`）：能列出已记录的主机、界面显示出 `SHA256:` 指纹、
   「忘记」后该主机的记录从 `known_hosts` 里消失（读后端接口而不是看界面文字）；
+- 密码保存三态（`SEC-002`）：控件就是三态（读 `#remember` 的 option 值）、选「本次记住」
+  时**不要求主密码**（保险库行保持隐藏）而「永久记住」才展开、选「本次记住」连一次后
+  `__wt.sessionPasswords()` 条数真的涨了（只回数量不回口令），选「不记住」再连则不变；
 - 标签（`TER-001`）：中键点击能关掉中间那个标签、把第一个标签拖到最后一个的位置后
   顺序真的变了（读 `#tabs .tab .label` 的文字，不看视觉）、溢出时标签栏是
   `overflow-x:auto` 且标签 `flex:0 0 auto` + `min-width:120px`（压扁会让每格只剩
