@@ -283,6 +283,54 @@
         flex: none;
       }
       #term-foot[hidden] { display: none; }
+      /* 广播栏（TER-004）：一行输入 + 模式 + 结果，不占正文 */
+      #bc-bar {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 6px;
+        border-top: 1px solid #2a2a30;
+        font-size: 12px;
+        color: var(--muted);
+        flex: none;
+      }
+      #bc-bar[hidden] { display: none; }
+      #bc-bar input#bc-input {
+        flex: 1;
+        min-width: 0;
+        background: #2a2a30;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 4px;
+        padding: 2px 6px;
+        font: inherit;
+      }
+      #bc-bar select,
+      #bc-bar button {
+        background: #2a2a30;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 4px;
+        padding: 1px 6px;
+        font: inherit;
+        cursor: pointer;
+      }
+      #bc-diff-row { display: flex; align-items: center; gap: 4px; }
+      #bc-result.diff { color: #e5534b; }
+      #ask-dialog {
+        background: #24242a;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 8px;
+        padding: 12px 14px;
+        max-width: 520px;
+      }
+      #ask-dialog pre {
+        white-space: pre-wrap;
+        word-break: break-all;
+        color: #ffd479;
+        margin: 6px 0 12px;
+      }
       /* 右键菜单（SES-014）：只做「当前对象能做什么」，不堆全局命令 */
       #ctx-menu {
         position: fixed;
@@ -336,6 +384,17 @@
         font: inherit;
       }
       #term-foot input[type="number"] { width: 62px; }
+      #term-foot button {
+        background: #2a2a30;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 4px;
+        padding: 1px 8px;
+        font: inherit;
+        cursor: pointer;
+      }
+      #term-foot #bc-toggle { margin-left: auto; }
+      #term-foot #bc-toggle.on { border-color: var(--accent); color: var(--accent); }
       #term-foot #look-size { width: 48px; }
       #term-foot #look-height { width: 52px; }
       #paste-confirm {
@@ -611,6 +670,16 @@
       </aside>
       <div id="right">
         <div id="tabs"></div>
+        <div id="bc-bar" hidden>
+          <select id="bc-mode" title="广播方式">
+            <option value="on-enter">一行一发</option>
+            <option value="confirm">发送前确认</option>
+          </select>
+          <input id="bc-input" placeholder="广播到所有已连接会话" spellcheck="false" />
+          <button id="bc-send">发送</button>
+          <label id="bc-diff-row" title="只展开输出不一致的会话"><input type="checkbox" id="bc-diff" />只看差异</label>
+          <span id="bc-result"></span>
+        </div>
         <div id="term-foot">
           <select id="look-theme" title="配色"></select>
           <select id="look-font" title="字体">
@@ -623,6 +692,7 @@
           <input id="look-size" type="number" min="9" max="28" step="1" title="字号" />
           <input id="look-height" type="number" min="1" max="2" step="0.05" title="行高" />
           <input id="look-scrollback" type="number" min="1000" max="1000000" step="1000" title="回滚行数" />
+          <button id="bc-toggle" title="多执行广播：同一命令发给所有已连接会话">广播</button>
           <select id="encoding" title="终端输出编码（只影响之后的输出，已显示的内容不动）">
             <option value="utf-8">UTF-8</option>
             <option value="gbk">GBK</option>
@@ -645,6 +715,17 @@
     <!-- 多行粘贴确认（TER-013）。用原生 <dialog> 而不是 window.confirm：
          后者会阻塞整个渲染进程，终端在那段时间里连输出都刷不出来。 -->
     <div id="ctx-menu" hidden></div>
+    <!-- 确认框：广播前/危险命令拦截都用它。确认放前面，回车即确认 -->
+    <dialog id="ask-dialog">
+      <form method="dialog">
+        <p id="ask-title"></p>
+        <pre id="ask-body"></pre>
+        <menu>
+          <button value="yes" id="ask-ok">确认发送</button>
+          <button value="no" id="ask-cancel">取消</button>
+        </menu>
+      </form>
+    </dialog>
     <!-- 选文件夹：用原生 dialog + select，和命名对话框同一套路数 -->
     <dialog id="pick-dialog">
       <form method="dialog">

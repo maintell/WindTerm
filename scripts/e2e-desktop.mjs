@@ -826,7 +826,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-30",
+    uiVersion === "wt-ui-32",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -2759,6 +2759,86 @@ try {
     { timeout: 10000, label: "新建子文件夹" },
   );
   check("右键文件夹能新建子文件夹", folderMade.includes("sub-net"), folderMade.join("、"));
+
+  // 19c-2. 多执行广播（`TER-004`）：同一命令发给多个会话，按输出分组收起
+  await closeAllTabs();
+  await clickSessionNode("mock-ssh");
+  await fillInput("#port", String(sshPort));
+  await clickElement("#ssh");
+  await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      return s.startsWith("已连接") ? s : null;
+    },
+    { timeout: 30000, label: "广播第一个会话" },
+  );
+  await clickElement("#ssh");
+  await waitFor(
+    async () => ((await cdp.eval(`window.__wt.tabs().length`)) >= 2 ? true : null),
+    { timeout: 30000, label: "广播第二个会话" },
+  );
+  // 等第二个会话的横幅落地再广播：否则它迟到的 WELCOME 会落进捕获窗口，
+  // 被当成「输出不一致」——那是测试时序问题，不是聚合逻辑出错
+  await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.screen()`);
+      return t.includes("WELCOME") ? true : null;
+    },
+    { timeout: 15000, label: "第二个会话横幅" },
+  );
+
+  await clickElement("#bc-toggle");
+  const bcOpen = await waitFor(
+    async () => {
+      const b = await cdp.eval(`window.__wt.broadcast`);
+      return b.open && b.targets >= 2 ? b : null;
+    },
+    { timeout: 10000, label: "打开广播栏" },
+  );
+  check("广播栏识别到多个已连接会话", bcOpen.targets >= 2, `${bcOpen.targets} 个目标`);
+
+  await fillInput("#bc-input", "echo hi");
+  await clickElement("#bc-send");
+  const bcDone = await waitFor(
+    async () => {
+      const b = await cdp.eval(`window.__wt.broadcast`);
+      return b.last && !b.last.cancelled ? b : null;
+    },
+    { timeout: 30000, label: "广播完成" },
+  );
+  check(
+    "两台输出一致时聚合为一行",
+    bcDone.last.groups.length === 1 && bcDone.last.groups[0].labels.length === 2,
+    bcDone.result,
+  );
+
+  // 危险命令：必须拦下来先确认，取消后一个字节都不发
+  await fillInput("#bc-input", "rm -rf /");
+  await clickElement("#bc-send");
+  const askBody = await waitFor(
+    async () => {
+      const open = await cdp.eval(`document.getElementById("ask-dialog").open`);
+      if (!open) return null;
+      return cdp.eval(`document.getElementById("ask-body").textContent`);
+    },
+    { timeout: 8000, label: "危险命令确认框" },
+  );
+  check(
+    "危险命令被拦截且确认框说明目标数量",
+    askBody.includes("rm -rf /") && /目标：\d+ 个已连接会话/.test(askBody),
+    askBody.split("\n").filter(Boolean).pop(),
+  );
+  await clickElement("#ask-cancel");
+  const cancelled = await waitFor(
+    async () => {
+      const b = await cdp.eval(`window.__wt.broadcast`);
+      return b.last?.cancelled ? b : null;
+    },
+    { timeout: 8000, label: "取消广播" },
+  );
+  check("取消后没有发出任何命令", cancelled.last.sent === 0, cancelled.result || "未发送");
+  await clickElement("#bc-toggle");
+  await closeAllTabs();
 
   // 19f. 外观与回滚（`TER-005` / `TER-008`）：主题要真的落到 xterm 上，
   //      只改下拉框不算（把 theme 传空也能骗过那种断言）

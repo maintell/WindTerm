@@ -420,6 +420,14 @@ async function pump(view) {
       continue;
     }
     const n = bytes.length;
+    // 广播期间顺带把文本收一份（`TER-004` 的结果聚合要用原文比对）
+    if (view.cap) {
+      try {
+        view.cap.text += view.cap.dec.decode(bytes, { stream: true });
+      } catch {
+        // 编码不支持就放弃这一块，别让捕获影响正常输出
+      }
+    }
     // ack 在 xterm 消费完之后才发，否则后端算出的「未确认字节」是假的
     view.term.write(decodeOutput(bytes), () => {
       view.pending += n;
@@ -1840,7 +1848,182 @@ const tunnelTarget = document.getElementById("tunnel-target");
 const tunnelLan = document.getElementById("tunnel-lan");
 const tunnelSocksUser = document.getElementById("tunnel-socks-user");
 const tunnelSocksPass = document.getElementById("tunnel-socks-pass");
+// ── 多执行广播（`TER-004`）────────────────────────────────
+//
+// 只做「一条命令发给所有已连接会话」这件事：MobaXterm 的实时逐键广播（`broadcast-live`）
+// 在交互式程序里会互相踩，规格也把它排在最后一条 AC；这里先给更安全的两种模式。
+
+/** 危险命令：命中就把模式强制切成「发送前确认」（`SEC-011`） */
+const DANGEROUS = [
+  /rm\s+-[rf]{1,2}\s+\/(\s|$)/i,
+  /mkfs\./i,
+  /dd\s+.*of=\/dev\//i,
+  /\b(shutdown|reboot|halt|poweroff)\b/i,
+  /:\(\)\s*\{.*\};\s*:/i,
+  /chmod\s+-R\s+777\s+\//i,
+  />\s*\/dev\/sd[a-z]/i,
+  /iptables\s+-F/i,
+  /systemctl\s+(stop|disable)\s+.*(sshd|network)/i,
+];
+
+function isDangerous(cmd) {
+  return DANGEROUS.some((re) => re.test(cmd));
+}
+
+/** 广播目标：当前有连接的所有终端 */
+function broadcastTargets() {
+  return [...sessions.values()].filter((v) => v.handle && v.running);
+}
+
+/** 最近一次广播的结果（验收读它） */
+let lastBroadcast = null;
+
+function askConfirm(title, body) {
+  askTitle.textContent = title;
+  askBody.textContent = body;
+  askDialog.returnValue = "";
+  askDialog.showModal();
+  return new Promise((resolve) => {
+    askDialog.addEventListener(
+      "close",
+      () => resolve(askDialog.returnValue === "yes"),
+      { once: true },
+    );
+  });
+}
+
+/**
+ * 等每个会话的捕获安静下来。
+ *
+ * 「安静」比固定 sleep 靠谱：命令回多快取决于远端，固定等 1 秒要么慢要么截断。
+ * 上限兜底，免得某台一直吐东西把整个广播卡住。
+ */
+function settleCapture(targets, quietMs, maxMs) {
+  const start = performance.now();
+  const lastLen = new Map(targets.map((v) => [v, v.cap.text.length]));
+  const lastChange = new Map(targets.map((v) => [v, start]));
+  return new Promise((resolve) => {
+    const tick = () => {
+      const now = performance.now();
+      let quiet = true;
+      for (const v of targets) {
+        const len = v.cap.text.length;
+        if (len !== lastLen.get(v)) {
+          lastLen.set(v, len);
+          lastChange.set(v, now);
+        }
+        if (now - lastChange.get(v) < quietMs) quiet = false;
+      }
+      if (quiet || now - start > maxMs) {
+        const out = targets.map((v) => ({ label: v.label, text: v.cap.text }));
+        for (const v of targets) v.cap = null;
+        resolve(out);
+        return;
+      }
+      setTimeout(tick, 100);
+    };
+    setTimeout(tick, quietMs);
+  });
+}
+
+/** 分组：输出一致就折成一行（`TER-004` 的核心增强） */
+function groupByOutput(results) {
+  const groups = new Map();
+  for (const r of results) {
+    const key = r.text.replace(/\r/g, "").replace(/[ \t]+$/gm, "").trim();
+    const g = groups.get(key) ?? { key, text: key, labels: [] };
+    g.labels.push(r.label);
+    groups.set(key, g);
+  }
+  return [...groups.values()].sort((a, b) => b.labels.length - a.labels.length);
+}
+
+function renderBroadcast(groups, total) {
+  const differing = groups.length > 1;
+  const parts = groups.map((g) => `${g.labels.length} 台：${firstLine(g.text) || "（无输出）"}`);
+  bcResult.textContent = differing ? parts.join("　|　") : `${total} 台一致：${firstLine(groups[0]?.text) || "（无输出）"}`;
+  bcResult.classList.toggle("diff", differing);
+  bcResult.title = groups
+    .map((g) => `【${g.labels.join("、")}】\n${g.text}`)
+    .join("\n\n");
+}
+
+function firstLine(text) {
+  return (text ?? "").split("\n").map((l) => l.trim()).filter(Boolean)[0] ?? "";
+}
+
+async function runBroadcast() {
+  const cmd = bcInput.value.trim();
+  if (!cmd) return;
+  const targets = broadcastTargets();
+  const idle = [...sessions.values()].filter((v) => !v.handle || !v.running).length;
+  if (!targets.length) {
+    setStatus("没有可广播的会话");
+    return;
+  }
+  const dangerous = isDangerous(cmd);
+  if (dangerous || bcMode.value === "confirm") {
+    const title = dangerous ? "危险命令，确认要广播吗？" : "确认广播";
+    const ok = await askConfirm(
+      title,
+      `${cmd}\n\n目标：${targets.length} 个已连接会话${idle ? `（另有 ${idle} 个未就绪，会被跳过）` : ""}`,
+    );
+    if (!ok) {
+      lastBroadcast = { sent: 0, cancelled: true, groups: [] };
+      setStatus("已取消广播");
+      return;
+    }
+  }
+
+  for (const v of targets) {
+    // 每个会话一个独立解码器：多字节字符会跨块，共用会把字拼错
+    v.cap = { dec: new TextDecoder(encoding === "utf-8" ? "utf-8" : encoding), text: "" };
+  }
+  await Promise.all(
+    targets.map((v) =>
+      invoke("term_write", { handle: v.handle, data: `${cmd}\r` }).catch(() => {}),
+    ),
+  );
+  const results = await settleCapture(targets, 400, 8000);
+  const groups = groupByOutput(results);
+  lastBroadcast = { sent: targets.length, cancelled: false, idle, groups };
+  renderBroadcast(groups, targets.length);
+  if (bcDiff.checked && groups.length > 1) {
+    const onlyDiff = groups.filter((g) => g.labels.length < targets.length);
+    renderBroadcast(onlyDiff.length ? onlyDiff : groups, targets.length);
+  }
+  setStatus(`已广播到 ${targets.length} 个会话`);
+}
+
+/// 控件接线要等 DOM 引用就绪（引用声明在这段之后，直接写在顶层会撞 TDZ）
+function initBroadcast() {
+  bcToggle.addEventListener("click", () => {
+    bcBar.hidden = !bcBar.hidden;
+    bcToggle.classList.toggle("on", !bcBar.hidden);
+    if (!bcBar.hidden) bcInput.focus();
+  });
+
+  bcSend.addEventListener("click", () => void runBroadcast());
+
+  // 回车发送（广播框里回车不换行，这里就是「发送」的意思）
+  bcInput.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Enter") return;
+    ev.preventDefault();
+    void runBroadcast();
+  });
+}
+
 const termFoot = document.getElementById("term-foot");
+const bcBar = document.getElementById("bc-bar");
+const bcToggle = document.getElementById("bc-toggle");
+const bcMode = document.getElementById("bc-mode");
+const bcInput = document.getElementById("bc-input");
+const bcSend = document.getElementById("bc-send");
+const bcDiff = document.getElementById("bc-diff");
+const bcResult = document.getElementById("bc-result");
+const askDialog = document.getElementById("ask-dialog");
+const askTitle = document.getElementById("ask-title");
+const askBody = document.getElementById("ask-body");
 const encodingSelect = document.getElementById("encoding");
 const lookThemeSelect = document.getElementById("look-theme");
 const lookFontSelect = document.getElementById("look-font");
@@ -2432,7 +2615,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-30",
+  ui: "wt-ui-32",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";
@@ -2446,7 +2629,12 @@ window.__wt = {
    */
   textPoint(text) {
     if (!text) return null;
-    for (const rowEl of document.querySelectorAll(".xterm-rows > div")) {
+    // 从**最新**的行往上找，并且跳过被裁掉一半的行：
+    // 命中一个屏幕外的坐标，点击会落到别的字上（验收里表现为「选中了 echo」这种怪结果）。
+    const rows = [...document.querySelectorAll(".xterm-rows > div")];
+    const host = document.querySelector(".term-view.active")?.getBoundingClientRect() ?? null;
+    for (let row = rows.length - 1; row >= 0; row -= 1) {
+      const rowEl = rows[row];
       const idx = rowEl.textContent.indexOf(text);
       if (idx < 0) continue;
       const walker = document.createTreeWalker(rowEl, NodeFilter.SHOW_TEXT);
@@ -2459,7 +2647,8 @@ window.__wt = {
           range.setStart(node, start);
           range.setEnd(node, Math.min(start + text.length, len));
           const r = range.getBoundingClientRect();
-          if (r.width > 0) return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+          const visible = !host || (r.y >= host.top && r.bottom <= host.bottom + 1);
+          if (r.width > 0 && visible) return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
         }
         seen += len;
       }
@@ -2537,6 +2726,15 @@ window.__wt = {
   get encoding() {
     return encoding;
   },
+  /** 多执行广播（`TER-004`）：目标数、最近一次结果与分组 */
+  get broadcast() {
+    return {
+      open: !bcBar.hidden,
+      targets: broadcastTargets().length,
+      last: lastBroadcast,
+      result: bcResult.textContent,
+    };
+  },
   /**
    * 外观与回滚行数（`TER-005` / `TER-008`）：验收读它，别去解析下拉框。
    *
@@ -2585,6 +2783,7 @@ window.__wt = {
   // 外观要先读回来再建会话，否则第一个终端会用默认配色闪一下再变色
   loadLook();
   initLookControls();
+  initBroadcast();
   loadTree();
   try {
     await invoke("term_stats", { handle: "probe" });
