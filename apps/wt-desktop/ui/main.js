@@ -3245,6 +3245,39 @@ lookScrollbackInput.addEventListener("change", () => {
   applyLook();
 });
 
+// ── 设置中心（`SET-001`）──────────────────────────────────
+//
+// 控件只有这一份：底栏不再重复放主题/字体/字号/编码，避免「两处都能改、状态不一致」。
+// 每项带生效范围标注，搜索框按「名字 + 关键词」过滤——关键词里放了中英文别名，
+// 用户搜 `gbk`、`乱码`、`encoding` 都能命中。
+
+const settingsDialog = document.getElementById("settings");
+const setSearch = document.getElementById("set-search");
+const setEmpty = document.getElementById("set-empty");
+
+function filterSettings(query) {
+  const needle = query.trim().toLowerCase();
+  let shown = 0;
+  for (const row of document.querySelectorAll("#set-body .set-row")) {
+    const hay = `${row.dataset.kw ?? ""} ${row.textContent}`.toLowerCase();
+    const hit = !needle || hay.includes(needle);
+    row.hidden = !hit;
+    if (hit) shown += 1;
+  }
+  // 搜不到要说出来，别让面板看起来是空的
+  setEmpty.hidden = shown > 0;
+}
+
+document.getElementById("settings-open").addEventListener("click", () => {
+  setSearch.value = "";
+  filterSettings("");
+  settingsDialog.showModal();
+  setSearch.focus();
+});
+
+document.getElementById("set-close").addEventListener("click", () => settingsDialog.close());
+setSearch.addEventListener("input", () => filterSettings(setSearch.value));
+
 encodingSelect.addEventListener("change", () => {
   encoding = encodingSelect.value;
   // 换编码时丢掉旧的流式状态：上一个编码留下的半截字符不该混进新口径
@@ -3369,7 +3402,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-41",
+  ui: "wt-ui-42",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";

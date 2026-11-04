@@ -497,6 +497,57 @@
         padding: 0;
         margin: 0;
       }
+      #settings {
+        background: #24242a;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 8px;
+        padding: 12px 14px;
+        min-width: 460px;
+        max-height: 70vh;
+      }
+      #set-head { display: flex; gap: 8px; margin-bottom: 10px; }
+      #set-head input {
+        flex: 1;
+        background: #2a2a30;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 4px;
+        padding: 3px 8px;
+        font: inherit;
+      }
+      #set-head button {
+        background: #2a2a30;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 4px;
+        padding: 2px 10px;
+        font: inherit;
+        cursor: pointer;
+      }
+      #set-body { display: flex; flex-direction: column; gap: 2px; overflow: auto; }
+      .set-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 4px 6px;
+        font-size: 12px;
+        border-bottom: 1px solid #2a2a30;
+      }
+      .set-row .set-name { flex: 1; }
+      /* 生效范围：现在都是全局，但规格要求「显示生效范围」，先把位置留出来 */
+      .set-row .set-scope { color: #6a6a72; font-size: 11px; }
+      .set-row select,
+      .set-row input {
+        background: #2a2a30;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 4px;
+        padding: 1px 6px;
+        font: inherit;
+        min-width: 140px;
+      }
+      #set-empty { color: var(--muted); font-size: 12px; margin: 8px 6px; }
       #keys-dialog {
         background: #24242a;
         color: var(--fg);
@@ -893,29 +944,11 @@
           <span id="bc-result"></span>
         </div>
         <div id="term-foot">
-          <select id="look-theme" title="配色"></select>
-          <select id="look-font" title="字体">
-            <option value='"JetBrains Mono", Consolas, "Cascadia Mono", monospace'>JetBrains Mono</option>
-            <option value='"Cascadia Mono", Consolas, monospace'>Cascadia Mono</option>
-            <option value='Consolas, "Courier New", monospace'>Consolas</option>
-            <option value='"Courier New", Courier, monospace'>Courier New</option>
-            <option value="monospace">系统等宽</option>
-          </select>
-          <input id="look-size" type="number" min="9" max="28" step="1" title="字号" />
-          <input id="look-height" type="number" min="1" max="2" step="0.05" title="行高" />
-          <input id="look-scrollback" type="number" min="1000" max="1000000" step="1000" title="回滚行数" />
+          <button id="settings-open" title="设置（可搜索）">设置</button>
           <button id="split-toggle" title="左右分屏：同时看两个会话">分屏</button>
           <button id="bc-toggle" title="多执行广播：同一命令发给所有已连接会话">广播</button>
           <button id="keys-open" title="键位设置（可重绑、冲突检测、导入导出）">键位</button>
           <button id="keygen-open" title="生成或导入 SSH 密钥，查看指纹">密钥</button>
-          <select id="encoding" title="终端输出编码（只影响之后的输出，已显示的内容不动）">
-            <option value="utf-8">UTF-8</option>
-            <option value="gbk">GBK</option>
-            <option value="gb18030">GB18030</option>
-            <option value="big5">Big5</option>
-            <option value="shift_jis">Shift-JIS</option>
-            <option value="iso-8859-1">Latin-1</option>
-          </select>
         </div>
         <div id="find-bar" hidden>
           <input id="find-input" placeholder="查找（Ctrl+F）" spellcheck="false" />
@@ -967,6 +1000,59 @@
       <menu>
         <button type="button" id="edit-close">关闭</button>
       </menu>
+    </dialog>
+    <!-- 设置中心（SET-001）：可搜索、标注生效范围。控件只有这一份，底栏不再重复 -->
+    <dialog id="settings">
+      <div id="set-head">
+        <input id="set-search" placeholder="搜索设置" spellcheck="false" />
+        <button type="button" id="set-close">关闭</button>
+      </div>
+      <div id="set-body">
+        <div class="set-row" data-kw="编码 encoding gbk utf-8 乱码 字符集">
+          <span class="set-name">终端编码</span>
+          <span class="set-scope">全局</span>
+          <select id="encoding">
+            <option value="utf-8">UTF-8</option>
+            <option value="gbk">GBK</option>
+            <option value="gb18030">GB18030</option>
+            <option value="big5">Big5</option>
+            <option value="shift_jis">Shift-JIS</option>
+            <option value="iso-8859-1">Latin-1</option>
+          </select>
+        </div>
+        <div class="set-row" data-kw="配色 主题 theme 颜色 皮肤">
+          <span class="set-name">配色</span>
+          <span class="set-scope">全局</span>
+          <select id="look-theme"></select>
+        </div>
+        <div class="set-row" data-kw="字体 font family 等宽">
+          <span class="set-name">字体</span>
+          <span class="set-scope">全局</span>
+          <select id="look-font">
+            <option value='"JetBrains Mono", Consolas, "Cascadia Mono", monospace'>JetBrains Mono</option>
+            <option value='"Cascadia Mono", Consolas, monospace'>Cascadia Mono</option>
+            <option value='Consolas, "Courier New", monospace'>Consolas</option>
+            <option value='"Courier New", Courier, monospace'>Courier New</option>
+            <option value="monospace">系统等宽</option>
+          </select>
+        </div>
+        <div class="set-row" data-kw="字号 font size 字">
+          <span class="set-name">字号</span>
+          <span class="set-scope">全局</span>
+          <input id="look-size" type="number" min="9" max="28" step="1" />
+        </div>
+        <div class="set-row" data-kw="行高 line height 间距">
+          <span class="set-name">行高</span>
+          <span class="set-scope">全局</span>
+          <input id="look-height" type="number" min="1" max="2" step="0.05" />
+        </div>
+        <div class="set-row" data-kw="回滚 滚动 缓冲 scrollback 行数 历史">
+          <span class="set-name">回滚行数</span>
+          <span class="set-scope">全局</span>
+          <input id="look-scrollback" type="number" min="1000" max="1000000" step="1000" />
+        </div>
+        <p id="set-empty" hidden>没有匹配的设置项</p>
+      </div>
     </dialog>
     <dialog id="key-dialog">
       <p id="key-title">SSH 密钥</p>

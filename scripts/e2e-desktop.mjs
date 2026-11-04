@@ -878,7 +878,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-41",
+    uiVersion === "wt-ui-42",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -2877,18 +2877,49 @@ try {
     },
     { timeout: 30000, label: "编码用例建会话" },
   );
+  // 编码控件已搬进设置中心（SET-001）：先开面板再改
+  await clickElement("#settings-open");
   const encUi = await cdp.eval(`(() => {
     const sel = document.getElementById("encoding");
     const before = sel.value;
-    const hidden = document.getElementById("term-foot").hidden;
+    const inSettings = !document.getElementById("settings").hidden;
     sel.value = "gbk";
     sel.dispatchEvent(new Event("change", { bubbles: true }));
-    return { before, hidden, after: window.__wt.encoding };
+    return { before, inSettings, after: window.__wt.encoding };
   })()`);
+  await clickElement("#set-close");
   check(
-    "有终端时底部出现编码选择，默认 UTF-8",
-    encUi.hidden === false && encUi.before === "utf-8" && encUi.after === "gbk",
+    "设置中心里能改终端编码且从 UTF-8 起",
+    encUi.inSettings === true && encUi.before === "utf-8" && encUi.after === "gbk",
     JSON.stringify(encUi),
+  );
+
+  // 设置搜索（SET-001 要求「每项都可通过搜索可达」）
+  await clickElement("#settings-open");
+  const searchUi = await cdp.eval(`(() => {
+    const s = document.getElementById("set-search");
+    const visibleNames = () =>
+      [...document.querySelectorAll("#set-body .set-row")]
+        .filter((r) => !r.hidden)
+        .map((r) => r.querySelector(".set-name").textContent);
+    s.value = "乱码";
+    s.dispatchEvent(new Event("input", { bubbles: true }));
+    const hit = visibleNames();
+    s.value = "zzzz";
+    s.dispatchEvent(new Event("input", { bubbles: true }));
+    const empty = !document.getElementById("set-empty").hidden;
+    s.value = "";
+    s.dispatchEvent(new Event("input", { bubbles: true }));
+    return { hit, empty, restored: visibleNames().length };
+  })()`);
+  await clickElement("#set-close");
+  check(
+    "设置搜索能按关键词命中，搜不到时有空态提示",
+    searchUi.hit.length === 1 &&
+      searchUi.hit[0] === "终端编码" &&
+      searchUi.empty === true &&
+      searchUi.restored >= 6,
+    JSON.stringify(searchUi),
   );
 
   // 一次性把触发词写下去：逐键输入会让 mock 收到「一次一个字符」，
@@ -3345,6 +3376,7 @@ try {
     },
     { timeout: 30000, label: "外观用例建会话" },
   );
+  await clickElement("#settings-open");
   const lookUi = await cdp.eval(`(() => {
     const theme = document.getElementById("look-theme");
     const count = theme.options.length;
@@ -3358,6 +3390,7 @@ try {
     size.dispatchEvent(new Event("change", { bubbles: true }));
     return { count, ...window.__wt.look };
   })()`);
+  await clickElement("#set-close");
   check("内置配色不少于 20 套", lookUi.count >= 20, `${lookUi.count} 套`);
   check(
     "切主题/改回滚/改字号都真的落到终端上",
