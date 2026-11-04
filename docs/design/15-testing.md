@@ -131,7 +131,7 @@ def test_ssh_connect(server, wt):
 | SFTP 覆盖写要 truncate，否则尾部留旧字节 | `self.inner.write(path, data)` **不截断**：写 14 字节到 17 字节的文件里，末尾 3 字节还在（表现为「edited by e2erver」）。改用 `create`（O_TRUNC）。**mock 也要模拟 TRUNC**，否则这类 bug 在测试里看不出来——服务端没截断，客户端看着却没问题 |
 | `<dialog>` 里没有 `<form method=dialog>` 时，按钮不会关闭它 | 「关闭」按钮看着能点，实际上什么也不做，接着的按键全被当成「录制」。要么包 form，要么显式 `close()` |
 
-当前覆盖 159 项断言：
+当前覆盖 161 项断言：
 
 - 本地终端：页面加载与 Tauri 桥接、启动自检、点击建会话、句柄可取、首屏输出渲染、
   焦点在终端、键盘输入、命令输出、统计字段非零值、前后端行列一致、ack 回流归零、
@@ -142,6 +142,9 @@ def test_ssh_connect(server, wt):
 - 终端编码（`TER-006`）：有终端时底部出现编码选择且默认 UTF-8、切到 GBK 后
   **mock 回的 GBK 字节被解成「中文」**（mock 在输入含 `__gbk__` 时改回 GBK 字节，
   所以这条断言验的是解码而不是下拉框）；
+- 导入配色（`TER-005`）：粘贴 Windows Terminal 的 `schemes` JSON → 导入后当前配色切到它、
+  `appliedBackground` 等于方案里的背景色（证明真的应用了，不只是加进列表）、
+  下拉框条目数随之增加；用 `purple` 键名而不是 `magenta`，与真实方案的键一致；
 - 多选与批量移动（`SES-013`）：Ctrl+点击能选中两个会话（读 `.node.multi` 数量）、
   多选时右键菜单出现「移动 N 项到…」、移动后两条会话的 `folder_id` 都变成目标文件夹
   （读 `sessions_load` 的后端真值）；

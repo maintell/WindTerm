@@ -706,6 +706,21 @@ struct PrefsDto {
     encoding: String,
     /// 键位（`TER-020`）：`action → chords[]`
     keymap: std::collections::BTreeMap<String, Vec<String>>,
+    /// 导入的配色方案（`TER-005`）：跟内置的放一起，重启后还在
+    #[serde(default)]
+    custom_themes: Vec<CustomTheme>,
+}
+
+/// 一套导入的配色：4 个界面色 + 16 个 ANSI 色，和内置的结构一致。
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct CustomTheme {
+    name: String,
+    bg: String,
+    fg: String,
+    cur: String,
+    sel: String,
+    ansi: Vec<String>,
 }
 
 impl Default for PrefsDto {
@@ -718,6 +733,7 @@ impl Default for PrefsDto {
             scrollback: 10_000,
             encoding: "utf-8".into(),
             keymap: std::collections::BTreeMap::new(),
+            custom_themes: Vec::new(),
         }
     }
 }

@@ -895,7 +895,7 @@ try {
   );
   check(
     "前端脚本是本次构建的版本",
-    uiVersion === "wt-ui-43",
+    uiVersion === "wt-ui-44",
     `__wt.ui=${uiVersion}`,
   );
 
@@ -2910,6 +2910,48 @@ try {
     encUi.inSettings === true && encUi.before === "utf-8" && encUi.after === "gbk",
     JSON.stringify(encUi),
   );
+
+  // 19c-3. 导入配色（`TER-005`）：Windows Terminal schemes JSON
+  const scheme = {
+    schemes: [
+      {
+        name: "E2E Scheme",
+        background: "#101020",
+        foreground: "#e0e0f0",
+        cursorColor: "#ff0000",
+        selectionBackground: "#303050",
+        black: "#000000", red: "#aa0000", green: "#00aa00", yellow: "#aa5500",
+        blue: "#0000aa", purple: "#aa00aa", cyan: "#00aaaa", white: "#aaaaaa",
+        brightBlack: "#555555", brightRed: "#ff5555", brightGreen: "#55ff55",
+        brightYellow: "#ffff55", brightBlue: "#5555ff", brightPurple: "#ff55ff",
+        brightCyan: "#55ffff", brightWhite: "#ffffff",
+      },
+    ],
+  };
+  await clickElement("#settings-open");
+  await clickElement("#theme-import-open");
+  await cdp.eval(`(() => {
+    const ta = document.getElementById("theme-text");
+    ta.value = ${JSON.stringify(JSON.stringify(scheme))};
+    return true;
+  })()`);
+  await clickElement("#theme-import");
+  const themeImported = await waitFor(
+    async () => {
+      const l = await cdp.eval(`window.__wt.look`);
+      return l.theme === "E2E Scheme" ? l : null;
+    },
+    { timeout: 10000, label: "导入配色" },
+  );
+  check(
+    "导入的配色被选中并应用到终端",
+    themeImported.appliedBackground === "#101020",
+    `${themeImported.theme} / ${themeImported.appliedBackground}`,
+  );
+  const themeCount = await cdp.eval(`document.getElementById("look-theme").options.length`);
+  check("导入的配色进了下拉框", themeCount >= 22, `${themeCount} 套`);
+  await clickElement("#theme-close");
+  await clickElement("#set-close");
 
   // 设置搜索（SET-001 要求「每项都可通过搜索可达」）
   await clickElement("#settings-open");

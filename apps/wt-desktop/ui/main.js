@@ -201,6 +201,12 @@ async function loadPrefs() {
     if (Number.isFinite(p.lineHeight)) look.lineHeight = clampNum(p.lineHeight, 1, 2);
     if (Number.isFinite(p.scrollback)) look.scrollback = clampNum(p.scrollback, 1000, 1000000);
     if (typeof p.encoding === "string" && p.encoding) encoding = p.encoding;
+    // 导入的配色要在建会话之前就进表，否则第一个终端会先闪一下默认配色
+    for (const t of p.customThemes ?? []) {
+      if (THEME_DATA.some((x) => x.name === t.name)) continue;
+      THEME_DATA.push(t);
+      customThemes.push(t);
+    }
     for (const [action, chords] of Object.entries(p.keymap ?? {})) {
       if (keymap[action] && Array.isArray(chords)) {
         keymap[action].chords = chords.filter((c) => typeof c === "string");
@@ -224,6 +230,7 @@ async function savePrefs() {
         scrollback: look.scrollback,
         encoding,
         keymap: plain,
+        customThemes,
       },
     });
   } catch (e) {
@@ -3254,6 +3261,8 @@ function jumpReq() {
 // ── 外观控件（`TER-005` / `TER-008`）────────────────────────
 
 function initLookControls() {
+  // 先清空：导入配色后这里会再被调用一次，不清就会攒出重复项
+  lookThemeSelect.textContent = "";
   for (const t of THEME_DATA) {
     const o = document.createElement("option");
     o.value = t.name;
@@ -3301,6 +3310,151 @@ lookScrollbackInput.addEventListener("change", () => {
   );
   lookScrollbackInput.value = String(look.scrollback);
   applyLook();
+});
+
+// ── 导入配色方案（`TER-005`）──────────────────────────────
+//
+// 支持两种来源：Windows Terminal 的 `schemes`（JSON）与 iTerm2 的 `.itermcolors`（plist）。
+// 解析出来的结构跟内置配色一样（4 个界面色 + 16 个 ANSI），所以能直接进同一个下拉框。
+
+/** 导入进来的配色（写进 `config.toml` 的 `customThemes`） */
+let customThemes = [];
+
+const themeDialog = document.getElementById("theme-dialog");
+const themeText = document.getElementById("theme-text");
+const themeFile = document.getElementById("theme-file");
+const themeMsg = document.getElementById("theme-msg");
+
+const ANSI_NAMES = [
+  "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
+  "brightBlack", "brightRed", "brightGreen", "brightYellow",
+  "brightBlue", "brightMagenta", "brightCyan", "brightWhite",
+];
+
+/** `#rrggbb` 归一化：有的方案写 `#abc`，有的写 `rgb(1,2,3)`，不一致就别硬认 */
+function normHex(v, fallback) {
+  if (typeof v !== "string") return fallback;
+  const m = /^#?([0-9a-f]{6})$/i.exec(v.trim());
+  if (m) return `#${m[1].toLowerCase()}`;
+  const m3 = /^#?([0-9a-f])([0-9a-f])([0-9a-f])$/i.exec(v.trim());
+  if (m3) return `#${m3[1]}${m3[1]}${m3[2]}${m3[2]}${m3[3]}${m3[3]}`.toLowerCase();
+  return fallback;
+}
+
+/** Windows Terminal 的 scheme 对象 → 内部结构 */
+function fromWindowsTerminal(scheme, index) {
+  // Windows Terminal 用 `purple`/`brightPurple`，ANSI 那边叫 magenta：两个名字都收，
+  // 只认一个的话真实方案会一半读不出来
+  const alias = { magenta: "purple", brightMagenta: "brightPurple" };
+  const ansi = ANSI_NAMES.map((k) =>
+    normHex(scheme[k] ?? scheme[alias[k] ?? ""] ?? null, null),
+  );
+  if (ansi.some((c) => c === null)) return null;
+  return {
+    name: String(scheme.name ?? `导入配色 ${index + 1}`),
+    bg: normHex(scheme.background, "#000000"),
+    fg: normHex(scheme.foreground, "#e5e5e5"),
+    cur: normHex(scheme.cursorColor, normHex(scheme.foreground, "#e5e5e5")),
+    sel: normHex(scheme.selectionBackground, "#444444"),
+    ansi,
+  };
+}
+
+/** 解析 JSON：接受 `{schemes:[...]}` 或裸数组 */
+function parseSchemeJson(text) {
+  const data = JSON.parse(text);
+  const list = Array.isArray(data) ? data : Array.isArray(data.schemes) ? data.schemes : null;
+  if (!list) throw new Error("JSON 里没有 schemes 数组");
+  return list.map(fromWindowsTerminal).filter(Boolean);
+}
+
+/** 0..1 的浮点 → `#rrggbb`（iTerm2 的颜色分量是浮点） */
+function floatToHex(r, g, b) {
+  const to = (v) => Math.max(0, Math.min(255, Math.round(Number(v) * 255)))
+    .toString(16)
+    .padStart(2, "0");
+  return `#${to(r)}${to(g)}${to(b)}`;
+}
+
+/** 解析 iTerm2 的 `.itermcolors`（XML plist）：按 key 找后面的三个实数分量 */
+function parseItermColors(text, name) {
+  const pick = (key) => {
+    const i = text.indexOf(`<key>${key}</key>`);
+    if (i < 0) return null;
+    const tail = text.slice(i, i + 400);
+    const reals = [...tail.matchAll(/<real>([^<]+)<\/real>/g)].slice(0, 3);
+    if (reals.length < 3) return null;
+    return floatToHex(reals[0][1], reals[1][1], reals[2][1]);
+  };
+  const ansi = [];
+  for (let i = 0; i < 16; i += 1) {
+    const c = pick(`Ansi ${i} Color`);
+    if (!c) throw new Error(`缺少 Ansi ${i} Color`);
+    ansi.push(c);
+  }
+  return {
+    name: name || "iTerm2 导入",
+    bg: pick("Background Color") ?? "#000000",
+    fg: pick("Foreground Color") ?? "#e5e5e5",
+    cur: pick("Cursor Color") ?? pick("Foreground Color") ?? "#e5e5e5",
+    sel: pick("Selection Color") ?? "#444444",
+    ansi,
+  };
+}
+
+/** 注册一批导入的配色：进下拉框、选中第一套、写进配置 */
+async function adoptThemes(themes) {
+  if (!themes.length) throw new Error("没有解析出任何配色");
+  for (const t of themes) {
+    // 同名覆盖：反复导入同一套不该攒出一堆重复项
+    const at = THEME_DATA.findIndex((x) => x.name === t.name);
+    if (at >= 0) THEME_DATA[at] = t;
+    else THEME_DATA.push(t);
+    const cat = customThemes.findIndex((x) => x.name === t.name);
+    if (cat >= 0) customThemes[cat] = t;
+    else customThemes.push(t);
+  }
+  look.theme = themes[0].name;
+  initLookControls();
+  applyLook();
+  await savePrefs();
+  return themes.length;
+}
+
+document.getElementById("theme-import-open").addEventListener("click", () => {
+  themeText.value = "";
+  themeMsg.textContent = "";
+  themeDialog.showModal();
+});
+
+document.getElementById("theme-close").addEventListener("click", () => themeDialog.close());
+document.getElementById("theme-file-btn").addEventListener("click", () => themeFile.click());
+
+themeFile.addEventListener("change", async () => {
+  const file = themeFile.files?.[0];
+  if (!file) return;
+  themeText.value = await file.text();
+  themeMsg.textContent = `已读取 ${file.name}，点「导入」应用`;
+});
+
+document.getElementById("theme-import").addEventListener("click", () => {
+  void (async () => {
+    const raw = themeText.value.trim();
+    if (!raw) {
+      themeMsg.textContent = "先粘贴 JSON 或选择 .itermcolors 文件";
+      return;
+    }
+    try {
+      const themes = raw.startsWith("{") || raw.startsWith("[")
+        ? parseSchemeJson(raw)
+        : [parseItermColors(raw, "")];
+      const n = await adoptThemes(themes);
+      themeMsg.textContent = `已导入 ${n} 套，当前已切换`;
+      setStatus(`已导入 ${n} 套配色`);
+    } catch (e) {
+      themeMsg.textContent = `导入失败：${e}`;
+    }
+  })();
 });
 
 // ── 设置中心（`SET-001`）──────────────────────────────────
@@ -3460,7 +3614,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-43",
+  ui: "wt-ui-44",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";
