@@ -243,6 +243,26 @@ foreach ($f in ((Get-DocFiles 'spec') + (Get-DocFiles 'design') + (Get-DocFiles 
 # ─────────────────────────────────────────────────────────────
 # 输出
 # ─────────────────────────────────────────────────────────────
+# 12. 相对链接可达（NFR-026）
+#     用户手册会随功能增长不断加页，链接断了没人发现。
+#     只查相对路径的 .md 链接；外链不查（离线环境查不了）
+# ─────────────────────────────────────────────────────────────
+$allDocs = Get-ChildItem -Path $docsRoot -Recurse -Filter '*.md' -File
+$linkCount = 0
+foreach ($doc in $allDocs) {
+    $text = Get-Content -Raw -Encoding UTF8 $doc.FullName
+    foreach ($m in [regex]::Matches($text, '\]\(([^)#\s]+\.md)(#[^)]*)?\)')) {
+        $target = $m.Groups[1].Value
+        if ($target -match '^[a-z]+://') { continue }
+        $linkCount++
+        $resolved = Join-Path $doc.DirectoryName $target
+        if (-not (Test-Path -LiteralPath $resolved)) {
+            Fail ("{0} 里的链接指向不存在的文件：{1}" -f $doc.Name, $target)
+        }
+    }
+}
+
+# ─────────────────────────────────────────────────────────────
 Write-Host ''
 Write-Host '===== WindTerm 文档结构校验 =====' -ForegroundColor Cyan
 Write-Host ("需求条目：{0}（P0 {1} / P1 {2} / P2 {3} / P3 {4} / NO {5}）" -f `
@@ -254,6 +274,7 @@ Write-Host ("需求条目：{0}（P0 {1} / P1 {2} / P2 {3} / P3 {4} / NO {5}）"
     ($rows | Where-Object { $_.Prio -match 'NO' }).Count)
 Write-Host ("ADR：定义 {0} 条，引用 {1} 条" -f $definedAdr.Count, $referencedAdr.Count)
 Write-Host ("待验证标记：{0} 处（M0 结束前需清零）" -f $pending)
+Write-Host ("文档内相对链接：{0} 条" -f $linkCount)
 Write-Host ''
 
 if ($warnings.Count -gt 0) {
