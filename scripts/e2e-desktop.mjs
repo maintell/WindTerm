@@ -4135,6 +4135,107 @@ try {
   check("用完把自动打开开关恢复默认", onRestored === true, onRestored === true);
   await closeAllDialogs();
 
+  // 19q. 标签：中键关闭 / 拖拽排序 / 溢出滚动（`TER-001`）
+  await closeAllDialogs();
+  await closeAllTabs();
+  // 点一次不一定生效（WebView2 会吞首次点击），而且「已连接」是上一个标签的旧状态——
+  // 必须拿**标签数量**当探针
+  for (let i = 1; i <= 3; i += 1) {
+    await clickUntil(
+      () => clickElement("#open"),
+      async () => (await cdp.eval(`document.querySelectorAll("#tabs .tab").length`)) >= i,
+      { timeout: 10000, tries: 4, label: `建第 ${i} 个标签` },
+    );
+  }
+  const tabBefore = await cdp.eval(`
+    [...document.querySelectorAll("#tabs .tab .label")].map((e) => e.textContent)
+  `);
+  check("能同时开三个标签", tabBefore.length === 3, tabBefore.join(" | "));
+
+  // 溢出：溢出时要**滚动**，不能把标签压扁（压扁之后每格只剩几个字，谁也认不出来）
+  const tabCss = await cdp.eval(`(() => {
+    const bar = document.getElementById("tabs");
+    const tab = bar.querySelector(".tab");
+    const cs = getComputedStyle(bar);
+    const ts = getComputedStyle(tab);
+    return { overflowX: cs.overflowX, minWidth: ts.minWidth, flex: ts.flex };
+  })()`);
+  check(
+    "标签栏溢出时横向滚动而不是压扁标签（TER-001）",
+    tabCss.overflowX === "auto" && tabCss.minWidth === "120px" && tabCss.flex.startsWith("0 0"),
+    JSON.stringify(tabCss),
+  );
+
+  // 中键关闭：中间那个标签
+  const midBox = await cdp.eval(`(() => {
+    const t = document.querySelectorAll("#tabs .tab")[1];
+    if (!t) return null;
+    const r = t.getBoundingClientRect();
+    return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+  })()`);
+  const mid = midBox && { x: midBox.x, y: midBox.y, button: "middle" };
+  if (mid) {
+    // `buttons` 是「当前按住了哪些键」的位掩码（中键 = 4）。不传的话 Chromium 认为
+    // 一个键都没按，非主键的事件语义会不对
+    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...mid, buttons: 4, clickCount: 1 });
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...mid, buttons: 0, clickCount: 1 });
+  }
+  const afterMid = await waitFor(
+    async () => {
+      const n = await cdp.eval(`document.querySelectorAll("#tabs .tab").length`);
+      return n === 2 ? n : null;
+    },
+    { timeout: 8000, label: "中键关闭标签" },
+  ).catch(() => null);
+  const midDrag = await cdp.eval(`window.__wt.tabDrag()`);
+  check(
+    "中键点击关闭标签（TER-001）",
+    afterMid === 2,
+    `剩 ${afterMid ?? "?"} 个；drag=${JSON.stringify(midDrag)}`,
+  );
+
+  // 拖拽排序：补回第三个，把第一个拖到最后一个的位置
+  await clickUntil(
+    () => clickElement("#open"),
+    async () => (await cdp.eval(`document.querySelectorAll("#tabs .tab").length`)) >= 3,
+    { timeout: 10000, tries: 4, label: "拖拽用例补标签" },
+  );
+  const tabOrderBefore = await cdp.eval(`
+    [...document.querySelectorAll("#tabs .tab .label")].map((e) => e.textContent)
+  `);
+  const dragBoxes = await cdp.eval(`(() => {
+    const ts = [...document.querySelectorAll("#tabs .tab")];
+    if (ts.length < 2) return null;
+    const a = ts[0].getBoundingClientRect();
+    const c = ts[ts.length - 1].getBoundingClientRect();
+    return {
+      from: { x: Math.round(a.x + a.width / 2), y: Math.round(a.y + a.height / 2) },
+      to: { x: Math.round(c.x + c.width / 2), y: Math.round(c.y + c.height / 2) },
+    };
+  })()`);
+  if (dragBoxes) {
+    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...dragBoxes.from, button: "left", buttons: 1, clickCount: 1 });
+    // 先挪过 4px 门槛，再移到目标标签上：脚本里没有「按住」这个概念，必须显式发 move
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: dragBoxes.from.x + 24, y: dragBoxes.from.y, button: "left", buttons: 1 });
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...dragBoxes.to, button: "left", buttons: 1 });
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...dragBoxes.to, button: "left", clickCount: 1 });
+  }
+  const tabOrderAfter = await waitFor(
+    async () => {
+      const l = await cdp.eval(`
+        [...document.querySelectorAll("#tabs .tab .label")].map((e) => e.textContent)
+      `);
+      return l[0] === tabOrderBefore[1] ? l : null;
+    },
+    { timeout: 8000, label: "拖拽重排" },
+  ).catch(() => null);
+  check(
+    "拖拽标签能重排（TER-001）",
+    tabOrderAfter !== null && tabOrderAfter[1] === tabOrderBefore[0],
+    `${tabOrderBefore.join(" | ")} → ${tabOrderAfter ? tabOrderAfter.join(" | ") : "没变"}；drag=${JSON.stringify(await cdp.eval(`window.__wt.tabDrag()`))}`,
+  );
+  await closeAllTabs();
+
   // 18. 页面无未捕获异常
   check("页面无未捕获异常", cdp.exceptions.length === 0, cdp.exceptions.join(" | ") || "0 条");
 

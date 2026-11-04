@@ -431,8 +431,10 @@ function renderTabs() {
   for (const view of sessions.values()) {
     const tab = document.createElement("div");
     tab.className = view === active ? "tab active" : "tab";
+    tab.dataset.id = view.id;
 
     const label = document.createElement("span");
+    label.className = "label";
     label.textContent = view.label;
     label.title = view.status || view.label;
 
@@ -447,8 +449,92 @@ function renderTabs() {
 
     tab.append(label, x);
     tab.addEventListener("click", () => setActive(view));
+
+    // 中键关闭 + 左键拖拽排序（`TER-001`）。
+    //
+    // 都走 `mousedown` 而不是 `pointerdown` / `auxclick`：实测 WebView2 里
+    // 合成的可信鼠标事件**不产生 pointerdown**（pointerup 却会），`auxclick` 也不一定
+    // 触发；`mousedown` 一定触发，而且中键与左键都在同一个地方判断，行为可预期。
+    tab.addEventListener("mousedown", (ev) => {
+      if (ev.button === 1) {
+        ev.preventDefault();
+        void closeView(view);
+        return;
+      }
+      if (ev.button === 0) startTabDrag(view.id, ev.clientX);
+    });
+
     tabsEl.appendChild(tab);
   }
+}
+
+/** 正在拖的标签：`{ id, x, target, moved }`，松手时按它重排 */
+let dragTab = null;
+
+/**
+ * 拖拽处理器的命中计数。
+ *
+ * 「拖了没反应」有很多种原因（事件没到、没越过门槛、没找到目标标签）。
+ * 只留计数与最后一次的目标，一眼能分开，省掉一整轮瞎猜——与 `inputLog` 同一思路。
+ */
+const tabDrag = { down: 0, move: 0, up: 0, last: null };
+
+/**
+ * 开始拖标签（`TER-001`）。
+ *
+ * move/up 挂到 `document` 上：鼠标事件没有指针捕获，光标一离开标签，
+ * 像 `mousemove` 就只会到 document，挂在标签上会整个丢。
+ */
+function startTabDrag(id, x) {
+  tabDrag.down += 1;
+  dragTab = { id, x, target: null, moved: false };
+  document.addEventListener("mousemove", onTabDragMove);
+  document.addEventListener("mouseup", onTabDragEnd, { once: true });
+}
+
+function onTabDragMove(ev) {
+  if (!dragTab) return;
+  tabDrag.move += 1;
+  if (!dragTab.moved && Math.abs(ev.clientX - dragTab.x) < 4) return;
+  dragTab.moved = true;
+  // 拖到哪个标签上就插到它前面。这里只记目标，松手才重排——
+  // 拖动中重建 DOM 会把后续 move 的落点算错。
+  const hit = document.elementFromPoint(ev.clientX, ev.clientY)?.closest?.(".tab");
+  const target = hit?.dataset?.id ?? null;
+  if (target && String(target) !== String(dragTab.id)) dragTab.target = target;
+}
+
+function onTabDragEnd() {
+  document.removeEventListener("mousemove", onTabDragMove);
+  tabDrag.up += 1;
+  const drag = dragTab;
+  dragTab = null;
+  tabDrag.last = drag;
+  // 拖到窗口外松手时 target 还是 null：那种情况就当没拖过，别乱排序
+  if (drag?.moved && drag.target) moveTab(drag.id, drag.target);
+}
+
+/**
+ * 把 `from` 这个标签挪到 `to` 的位置（`TER-001` 拖拽排序）。
+ *
+ * `sessions` 是 Map，会保持插入顺序，所以重排就是「按新顺序重新 set 一遍」。
+ */
+function moveTab(from, to) {
+  const order = [...sessions.keys()];
+  // `dataset` 里拿到的永远是**字符串**，而会话键是数字：直接用 indexOf 会一个都找不到
+  // （表现是「拖了、计数也对，就是顺序不变」）。统一按字符串比。
+  const same = (a, b) => String(a) === String(b);
+  const fi = order.findIndex((k) => same(k, from));
+  const ti = order.findIndex((k) => same(k, to));
+  if (fi < 0 || ti < 0 || fi === ti) return;
+  const [moved] = order.splice(fi, 1);
+  // 拔掉后面的下标会前移一位：只有「往后拖」才要减 1
+  order.splice(fi < ti ? ti - 1 : ti, 0, moved);
+  const views = order.map((id) => sessions.get(id));
+  sessions.clear();
+  for (const v of views) sessions.set(v.id, v);
+  renderTabs();
+  setStatus(`标签顺序：${views.map((v) => v.label).join(" → ")}`);
 }
 
 function setActive(view) {
@@ -3910,7 +3996,11 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-54",
+  ui: "wt-ui-58",
+  /** 拖拽命中计数（验收用：分清「事件没到」「没越门槛」「没找着目标」） */
+  tabDrag() {
+    return { ...tabDrag };
+  },
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";

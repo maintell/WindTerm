@@ -272,7 +272,13 @@
         border-radius: 4px 4px 0 0;
         cursor: pointer;
         white-space: nowrap;
+        /* 溢出时**滚动**而不是把标签压扁：压扁之后每个只剩几个字，谁也认不出来 */
+        flex: 0 0 auto;
+        min-width: 120px;
+        max-width: 220px;
       }
+      /* 名字过长截断，完整内容在 tooltip 里（`TER-001`） */
+      .tab .label { flex: 1; overflow: hidden; text-overflow: ellipsis; }
       .tab.active { color: var(--fg); background: #2f2f38; }
       .tab .x { color: #8a8a92; }
       .tab .x:hover { color: #e8e8ea; }
