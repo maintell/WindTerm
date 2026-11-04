@@ -201,6 +201,9 @@ async function loadPrefs() {
     if (Number.isFinite(p.lineHeight)) look.lineHeight = clampNum(p.lineHeight, 1, 2);
     if (Number.isFinite(p.scrollback)) look.scrollback = clampNum(p.scrollback, 1000, 1000000);
     if (typeof p.encoding === "string" && p.encoding) encoding = p.encoding;
+    if (typeof p.localShell === "string" && p.localShell) localShell = p.localShell;
+    if (typeof p.localShellPath === "string") localShellPath = p.localShellPath;
+    if (typeof p.localShellArgs === "string") localShellArgs = p.localShellArgs;
     // 导入的配色要在建会话之前就进表，否则第一个终端会先闪一下默认配色
     for (const t of p.customThemes ?? []) {
       if (THEME_DATA.some((x) => x.name === t.name)) continue;
@@ -231,6 +234,9 @@ async function savePrefs() {
         encoding,
         keymap: plain,
         customThemes,
+        localShell,
+        localShellPath,
+        localShellArgs,
       },
     });
   } catch (e) {
@@ -253,6 +259,16 @@ function saveLook() {
  * 切编码**只影响之后的输出**：已经显示的内容不动（规格明确要求不丢已显示内容）。
  */
 let encoding = "utf-8";
+
+/**
+ * 本地终端用哪个 shell（`LOC-001`）。
+ *
+ * 存的是**稳定标识**（`auto` / `cmd` / `gitbash`…）而不是路径：路径会随升级或
+ * 迁移变化，标识不会。`custom` 时才用得上后两个字段。
+ */
+let localShell = "auto";
+let localShellPath = "";
+let localShellArgs = "";
 
 /** 每个编码一个解码器：`stream: true` 才能让多字节字符跨块拼接正确 */
 const decoders = new Map();
@@ -3620,6 +3636,68 @@ document.getElementById("theme-import").addEventListener("click", () => {
   })();
 });
 
+// ── 本地终端 shell（`LOC-001`）──────────────────────────────
+//
+// 选项由后端探测：它会告诉你哪个没装、去哪儿装。界面只负责展示与保存，
+// 不自己猜路径——猜错了用户只会看到「启动失败」而不知道为什么。
+
+const localShellSelect = document.getElementById("local-shell");
+const localShellPathInput = document.getElementById("local-shell-path");
+const localShellArgsInput = document.getElementById("local-shell-args");
+const localShellCustomRow = document.getElementById("local-shell-custom");
+
+async function initShellControls() {
+  let list = [];
+  try {
+    list = await invoke("local_shells");
+  } catch (e) {
+    setStatus(`读取本机 shell 失败：${e}`);
+  }
+  localShellSelect.textContent = "";
+  for (const s of list) {
+    const o = document.createElement("option");
+    o.value = s.id;
+    // 没装的也列出来（标一句「未安装」并禁用）：直接消失的话，用户只会觉得
+    // 「Git Bash 明明装了怎么没有」，一点线索都没有
+    o.textContent = s.available ? s.label : `${s.label}（未安装）`;
+    o.disabled = !s.available;
+    if (!s.available && s.hint) o.title = s.hint;
+    localShellSelect.appendChild(o);
+  }
+  // 配置里存的选项可能已经不可用（卸了 Git Bash）：补一条说明，别让下拉静默落空
+  if (localShell && ![...localShellSelect.options].some((o) => o.value === localShell)) {
+    const o = document.createElement("option");
+    o.value = localShell;
+    o.textContent = `${localShell}（配置里指定的，本机没找到）`;
+    localShellSelect.appendChild(o);
+  }
+  localShellSelect.value = localShell;
+  localShellPathInput.value = localShellPath;
+  localShellArgsInput.value = localShellArgs;
+  syncShellUi();
+}
+
+/** 只有选「自定义」时才需要填路径与参数，其余情况收起来 */
+function syncShellUi() {
+  localShellCustomRow.hidden = localShellSelect.value !== "custom";
+}
+
+localShellSelect.addEventListener("change", () => {
+  localShell = localShellSelect.value;
+  syncShellUi();
+  void savePrefs();
+  const label = localShellSelect.selectedOptions[0]?.textContent ?? localShell;
+  setStatus(`本地终端 shell：${label}（新建终端生效）`);
+});
+
+for (const input of [localShellPathInput, localShellArgsInput]) {
+  input.addEventListener("change", () => {
+    localShellPath = localShellPathInput.value.trim();
+    localShellArgs = localShellArgsInput.value;
+    void savePrefs();
+  });
+}
+
 // ── 设置中心（`SET-001`）──────────────────────────────────
 //
 // 控件只有这一份：底栏不再重复放主题/字体/字号/编码，避免「两处都能改、状态不一致」。
@@ -3777,7 +3855,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-51",
+  ui: "wt-ui-52",
   /** 当前选区文本（验收与脚本用） */
   selection() {
     return active?.term.getSelection() ?? "";
@@ -4023,6 +4101,7 @@ window.__wt = {
   // 外观要先读回来再建会话，否则第一个终端会用默认配色闪一下再变色
   await loadPrefs();
   initLookControls();
+  await initShellControls();
   initBroadcast();
   loadTree();
   try {

@@ -636,6 +636,8 @@
       .set-row .set-name { flex: 1; }
       /* 生效范围：现在都是全局，但规格要求「显示生效范围」，先把位置留出来 */
       .set-row .set-scope { color: #6a6a72; font-size: 11px; }
+      /* 只有选「自定义」时才展开，其余情况收起来 */
+      #local-shell-custom[hidden] { display: none; }
       .set-row select,
       .set-row input {
         background: #2a2a30;
@@ -1164,6 +1166,17 @@
           <span class="set-name">回滚行数</span>
           <span class="set-scope">全局</span>
           <input id="look-scrollback" type="number" min="1000" max="1000000" step="1000" />
+        </div>
+        <div class="set-row" data-kw="shell 本地终端 powershell cmd git bash wsl 命令行 终端类型">
+          <span class="set-name">本地终端 Shell</span>
+          <span class="set-scope">新建终端生效</span>
+          <select id="local-shell"></select>
+        </div>
+        <div class="set-row" id="local-shell-custom" hidden data-kw="shell 自定义 路径 参数 custom 命令行">
+          <span class="set-name">自定义 Shell</span>
+          <span class="set-scope">新建终端生效</span>
+          <input id="local-shell-path" placeholder="可执行文件完整路径" spellcheck="false" />
+          <input id="local-shell-args" placeholder="参数（空格分隔）" spellcheck="false" />
         </div>
         <p id="set-empty" hidden>没有匹配的设置项</p>
       </div>

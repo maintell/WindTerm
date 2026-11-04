@@ -26,7 +26,7 @@
 #![forbid(unsafe_code)]
 
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -107,6 +107,217 @@ fn which(name: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+/// 候选 shell 的稳定标识。配置里存的是它，**不是路径**——路径会随升级或迁移变化。
+pub const SHELL_AUTO: &str = "auto";
+pub const SHELL_CUSTOM: &str = "custom";
+
+/// 一个候选的本机 shell（`LOC-001`）。
+#[derive(Debug, Clone)]
+pub struct ShellChoice {
+    /// 稳定标识，存进配置的就是它
+    pub id: &'static str,
+    /// 给人看的名字
+    pub label: &'static str,
+    /// 找到的可执行文件；`None` 表示这台机器上没有
+    pub program: Option<String>,
+    /// 启动参数模板
+    pub args: Vec<String>,
+    /// 没找到时告诉用户去哪儿装、怎么开
+    pub hint: Option<&'static str>,
+    /// 不需要可执行文件也算可用：`auto` 跟随系统，`custom` 由用户填路径
+    pub always_available: bool,
+}
+
+impl ShellChoice {
+    pub fn available(&self) -> bool {
+        self.always_available || self.program.is_some()
+    }
+}
+
+/// 列出本机可选的 shell。
+///
+/// **找不到的也列出来**（`program` 为 `None`）：界面上直接消失的话，用户只会觉得
+/// 「Git Bash 明明装了怎么没有」，一点线索都没有；列出来并给一句去哪儿找，才可自救。
+pub fn detect_shells() -> Vec<ShellChoice> {
+    let mut out = Vec::new();
+    let (auto_program, auto_args) = default_shell();
+    out.push(ShellChoice {
+        id: SHELL_AUTO,
+        label: "跟随系统",
+        program: Some(auto_program),
+        args: auto_args,
+        hint: None,
+        always_available: true,
+    });
+    #[cfg(windows)]
+    {
+        out.push(ShellChoice {
+            id: "pwsh",
+            label: "PowerShell 7",
+            program: which("pwsh").map(|p| p.display().to_string()),
+            args: vec!["-NoLogo".into()],
+            hint: Some("安装 PowerShell 7：winget install Microsoft.PowerShell"),
+            always_available: false,
+        });
+        out.push(ShellChoice {
+            id: "powershell",
+            label: "Windows PowerShell",
+            program: which("powershell").map(|p| p.display().to_string()),
+            args: vec!["-NoLogo".into()],
+            hint: Some("系统自带；精简过的镜像里可能没有"),
+            always_available: false,
+        });
+        out.push(ShellChoice {
+            id: "cmd",
+            label: "命令提示符",
+            program: which("cmd").map(|p| p.display().to_string()),
+            args: Vec::new(),
+            hint: Some("系统自带（看 %COMSPEC%）"),
+            always_available: false,
+        });
+        out.push(ShellChoice {
+            id: "gitbash",
+            label: "Git Bash",
+            program: find_bash().map(|p| p.display().to_string()),
+            args: vec!["--login".into(), "-i".into()],
+            hint: Some("安装 Git for Windows：winget install Git.Git"),
+            always_available: false,
+        });
+        out.push(ShellChoice {
+            id: "wsl",
+            label: "WSL",
+            program: which("wsl").map(|p| p.display().to_string()),
+            args: Vec::new(),
+            hint: Some("先装发行版：wsl --install"),
+            always_available: false,
+        });
+    }
+    #[cfg(not(windows))]
+    {
+        out.push(ShellChoice {
+            id: "bash",
+            label: "Bash",
+            program: which("bash").map(|p| p.display().to_string()),
+            args: Vec::new(),
+            hint: Some("用包管理器装一个 bash"),
+            always_available: false,
+        });
+    }
+    out.push(ShellChoice {
+        id: SHELL_CUSTOM,
+        label: "自定义…",
+        program: None,
+        args: Vec::new(),
+        hint: Some("填可执行文件路径，参数另填"),
+        always_available: true,
+    });
+    out
+}
+
+/// Git Bash 常常装在 PATH 之外的默认位置，这里补几个候选。
+fn find_bash() -> Option<PathBuf> {
+    if let Some(p) = which("bash") {
+        return Some(p);
+    }
+    #[cfg(windows)]
+    {
+        let mut candidates: Vec<PathBuf> = Vec::new();
+        for var in ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"] {
+            if let Some(base) = std::env::var_os(var) {
+                candidates.push(PathBuf::from(base).join("Git").join("bin").join("bash.exe"));
+            }
+        }
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            candidates.push(
+                PathBuf::from(local)
+                    .join("Programs")
+                    .join("Git")
+                    .join("bin")
+                    .join("bash.exe"),
+            );
+        }
+        candidates.into_iter().find(|p| p.is_file())
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// 把配置里的选择解析成「可执行文件 + 参数」。
+///
+/// 参数串按空格切，`"` 包住的段整体算一个（`-c "echo hi"` 这种够用）。
+pub fn shell_command(
+    id: &str,
+    custom_program: &str,
+    custom_args: &str,
+) -> Result<(String, Vec<String>), WtError> {
+    let id = id.trim();
+    if id.is_empty() || id == SHELL_AUTO {
+        return Ok(default_shell());
+    }
+    if id == SHELL_CUSTOM {
+        let program = custom_program.trim();
+        if program.is_empty() {
+            return Err(WtError::new("LOC_SHELL_CUSTOM_EMPTY")
+                .message("选了「自定义 Shell」但没填可执行文件")
+                .hint(
+                    "在设置里填完整路径，例如 C:\\Program Files\\Git\\bin\\bash.exe",
+                    HintAction::None,
+                ));
+        }
+        if Path::new(program).is_absolute() && !Path::new(program).is_file() {
+            return Err(WtError::new("LOC_SHELL_NOT_FOUND")
+                .message(format!("自定义 shell 不存在：{program}"))
+                .hint("检查路径是否写对", HintAction::None));
+        }
+        return Ok((program.to_string(), split_args(custom_args)));
+    }
+    let Some(choice) = detect_shells().into_iter().find(|c| c.id == id) else {
+        return Err(WtError::new("LOC_SHELL_UNKNOWN")
+            .message(format!("配置里的 shell 选项不认识：{id}"))
+            .hint(
+                "重新选一次：可写 auto / pwsh / powershell / cmd / gitbash / wsl / custom",
+                HintAction::None,
+            ));
+    };
+    let Some(program) = choice.program else {
+        return Err(WtError::new("LOC_SHELL_NOT_FOUND")
+            .message(format!("这台机器上没找到 {}", choice.label))
+            .hint(choice.hint.unwrap_or("换一个 shell，或先把它装上"), HintAction::None));
+    };
+    Ok((program, choice.args))
+}
+
+/// 切分参数串：空格分隔，`"` 包住的段整体算一个（不处理转义，够用就好）。
+fn split_args(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quoted = false;
+    let mut started = false;
+    for ch in s.chars() {
+        match ch {
+            '"' => {
+                quoted = !quoted;
+                started = true;
+            }
+            c if c.is_whitespace() && !quoted => {
+                if started {
+                    out.push(std::mem::take(&mut cur));
+                    started = false;
+                }
+            }
+            c => {
+                cur.push(c);
+                started = true;
+            }
+        }
+    }
+    if started {
+        out.push(cur);
+    }
+    out
 }
 
 /// 一个已启动的本地终端。
@@ -466,6 +677,52 @@ mod tests {
     fn default_shell_is_detected() {
         let (program, _) = default_shell();
         assert!(!program.is_empty());
+    }
+    #[test]
+    fn auto_resolves_to_platform_default() {
+        let (a, _) = shell_command("", "", "").unwrap();
+        let (b, _) = shell_command("auto", "", "").unwrap();
+        let (c, _) = default_shell();
+        assert_eq!(a, c);
+        assert_eq!(b, c);
+    }
+
+    #[test]
+    fn detect_lists_every_platform_option() {
+        let ids: Vec<&str> = detect_shells().iter().map(|c| c.id).collect();
+        assert!(ids.contains(&SHELL_AUTO));
+        assert!(ids.contains(&SHELL_CUSTOM));
+        // 没装的也要列出来（只是 `program` 为空），否则用户没有线索
+        #[cfg(windows)]
+        {
+            for id in ["pwsh", "powershell", "cmd", "gitbash", "wsl"] {
+                assert!(ids.contains(&id), "缺少 {id}");
+            }
+        }
+        // 至少有一个真的能用，否则界面等于没有选项
+        assert!(detect_shells().iter().any(|c| c.available()));
+    }
+
+    #[test]
+    fn unknown_shell_id_is_rejected_with_code() {
+        let err = shell_command("zsh", "", "").unwrap_err();
+        assert_eq!(err.code, "LOC_SHELL_UNKNOWN");
+        assert!(!err.hints.is_empty(), "错误必须给可执行建议");
+    }
+
+    #[test]
+    fn custom_shell_requires_a_program() {
+        let err = shell_command(SHELL_CUSTOM, "   ", "").unwrap_err();
+        assert_eq!(err.code, "LOC_SHELL_CUSTOM_EMPTY");
+    }
+
+    #[test]
+    fn custom_shell_args_are_split_with_quotes() {
+        let (program, args) =
+            shell_command(SHELL_CUSTOM, "C:\\Windows\\system32\\cmd.exe", "-c \"echo hi\" -q")
+                .unwrap();
+        assert!(program.ends_with("cmd.exe"));
+        assert_eq!(args, vec!["-c", "echo hi", "-q"]);
     }
 
     /// 把写入内容捕获到内存，用于验证应答逻辑（不依赖真实 PTY）。

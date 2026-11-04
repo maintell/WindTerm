@@ -3933,6 +3933,80 @@ try {
     errScreen.split(/\r?\n/).find((l) => l.includes("SSH_CONNECT_FAILED"))?.trim() ?? "",
   );
 
+  // 19o. 本地终端 shell 可配（`LOC-001`）
+  //
+  // 光「下拉框能选」不算数：要证明选完真的落进 `config.toml`，而且**新建的终端
+  // 真的是那个 shell**。用 `%COMSPEC%` 来验——只有 cmd 会展开它，PowerShell 里
+  // 会原样打印。
+  await closeAllDialogs();
+  await closeAllTabs();
+  await clickElement("#settings-open");
+  const shells = await cdp.eval(`window.__TAURI__.core.invoke("local_shells")`);
+  check(
+    "本机可选 shell 由后端探测（未安装的也列出来）",
+    shells.some((s) => s.id === "auto") &&
+      shells.some((s) => s.id === "custom") &&
+      shells.some((s) => s.id === "cmd"),
+    shells.map((s) => `${s.id}${s.available ? "" : "（未装）"}`).join("、"),
+  );
+
+  await cdp.eval(`(() => {
+    const el = document.getElementById("local-shell");
+    el.value = "cmd";
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return el.value;
+  })()`);
+  const cmdSaved = await waitFor(
+    async () => {
+      const t = readFileSync(prefsFile, "utf8");
+      return /localShell\s*=\s*"cmd"/.test(t) ? true : null;
+    },
+    { timeout: 10000, label: "shell 偏好落盘" },
+  ).catch(() => null);
+  check("选中的 shell 写进 config.toml", cmdSaved === true, `localShell=${cmdSaved ? "cmd" : "未落盘"}`);
+  await closeAllDialogs();
+
+  await clickElement("#open");
+  await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      return s.startsWith("已连接") ? s : null;
+    },
+    { timeout: 30000, label: "用 cmd 建本地终端" },
+  );
+  await typeText("echo %COMSPEC%");
+  const comspec = await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.screen()`);
+      return t.includes("cmd.exe") ? true : null;
+    },
+    { timeout: 15000, label: "确认真的起了 cmd" },
+  ).catch(() => null);
+  check(
+    "新建的本地终端真的用了所选 shell（LOC-001）",
+    comspec === true,
+    comspec === true ? "COMSPEC 被 cmd 展开" : "没等到 cmd.exe",
+  );
+  await closeAllTabs();
+
+  // 复原：这是会写进配置文件的全局设置，留着会污染后面所有用例
+  await clickElement("#settings-open");
+  await cdp.eval(`(() => {
+    const el = document.getElementById("local-shell");
+    el.value = "auto";
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return el.value;
+  })()`);
+  const shellRestored = await waitFor(
+    async () => {
+      const t = readFileSync(prefsFile, "utf8");
+      return /localShell\s*=\s*"auto"/.test(t) ? true : null;
+    },
+    { timeout: 10000, label: "shell 偏好复原" },
+  ).catch(() => null);
+  check("用完把 shell 偏好恢复默认（不污染后续用例）", shellRestored === true, shellRestored === true);
+  await closeAllDialogs();
+
   // 18. 页面无未捕获异常
   check("页面无未捕获异常", cdp.exceptions.length === 0, cdp.exceptions.join(" | ") || "0 条");
 

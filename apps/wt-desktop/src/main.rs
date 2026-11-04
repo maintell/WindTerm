@@ -103,7 +103,18 @@ const MAX_CHUNK: usize = 64 * 1024;
 
 #[tauri::command]
 fn local_open(state: State<'_, AppState>, cols: u16, rows: u16) -> Result<String, String> {
+    // 用哪个 shell 由配置说了算（`LOC-001`）。这里**不做静默回退**：用户明明选了
+    // Git Bash 却拿到 PowerShell，比直接报错的排查成本高得多。
+    let prefs = prefs_load().unwrap_or_default();
+    let (program, args) = wt_term::pty::shell_command(
+        &prefs.local_shell,
+        &prefs.local_shell_path,
+        &prefs.local_shell_args,
+    )
+    .map_err(|e| e.to_string())?;
     let cfg = PtyConfig {
+        program,
+        args,
         cols: cols.max(20),
         rows: rows.max(4),
         // 界面侧是 xterm.js，它自己会应答 ConPTY 的 DSR 查询。
@@ -114,6 +125,36 @@ fn local_open(state: State<'_, AppState>, cols: u16, rows: u16) -> Result<String
     let session = wt_term::TermSession::spawn_local(cfg).map_err(|e| e.to_string())?;
     let handle = state.registry.register(Box::new(session));
     Ok(handle.as_str().to_string())
+}
+/// 本机可选的 shell（`LOC-001`），界面据此生成下拉框。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ShellChoiceDto {
+    id: String,
+    label: String,
+    /// 找到的可执行文件；没找到是空串
+    program: String,
+    available: bool,
+    /// 没找到时给用户的话（去哪儿装、怎么开）
+    hint: String,
+}
+
+#[tauri::command]
+fn local_shells() -> Vec<ShellChoiceDto> {
+    wt_term::pty::detect_shells()
+        .into_iter()
+        .map(|c| {
+            // 先算可用性：`program` 一移出去就借不到 `c` 了
+            let available = c.available();
+            ShellChoiceDto {
+                id: c.id.to_string(),
+                label: c.label.to_string(),
+                program: c.program.unwrap_or_default(),
+                available,
+                hint: c.hint.unwrap_or_default().to_string(),
+            }
+        })
+        .collect()
 }
 
 /// 拉取终端数据。返回**原始字节**。
@@ -760,6 +801,14 @@ struct PrefsDto {
     /// 导入的配色方案（`TER-005`）：跟内置的放一起，重启后还在
     #[serde(default)]
     custom_themes: Vec<CustomTheme>,
+    /// 本地终端用哪个 shell（`LOC-001`）：`auto` / `pwsh` / `powershell` /
+    /// `cmd` / `gitbash` / `wsl` / `custom`。存的是**稳定标识**而不是路径，
+    /// 因为路径会随升级或迁移变化。
+    local_shell: String,
+    /// `local_shell = "custom"` 时的可执行文件
+    local_shell_path: String,
+    /// `local_shell = "custom"` 时的参数（空格分隔，`"` 包住带空格的段）
+    local_shell_args: String,
 }
 
 /// 一套导入的配色：4 个界面色 + 16 个 ANSI 色，和内置的结构一致。
@@ -785,6 +834,9 @@ impl Default for PrefsDto {
             encoding: "utf-8".into(),
             keymap: std::collections::BTreeMap::new(),
             custom_themes: Vec::new(),
+            local_shell: "auto".into(),
+            local_shell_path: String::new(),
+            local_shell_args: String::new(),
         }
     }
 }
@@ -2900,6 +2952,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             local_open,
+            local_shells,
             term_read,
             term_ack,
             term_write,
