@@ -1371,6 +1371,52 @@ try {
     crlfTrimmed === "one\rtwo",
     JSON.stringify(crlfTrimmed),
   );
+  // 备用键位（`TER-011` 规格表里 `Ctrl+Insert` / `Shift+Insert` 都在）：主键位已有断言，
+  // 这里单独验别名——别名不通的话，用户按了没反应只会以为是键盘坏了。
+  await doubleClickAt(wordPoint);
+  await pressChord(2, "Insert", "Insert", 45);
+  const insertCopied = await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      return /^已复制/.test(s) ? s : null;
+    },
+    { timeout: 5000, label: "Ctrl+Insert 复制" },
+  ).catch(() => null);
+  check(
+    "Ctrl+Insert 也能复制（TER-011 备用键位）",
+    insertCopied !== null,
+    `${insertCopied ?? "没复制"}`,
+  );
+  await cdp.eval(`navigator.clipboard.writeText("echo insert-paste" + String.fromCharCode(13))`);
+  const insertBefore = await cdp.eval(`window.__wt.pasteCount`);
+  await pressChord(8, "Insert", "Insert", 45);
+  const insertPasted = await waitFor(
+    async () => ((await cdp.eval(`window.__wt.pasteCount`)) > insertBefore ? true : null),
+    { timeout: 5000, label: "Shift+Insert 粘贴" },
+  ).catch(() => null);
+  check(
+    "Shift+Insert 也能粘贴（TER-011 备用键位）",
+    insertPasted === true,
+    `pasteCount ${insertBefore} → ${await cdp.eval(`window.__wt.pasteCount`)}`,
+  );
+
+  // `Ctrl+C` 必须继续是中断信号（`TER-011`）：它**不能**变成复制，这是肌肉记忆。
+  // 判据两条：字节 `\u0003` 进了终端，且没有出现「已复制」。
+  const ctrlCBefore = await cdp.eval(`window.__wt.inputLog.length`);
+  await pressChord(2, "c", "KeyC", 67);
+  const ctrlCSent = await waitFor(
+    async () => {
+      const st = await cdp.eval(`({ log: window.__wt.inputLog.slice(${ctrlCBefore}), status: document.getElementById("status").textContent })`);
+      return st.log.some((d) => d.includes("\u0003")) ? st : null;
+    },
+    { timeout: 5000, label: "Ctrl+C 发中断" },
+  ).catch(() => null);
+  check(
+    "Ctrl+C 仍然是中断信号，不会变成复制（TER-011）",
+    ctrlCSent !== null && !/^已复制/.test(ctrlCSent.status),
+    ctrlCSent ? `状态：${ctrlCSent.status}` : "终端没收到 0x03",
+  );
+
   // 复原：这条会写进 config.toml，默认是关
   await openSettings();
   await cdp.eval(`(() => {
