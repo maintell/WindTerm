@@ -57,6 +57,9 @@ const keyName = document.getElementById("key-name");
 const keyPassInput = document.getElementById("key-pass");
 
 /** 已选中的私钥内容（PEM/OpenSSH 文本），null 表示没选 */
+/** 当前密码框里的口令是「自动填进来的」吗（`SEC-002` 判断「可能已过期」要用） */
+let pwFromStore = false;
+
 let keyPem = null;
 
 const rememberBox = document.getElementById("remember");
@@ -137,6 +140,9 @@ const THEME_DATA = [
 { name: "Kanagawa", bg: "#1f1f28", fg: "#dcd7ba", cur: "#c8c093", sel: "#2d4f67", ansi: ["#090618","#c34043","#76946a","#c0a36e","#7e9cd8","#957fb8","#6a9589","#c8c093","#727169","#e82424","#98bb6c","#e6c384","#7fb4ca","#938aa9","#7aa89f","#dcd7ba"] },
 { name: "PaperColor Light", bg: "#eeeeee", fg: "#444444", cur: "#444444", sel: "#b5c7d9", ansi: ["#1c1c1c","#af0000","#008700","#5f8700","#0087af","#878787","#005f87","#d0d0d0","#585858","#d70000","#d70087","#8700af","#d75f00","#d75f00","#005faf","#f5f5f5"] },
 ];
+
+/** 内置配色的数量：导入的配色追加在后面，重置偏好时按这个下标截回去 */
+const THEME_BUILTIN_COUNT = THEME_DATA.length;
 
 /** 名称 → xterm 的 theme 对象 */
 const ANSI_KEYS = [
@@ -756,6 +762,21 @@ async function runSshOpen(req, jump, label) {
     view.status = `连接失败：${label}`;
     setStatus("连接失败");
     renderTabs();
+    // 自动填进去的口令被拒：多半是过期了（`SEC-002`）。直接给「重新输入」的出路，
+    // 连上之后 `savePasswordIfAsked` 会把新口令覆盖保存。
+    if (String(e).includes("SSH_AUTH_FAILED") && pwFromStore) {
+      const retry = await askConfirm(
+        "保存的密码可能已过期",
+        "服务端拒绝了自动填入的密码。重新输入一次，连上后会覆盖已保存的口令。",
+        "重新输入",
+      );
+      if (retry) {
+        passInput.value = "";
+        pwFromStore = false;
+        passInput.focus();
+        setStatus("请重新输入密码（连上后会覆盖已保存的口令）");
+      }
+    }
   } finally {
     sshBtn.disabled = false;
   }
@@ -838,6 +859,7 @@ async function fillPasswordFor(s) {
   const memo = sessionPasswords.get(sessionKey(s.host, s.port, s.username));
   if (memo) {
     passInput.value = memo;
+    pwFromStore = true;
     setStatus(`已填入 ${s.name} 的密码（本次运行记住的）`);
     return true;
   }
@@ -846,6 +868,7 @@ async function fillPasswordFor(s) {
     const saved = await invoke("credential_get", { sessionId: s.id });
     if (saved) {
       passInput.value = saved;
+      pwFromStore = true;
       setStatus(`已从保险库填入 ${s.name} 的密码`);
       return true;
     }
@@ -4638,6 +4661,22 @@ document.getElementById("app-prefs-open").addEventListener("click", async () => 
   }
 });
 
+/**
+ * 重置偏好时，把「只在内存里」的那部分也恢复默认。
+ *
+ * `loadPrefs` 对键位与导入配色是「配置里有才覆盖」，而默认配置里这两项是空的：
+ * 于是重置后它们原样留在内存里，下一次保存又被写回 `config.toml`——界面说「已重置」，
+ * 文件里却还是导入的键位与配色（这是真踩过的 bug，不是理论风险）。
+ */
+function resetLocalPrefs() {
+  keymap = structuredClone(KEYMAP_DEFAULT);
+  THEME_DATA.length = THEME_BUILTIN_COUNT;
+  customThemes = [];
+  // 当前主题要是正好是导入的那套，清掉后它会变成幽灵值：退回第一套内置配色
+  if (!THEME_DATA.some((t) => t.name === look.theme)) look.theme = THEME_DATA[0].name;
+  renderKeys();
+}
+
 document.getElementById("prefs-reset").addEventListener("click", async () => {
   const ok = await askConfirm(
     "重置全部偏好？",
@@ -4650,6 +4689,7 @@ document.getElementById("prefs-reset").addEventListener("click", async () => {
     // 重新从磁盘读一遍（现在是默认值），并把所有受影响的控件刷回来；
     // 不重载页面：CDP 的执行上下文会随重载失效，验收脚本拿不到页面
     await loadPrefs();
+    resetLocalPrefs();
     initLookControls();
     await initShellControls();
     initNetControls();
@@ -4657,6 +4697,9 @@ document.getElementById("prefs-reset").addEventListener("click", async () => {
     applySetMeta();
     applyLook();
     await refreshAppPaths();
+    // 备份完立刻把默认值写回去：否则 config.toml 会一直缺到用户下次改设置，
+    // 去目录里找不到文件，会以为「重置把配置弄丢了」
+    void savePrefs();
     setStatus(backup ? `已重置偏好；旧配置备份在 ${backup}` : "偏好本来就是默认值");
   } catch (e) {
     setStatus(`重置失败：${e}`);
@@ -4923,6 +4966,11 @@ async function refreshVault() {
   }
 }
 
+passInput.addEventListener("input", () => {
+  // 用户自己敲了，就不再是「自动填的」——失败时不该提示「可能已过期」
+  pwFromStore = false;
+});
+
 rememberBox.addEventListener("change", () => {
   // 只有「永久记住」才需要保险库：「本次记住」放内存，不该为它要一次主密码
   vaultRow.hidden = rememberBox.value !== "persist";
@@ -4999,7 +5047,33 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-92",
+  ui: "wt-ui-95",
+  /**
+   * 验收用：刷新会话树并等它**画完**。
+   *
+   * `#refresh` 的 click 处理器是 async：点完立刻按坐标点节点，坐标是按旧行量的，
+   * 落点却是重画后的另一行——验收会点到别的会话上去（这是真踩过的坑）。
+   */
+  refreshTree() {
+    return loadTree();
+  },
+  /**
+   * 验收用：按名字选中会话，走**真实的** `selectSession` 路径。
+   *
+   * 为什么不点树节点：这一条要验的是「自动填入的口令过期了」，与树渲染无关；
+   * 让断言依赖树的话，树一旦没画出来就变成测树而不是测口令。
+   */
+  async selectSessionByName(name) {
+    const s = (lastTree?.sessions ?? []).find((x) => x.name === name);
+    if (!s) return false;
+    await selectSession(s);
+    return true;
+  },
+  /** 验收用：往「本次记住」里塞一条口令（验「过期密码」时不必解锁保险库） */
+  sessionRemember(host, port, user, password) {
+    sessionPasswords.set(sessionKey(host, port, user), password);
+    return sessionPasswords.size;
+  },
   /** 界面语言与词表（验收用：查「有没有漏翻的键」） */
   i18n() {
     return {

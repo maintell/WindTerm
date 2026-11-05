@@ -3276,7 +3276,7 @@ try {
   await closeAllTabs();
 
   // 19e. 会话上下文菜单（`SES-014`）：重命名 / 复制 / 新建子文件夹
-  await clickElement("#refresh");
+  await cdp.eval(`window.__wt.refreshTree()`);
   await rightClickNode("mock-ssh");
   const menuItems = await cdp.eval(`[...document.querySelectorAll("#ctx-menu button")].map((b) => b.textContent)`);
   check(
@@ -3349,11 +3349,9 @@ try {
   check("点文件夹能折叠，子节点从树里消失", collapsed === true);
 
   // 折叠状态要落库：刷新一次树，仍然得是折叠的
-  await clickElement("#refresh");
-  await waitFor(
-    async () => ((await cdp.eval(`window.__wt.sessions()`)).length ? true : null),
-    { timeout: 10000, label: "刷新会话树" },
-  );
+  // 等树**真的重画完**再按坐标点节点：只等「非空」会拿到旧行，
+  // 量出来的坐标落在重画后的另一行上（这就是「Ctrl+点击选中了别的会话」的成因）
+  await cdp.eval(`window.__wt.refreshTree()`);
   const stillCollapsed = await cdp.eval(
     `![...document.querySelectorAll("#tree-body .node.session")].some((n) => n.textContent === "mock-ssh")`,
   );
@@ -3663,7 +3661,9 @@ try {
         const at = window.__wt.findRow("XTC");
         return at === null ? null : window.__wt.cellAt(at.row, at.col);
       })()`);
-      return c && c.text === "X" ? c : null;
+      // 必须等到**颜色也应用了**：只等文字出现会在「单元格已写入、样式还没生效」那一瞬间
+      // 读到 fg=-1，表现为偶发失败
+      return c && c.text === "X" && c.fgIsRgb === true ? c : null;
     },
     { timeout: 15000, label: "真彩色输出" },
   ).catch(async (e) => {
@@ -3972,11 +3972,9 @@ try {
   await closeAllTabs();
 
   // 19e-3. 多选与批量移动（`SES-013`）
-  await clickElement("#refresh");
-  await waitFor(
-    async () => ((await cdp.eval(`window.__wt.sessions()`)).length ? true : null),
-    { timeout: 10000, label: "刷新会话树" },
-  );
+  // 等树**真的重画完**再按坐标点节点：只等「非空」会拿到旧行，
+  // 量出来的坐标落在重画后的另一行上（这就是「Ctrl+点击选中了别的会话」的成因）
+  await cdp.eval(`window.__wt.refreshTree()`);
   await ctrlClickTreeNode("mock-ssh 副本");
   await ctrlClickTreeNode("ui-imported");
   const multiOn = await waitFor(
@@ -4028,11 +4026,9 @@ try {
   );
 
   // 19e-4. 批量删除（`SES-013`）：确认框要说清删几个，删完两条都没了
-  await clickElement("#refresh");
-  await waitFor(
-    async () => ((await cdp.eval(`window.__wt.sessions()`)).length ? true : null),
-    { timeout: 10000, label: "刷新会话树" },
-  );
+  // 等树**真的重画完**再按坐标点节点：只等「非空」会拿到旧行，
+  // 量出来的坐标落在重画后的另一行上（这就是「Ctrl+点击选中了别的会话」的成因）
+  await cdp.eval(`window.__wt.refreshTree()`);
   await ctrlClickTreeNode("mock-ssh 副本");
   await ctrlClickTreeNode("ui-imported");
   await waitFor(
@@ -5475,10 +5471,44 @@ try {
     },
     { timeout: 15000, label: "重置偏好" },
   ).catch(() => null);
+  // 失败时自己把现场说清楚：只看「没重置」猜不出来是没点中、还是重置报错
+  const resetDiag =
+    resetOk === null
+      ? {
+          ...(await cdp.eval(`({
+            size: window.__wt.look.fontSize,
+            status: document.getElementById("status").textContent,
+            askOpen: document.getElementById("ask-dialog").open,
+          })`)),
+          prefsExists: existsSync(prefsFile),
+          baks: readdirSync(DATA_DIR).filter((n) => n.startsWith("config.toml.bak")).length,
+        }
+      : null;
   check(
     "重置偏好后字号回到默认（SET-001）",
     resetOk !== null,
-    resetOk ? `字号 ${resetOk.size}；${resetOk.status}` : "没重置",
+    resetOk ? `字号 ${resetOk.size}；${resetOk.status}` : JSON.stringify(resetDiag),
+  );
+  // 重置后「导入的键位与配色」也必须没了：`loadPrefs` 对这两项是「配置里有才覆盖」，
+  // 漏清它们时界面写着已重置，下一次保存又把导入的方案写回 config.toml（真踩过）
+  const afterReset = await cdp.eval(`(() => {
+    const opts = [...document.getElementById("look-theme").options].map((o) => o.value);
+    const chord = document.querySelector('#keys-list .key-row[data-action="find"] .chord');
+    return {
+      theme: window.__wt.look.theme,
+      themeInOpts: opts.includes(window.__wt.look.theme),
+      themes: opts.length,
+      hasImported: opts.includes("E2E Scheme"),
+      find: chord ? chord.textContent : null,
+    };
+  })()`);
+  check(
+    "重置也把导入的键位与配色清掉（SET-001）",
+    !afterReset.hasImported &&
+      afterReset.themes === 21 &&
+      afterReset.themeInOpts === true &&
+      afterReset.find === "Ctrl+F",
+    JSON.stringify(afterReset),
   );
   await closeAllDialogs();
 
@@ -5511,7 +5541,13 @@ try {
   await setNet("net-keepalive", "0");
   const netOff = await waitFor(
     async () => {
-      const t = readFileSync(prefsFile, "utf8");
+      // 重置把旧配置文件改名备份后，这里可能还没被下一次保存重建：读不到就当没写，继续等
+      let t;
+      try {
+        t = readFileSync(prefsFile, "utf8");
+      } catch {
+        return null;
+      }
       return /netKeepaliveSecs\s*=\s*0/.test(t) ? true : null;
     },
     { timeout: 10000, label: "keepalive 关闭落盘" },
@@ -5525,7 +5561,12 @@ try {
   await setNet("net-keepalive", "30");
   const netBack = await waitFor(
     async () => {
-      const t = readFileSync(prefsFile, "utf8");
+      let t;
+      try {
+        t = readFileSync(prefsFile, "utf8");
+      } catch {
+        return null;
+      }
       return /netKeepaliveSecs\s*=\s*30/.test(t) ? true : null;
     },
     { timeout: 10000, label: "keepalive 复原" },
@@ -5656,6 +5697,105 @@ try {
     `${i18nInfo.used.length} 处`,
   );
   await closeAllDialogs();
+
+  // 19zi. 保存的密码过期后的更新提示（`SEC-002` AC-3）
+  await closeAllDialogs();
+  await closeAllTabs();
+  // 往「本次记住」里塞一条错口令：验这条不必解锁保险库
+  await cdp.eval(`
+    window.__wt.sessionRemember("127.0.0.1",
+      ${JSON.stringify(String(sshPort))}, "tester", "expired-pw")
+  `);
+  // 前提：会话树里得真有 mock-ssh。前面的用例可能动过它，缺了就建一条，别让本段
+  // 因为「别人留下的状态」而失败——那不是它要验的东西
+  await cdp.eval(`window.__TAURI__.core.invoke("sessions_load").then((t) => {
+    // port 必须是数字：后端是 Option<u16>，传字符串会直接 reject（这条踩过）
+    if ((t.sessions ?? []).some((s) => s.name === "mock-ssh")) return "exists";
+    return window.__TAURI__.core.invoke("session_save", { req: {
+      id: null, name: "mock-ssh", host: "127.0.0.1",
+      port: ${sshPort}, user: "tester",
+      jumpSessionId: null, kind: "ssh",
+    } });
+  }).catch(() => "failed")`);
+  await cdp.eval(`window.__wt.refreshTree()`);
+  await cdp.eval(`(() => {
+    const el = document.getElementById("remember");
+    el.value = "session";
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return el.value;
+  })()`);
+  // 刷新树是异步的：建完会话要等它真的进了 `lastTree` 再选，
+  // 否则选中的是旧快照，钩子只会静静返回 false（这一条踩过）
+  const picked = await waitFor(
+    async () =>
+      (await cdp.eval(`window.__wt.selectSessionByName("mock-ssh")`)) ? true : null,
+    { timeout: 8000, label: "选中 mock-ssh" },
+  ).catch(() => null);
+  check(
+    "按名字选中会话（走真实 selectSession 路径）",
+    picked === true,
+    picked === true
+      ? "已选中"
+      : `树里可见：${JSON.stringify(await cdp.eval("window.__wt.sessions()"))}`,
+  );
+  await fillInput("#port", String(sshPort));
+  const filledWrong = await waitFor(
+    async () => {
+      const v = await cdp.eval(`document.getElementById("password").value`);
+      return v === "expired-pw" ? v : null;
+    },
+    { timeout: 5000, label: "自动填入过期口令" },
+  ).catch(() => null);
+  check(
+    "选中会话会把保存的口令自动填进密码框（SEC-002）",
+    filledWrong !== null,
+    `${filledWrong ?? "没填"}`,
+  );
+  await clickElement("#ssh");
+  const expiredPrompt = await waitFor(
+    async () => {
+      const open = await cdp.eval(`document.getElementById("ask-dialog").open`);
+      if (!open) return null;
+      return cdp.eval(`document.getElementById("ask-title").textContent`);
+    },
+    { timeout: 20000, label: "过期提示" },
+  ).catch(() => null);
+  check(
+    "保存的口令被拒时提示可能已过期（SEC-002 AC-3）",
+    expiredPrompt === "保存的密码可能已过期",
+    `${expiredPrompt ?? "没提示"}`,
+  );
+  await clickElement("#ask-ok");
+  const clearedPw = await waitFor(
+    async () => {
+      const s = await cdp.eval(`({
+        v: document.getElementById("password").value,
+        f: document.activeElement?.id ?? "",
+      })`);
+      return s.v === "" && s.f === "password" ? s : null;
+    },
+    { timeout: 5000, label: "清空并聚焦密码框" },
+  ).catch(() => null);
+  check(
+    "确认后清空密码框并把焦点给它（SEC-002 AC-3）",
+    clearedPw !== null,
+    clearedPw ? "已清空并聚焦" : "没清空",
+  );
+  await fillInput("#password", "secret");
+  await clickElement("#ssh");
+  const reconnected = await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      return /已连接|密码已记住/.test(s) ? s : null;
+    },
+    { timeout: 30000, label: "重新输入后连上" },
+  ).catch(() => null);
+  check(
+    "重新输入正确口令后能连上（SEC-002 AC-3）",
+    reconnected !== null,
+    `${reconnected ?? "没连上"}`,
+  );
+  await closeAllTabs();
 
   // 18. 页面无未捕获异常
   check("页面无未捕获异常", cdp.exceptions.length === 0, cdp.exceptions.join(" | ") || "0 条");

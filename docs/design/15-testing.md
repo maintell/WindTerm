@@ -141,7 +141,7 @@ def test_ssh_connect(server, wt):
 | DTO 没写 `rename_all` 时，字段名是 snake_case | `RemoteEntryDto` 没有 camelCase 重命名，序列化出来是 `is_symlink` / `link_target`；界面按 `e.isSymlink` 去读只会拿到 `undefined`，症状是「后端字段有值、界面就是没反应」，而且不报错。同一个仓库里 `PrefsDto` 是 camelCase、这个是 snake_case，**看 DTO 定义再写前端** |
 | `dataset` 里取出来永远是字符串 | 会话键是数字时，`dataset.id` 拿去 `indexOf` 一个都匹配不上。症状极具迷惑性：拖拽计数全对、`moved` 为真、目标也拿到了，**顺序就是不变**。比较前统一 `String()` |
 
-当前覆盖 265 项断言：
+当前覆盖 271 项断言：
 
 - 本地终端：页面加载与 Tauri 桥接、启动自检、点击建会话、句柄可取、首屏输出渲染、
   焦点在终端、键盘输入、命令输出、统计字段非零值、前后端行列一致、ack 回流归零、
@@ -220,6 +220,8 @@ def test_ssh_connect(server, wt):
   分组路径；搜英文 `font` 也能命中中文项；清空后高亮与路径都收起且名称恢复原文；
 - 设置分组（`SET-001`）：面板分成常规/外观/终端/文件/安全五组（读 `.set-group` 的
   `data-group` 与每组行数，空组不渲染）；搜索「乱码」时只剩终端组，清空后五组都回来；
+- 过期口令（`SEC-002` AC-3）：把一条错口令塞进「本次记住」→ 选中会话自动填入 → 连接被拒 →
+  弹「保存的密码可能已过期」→ 确认后密码框清空并聚焦 → 重输正确口令能连上（连上后覆盖保存）；
 - 设置搜索跳转（`SET-002`）：搜「字体」后按回车，焦点落在字体下拉框（读 `activeElement.id`
   === `look-font`）——搜完还得自己滚下去找，等于搜索只做了一半；
 - 界面语言（`SET-012`）：在设置里把语言改成 English，主按钮文案变成 `New local terminal`；
