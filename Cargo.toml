@@ -48,3 +48,11 @@ codegen-units = 1
 strip = "symbols"
 # 不用 panic = "abort"：会话 task 依赖 catch_unwind 做隔离（design/01 §2.1）
 panic = "unwind"
+
+# 第三方依赖不产调试信息：wry/tao/webview2-com/windows-rs 这些巨型 crate 的 .pdb
+# 是 target 里最大的一块。自己的 crate 保留行号，调试自家代码时 backtrace 照常可用。
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

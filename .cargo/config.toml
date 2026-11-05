@@ -1,0 +1,4 @@
+# 增量编译缓存（target/debug/incremental）对本项目是纯浪费：crate 都很小，
+# 改代码只多几秒，却省下数 GB，且不会随切分支 / 切 feature 越积越厚。
+[build]
+incremental = false
