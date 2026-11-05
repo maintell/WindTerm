@@ -353,6 +353,33 @@ if (-not (Test-Path $statusPath)) {
 }
 
 # ─────────────────────────────────────────────────────────────
+# 12c. P0 覆盖表不能自相矛盾
+#      12b 只保证「每条 P0 都在表里」。这张表还要能当证据用，所以再查三条：
+#      ① 每行必须是 6 段（首尾空 + id + 状态 + 依据 + 缺什么）：内联代码里的竖线不转义
+#         会把整行截断，渲染出来列就错位——肉眼极容易漏；
+#      ② 标 ✅ 的行不许再写「未做 / 未实现 / 没做」，那等于自己承认没做完；
+#      ③ 标 🟡/⬜ 的行必须写清缺什么，空着或写「—」等于把缺口藏起来。
+# ─────────────────────────────────────────────────────────────
+$statusRows = @($statusText -split [char]10 | Where-Object { $_ -match '^[|].*`[A-Z][A-Z]+-[0-9]+`' })
+foreach ($line in $statusRows) {
+    # 只按**未转义**的竖线切：内容里的字面竖线要写成 `\|`
+    $cells = @([regex]::Split($line.Trim(), '(?<!\\)\|'))
+    if ($cells.Count -ne 6) {
+        Fail (("P0 覆盖表有一行切成 {0} 段（应为 6），多半是内容里的竖线没转义：{1}") -f $cells.Count, $line.Substring(0, [Math]::Min(48, $line.Length)))
+        continue
+    }
+    $rowId = $cells[1].Trim()
+    $rowStatus = $cells[2].Trim()
+    $rowGap = $cells[4].Trim()
+    if ($rowStatus -match '✅' -and $rowGap -match '未做|未实现|没做') {
+        Fail ("{0} 标了 ✅，却在「缺什么」里承认没做完：{1}" -f $rowId, $rowGap)
+    }
+    if ($rowStatus -match '🟡|⬜' -and ($rowGap -eq '' -or $rowGap -eq '—' -or $rowGap -eq '-')) {
+        Fail ("{0} 标了未完成，却没写清缺什么" -f $rowId)
+    }
+}
+
+# ─────────────────────────────────────────────────────────────
 # 12. 相对链接可达（NFR-026）
 #     用户手册会随功能增长不断加页，链接断了没人发现。
 #     只查相对路径的 .md 链接；外链不查（离线环境查不了）

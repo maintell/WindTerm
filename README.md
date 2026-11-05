@@ -36,7 +36,7 @@
 
 **使用手册**在 [`docs/user/`](docs/user/00-index.md)：装好之后怎么连、怎么传文件、怎么建隧道、错误码怎么查。
 
-**做完多少了**看 [`docs/status/p0-coverage.md`](docs/status/p0-coverage.md)：44 条 P0 逐条标状态（22 条完成 / 16 条部分 / 6 条未做）、每条都给验收依据；这份表由 `check-docs.ps1` 对账，漏一条就报错。
+**做完多少了**看 [`docs/status/p0-coverage.md`](docs/status/p0-coverage.md)：44 条 P0 逐条标状态（21 条完成 / 17 条部分 / 6 条未做）、每条都给验收依据；这份表由 `check-docs.ps1` 对账，漏一条就报错。
 
 实现按 [`docs/spec/14-roadmap-acceptance.md`](docs/spec/14-roadmap-acceptance.md) 的里程碑推进。
 
