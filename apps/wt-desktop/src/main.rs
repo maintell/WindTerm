@@ -822,6 +822,9 @@ struct PrefsDto {
     net_keepalive_secs: u32,
     /// keepalive 连续丢失多少次算断线
     net_keepalive_max_missed: u32,
+    /// 界面语言（`SET-012`）：`zh` / `en`。只覆盖标了 `data-i18n` 的元素，
+    /// 其余文案仍是中文硬编码——如实写在 README 里。
+    language: String,
 }
 
 /// 一套导入的配色：4 个界面色 + 16 个 ANSI 色，和内置的结构一致。
@@ -854,6 +857,7 @@ impl Default for PrefsDto {
             net_connect_timeout_secs: 15,
             net_keepalive_secs: 30,
             net_keepalive_max_missed: 3,
+            language: "zh".into(),
         }
     }
 }

@@ -1013,8 +1013,8 @@
       <label id="jump-toggle"><input type="checkbox" id="use-jump" />经跳板机</label>
       <button id="ssh">连接 SSH</button>
       <button id="new-session">新建</button>
-      <button id="save-session">保存</button>
-      <button id="open">新建本地终端</button>
+      <button id="save-session" data-i18n="btn.save">保存</button>
+      <button id="open" data-i18n="btn.local">新建本地终端</button>
       <button id="close" disabled>关闭</button>
       <span id="status">未连接</span>
       <div id="key-row" hidden>
@@ -1042,10 +1042,10 @@
         <div id="tree-head">
           <!-- 设置放在这里而不是只在终端底栏：底栏在没有会话时是隐藏的，
                想改编码/字体却还没连机器就进不去（G15） -->
-          <button id="tree-settings" title="设置（可搜索）">设置</button>
+          <button id="tree-settings" data-i18n="btn.settings" title="设置（可搜索）">设置</button>
           <button id="vault-toggle" title="查看保险库里保存的密码">保险库</button>
-          <button id="files-toggle" title="打开 SFTP 文件面板">文件</button>
-        <button id="tunnels-toggle" title="端口转发（把远端端口映射到本地）">隧道</button>
+          <button id="files-toggle" data-i18n="btn.files" title="打开 SFTP 文件面板">文件</button>
+        <button id="tunnels-toggle" data-i18n="btn.tunnels" title="端口转发（把远端端口映射到本地）">隧道</button>
           <button id="delete-session" disabled title="删除选中的会话">删除</button>
           <button id="import" title="从 MobaXterm.ini 导入会话">导入</button>
           <button id="refresh" title="重新读取会话库">刷新</button>
@@ -1119,9 +1119,9 @@
           <span id="bc-result"></span>
         </div>
         <div id="term-foot">
-          <button id="settings-open" title="设置（可搜索）">设置</button>
-          <button id="split-toggle" title="左右分屏：同时看两个会话">分屏</button>
-          <button id="bc-toggle" title="多执行广播：同一命令发给所有已连接会话">广播</button>
+          <button id="settings-open" data-i18n="btn.settings" title="设置（可搜索）">设置</button>
+          <button id="split-toggle" data-i18n="btn.split" title="左右分屏：同时看两个会话">分屏</button>
+          <button id="bc-toggle" data-i18n="btn.broadcast" title="多执行广播：同一命令发给所有已连接会话">广播</button>
           <button id="keys-open" title="键位设置（可重绑、冲突检测、导入导出）">键位</button>
           <button id="keygen-open" title="生成或导入 SSH 密钥，查看指纹">密钥</button>
         </div>
@@ -1268,6 +1268,14 @@
           <span class="set-name">keepalive 最多丢失（次）</span>
           <span class="set-scope">全局</span>
           <input id="net-max-missed" type="number" min="1" max="20" step="1" />
+        </div>
+        <div class="set-row" data-kw="语言 language 中文 english 界面 i18n">
+          <span class="set-name">界面语言</span>
+          <span class="set-scope">全局</span>
+          <select id="ui-lang">
+            <option value="zh">中文</option>
+            <option value="en">English</option>
+          </select>
         </div>
         <div class="set-row" data-kw="shell 本地终端 powershell cmd git bash wsl 命令行 终端类型">
           <span class="set-name">本地终端 Shell</span>

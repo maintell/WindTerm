@@ -209,6 +209,7 @@ async function loadPrefs() {
     if (Number.isFinite(p.netConnectTimeoutSecs)) netTimeout = p.netConnectTimeoutSecs;
     if (Number.isFinite(p.netKeepaliveSecs)) netKeepalive = p.netKeepaliveSecs;
     if (Number.isFinite(p.netKeepaliveMaxMissed)) netMaxMissed = p.netKeepaliveMaxMissed;
+    if (p.language === "en" || p.language === "zh") uiLang = p.language;
     // 导入的配色要在建会话之前就进表，否则第一个终端会先闪一下默认配色
     for (const t of p.customThemes ?? []) {
       if (THEME_DATA.some((x) => x.name === t.name)) continue;
@@ -246,6 +247,7 @@ async function savePrefs() {
         netConnectTimeoutSecs: netTimeout,
         netKeepaliveSecs: netKeepalive,
         netKeepaliveMaxMissed: netMaxMissed,
+        language: uiLang,
       },
     });
   } catch (e) {
@@ -4449,7 +4451,7 @@ const setEmpty = document.getElementById("set-empty");
  * 没有条目的分组不渲染（空标题是噪音）。
  */
 const SET_GROUPS = [
-  ["常规", ["local-shell", "local-shell-path"]],
+  ["常规", ["ui-lang", "local-shell", "local-shell-path"]],
   ["外观", ["look-size", "look-height"]],
   ["终端", ["encoding", "look-theme", "theme-import-open", "look-font", "look-scrollback"]],
   ["文件", ["files-auto-open"]],
@@ -4473,6 +4475,7 @@ const SET_META = {
   "look-size": ["13", false],
   "look-height": ["1.2", false],
   "look-scrollback": ["10000", false],
+  "ui-lang": ["中文", false],
   "local-shell": ["跟随系统", false],
   "local-shell-path": ["（空）", false],
   "files-auto-open": ["开", false],
@@ -4575,6 +4578,15 @@ function highlightName(el, needle) {
 }
 
 // 高级（`SET-001`）：配置文件在哪、以及一键重置偏好
+// 语言切换（`SET-012`）：立刻重刷所有标了 data-i18n 的元素，并写进配置。
+// 不全量刷新页面——CDP 执行上下文会随重载失效，验收脚本拿不到页面。
+document.getElementById("ui-lang").addEventListener("change", (ev) => {
+  uiLang = ev.target.value === "en" ? "en" : "zh";
+  applyLang();
+  void savePrefs();
+  setStatus(uiLang === "en" ? "Interface language: English" : "界面语言：中文");
+});
+
 const appPrefsPath = document.getElementById("app-prefs-path");
 let prefsDir = "";
 
@@ -4656,6 +4668,45 @@ netMaxMissedInput.addEventListener("change", () => {
   void savePrefs();
   setStatus(`keepalive 最多丢失：${netMaxMissed} 次`);
 });
+
+// ── 界面语言（`SET-012`）──────────────────────────────────
+//
+// 只翻译**标了 `data-i18n` 的元素**。全量国际化是几百处文案的活，一次做完不现实；
+// 先把机制搭起来并覆盖一小组高可见度按钮，覆盖到哪如实写在 README 里。
+// 没标的地方仍是中文——不假装「支持英文界面」。
+const I18N = {
+  zh: {
+    "btn.local": "新建本地终端",
+    "btn.save": "保存",
+    "btn.settings": "设置",
+    "btn.files": "文件",
+    "btn.tunnels": "隧道",
+    "btn.split": "分屏",
+    "btn.broadcast": "广播",
+  },
+  en: {
+    "btn.local": "New local terminal",
+    "btn.save": "Save",
+    "btn.settings": "Settings",
+    "btn.files": "Files",
+    "btn.tunnels": "Tunnels",
+    "btn.split": "Split",
+    "btn.broadcast": "Broadcast",
+  },
+};
+
+let uiLang = "zh";
+
+function t(key) {
+  return I18N[uiLang]?.[key] ?? I18N.zh[key] ?? key;
+}
+
+/** 把标了 `data-i18n` 的元素刷成当前语言 */
+function applyLang() {
+  for (const el of document.querySelectorAll("[data-i18n]")) {
+    el.textContent = t(el.dataset.i18n);
+  }
+}
 
 function filterSettings(query) {
   const needle = query.trim().toLowerCase();
@@ -4853,7 +4904,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-87",
+  ui: "wt-ui-88",
   /** 「本次记住」存了几条（验收用：只回数量，不回口令） */
   sessionPasswords() {
     return sessionPasswords.size;
@@ -5114,6 +5165,8 @@ window.__wt = {
   buildSettingGroups();
   applySetMeta();
   initNetControls();
+  document.getElementById("ui-lang").value = uiLang;
+  applyLang();
   await refreshAppPaths();
   filesAutoOpenBox.checked = filesAutoOpen;
   initBroadcast();

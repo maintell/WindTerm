@@ -5509,6 +5509,44 @@ try {
     external.slice(0, 5).join("、") || "0 个",
   );
 
+  // 19zh. 界面语言（`SET-012`）
+  await closeAllDialogs();
+  await clickUntil(
+    () => clickElement("#tree-settings"),
+    async () => (await cdp.eval(`document.getElementById("settings").open`)) ? true : null,
+    { timeout: 5000, tries: 3, label: "打开设置改语言" },
+  );
+  const setLang = (v) =>
+    cdp.eval(`(() => {
+      const el = document.getElementById("ui-lang");
+      el.value = ${JSON.stringify(v)};
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      return el.value;
+    })()`);
+  await setLang("en");
+  const inEnglish = await waitFor(
+    async () => {
+      const t = await cdp.eval(`document.getElementById("open").textContent`);
+      return t === "New local terminal" ? t : null;
+    },
+    { timeout: 8000, label: "切到英文" },
+  ).catch(() => null);
+  check(
+    "切到英文后按钮文案变成英文（SET-012）",
+    inEnglish !== null,
+    `${inEnglish ?? "没变"}`,
+  );
+  await setLang("zh");
+  const backToChinese = await waitFor(
+    async () => {
+      const t = await cdp.eval(`document.getElementById("open").textContent`);
+      return t === "新建本地终端" ? t : null;
+    },
+    { timeout: 8000, label: "切回中文" },
+  ).catch(() => null);
+  check("切回中文也生效（SET-012）", backToChinese !== null, `${backToChinese ?? "没变"}`);
+  await closeAllDialogs();
+
   // 18. 页面无未捕获异常
   check("页面无未捕获异常", cdp.exceptions.length === 0, cdp.exceptions.join(" | ") || "0 条");
 
