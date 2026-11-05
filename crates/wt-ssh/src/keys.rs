@@ -219,6 +219,16 @@ pub fn generate(alg: &str, passphrase: Option<&str>, comment: &str) -> Result<Ge
     })
 }
 
+/// 看起来是不是 DSA 私钥（`SEC-003`）。
+///
+/// 只认两个明文标志：`BEGIN DSA PRIVATE KEY`（OpenSSH 旧格式）与 .ppk 头里的
+/// `ssh-dss`。**PKCS#8 包裹的 DSA 从外壳上看不出来**，那种情况仍会落到通用错误上——
+/// 这一点写在文档里，不假装全都认得。
+fn looks_like_dsa(pem: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(pem);
+    text.contains("BEGIN DSA PRIVATE KEY") || text.contains("ssh-dss")
+}
+
 /// 解析私钥并返回公开信息。用于「导入密钥时显示指纹」与「连接前校验」。
 pub fn inspect(source: &PrivateKeySource) -> Result<KeyInfo, WtError> {
     let key = parse(source)?;
@@ -229,6 +239,17 @@ pub fn inspect(source: &PrivateKeySource) -> Result<KeyInfo, WtError> {
 ///
 /// `.ppk` 会先转成 OpenSSH 文本（见 [`crate::ppk`]）——迁移用户手里多半是这个格式。
 pub(crate) fn parse(source: &PrivateKeySource) -> Result<russh::keys::PrivateKey, WtError> {
+    // DSA 先说清楚为什么不支持（`SEC-003`）：丢一句「格式无法识别」等于把问题推回给用户。
+    if looks_like_dsa(&source.pem) {
+        return Err(WtError::new("SSH_KEY_DSA_UNSUPPORTED")
+            .message("DSA 私钥不受支持")
+            .detail(
+                "当前构建只支持 Ed25519 / ECDSA / RSA。DSA 已被 OpenSSH 9.8 默认禁用，\
+                 且存在 Marvin 攻击（实现已无维护），所以这里不引入它",
+            )
+            .hint("用 ssh-keygen -t ed25519 生成新密钥", HintAction::None)
+            .hint("把新公钥换到服务器上，旧的 DSA 公钥可以删掉", HintAction::None));
+    }
     let pem = if crate::ppk::is_ppk(&source.pem) {
         crate::ppk::convert(&source.pem)?
     } else {
@@ -351,6 +372,25 @@ mod tests {
         let err = inspect(&PrivateKeySource::new(b"not a key".to_vec(), None)).unwrap_err();
         assert_eq!(err.code, "SSH_KEY_INVALID");
         assert!(err.hints.iter().any(|h| h.label.contains("ppk")));
+    }
+
+    /// `SEC-003`：DSA 不支持，但必须**说清原因**，不能丢一句「格式无法识别」。
+    #[test]
+    fn dsa_key_says_why_it_is_unsupported() {
+        let pem = b"-----BEGIN DSA PRIVATE KEY-----\nAAAA\n-----END DSA PRIVATE KEY-----\n".to_vec();
+        let err = inspect(&PrivateKeySource::new(pem, None)).unwrap_err();
+        assert_eq!(err.code, "SSH_KEY_DSA_UNSUPPORTED");
+        assert!(err.message.contains("DSA"));
+        assert!(err.detail.as_deref().unwrap_or("").contains("Marvin"));
+        assert!(err.hints.iter().any(|h| h.label.contains("ed25519")));
+    }
+
+    /// .ppk 里的 DSA（`Algorithm: ssh-dss`）同样要认出来——迁移用户多半是这个格式。
+    #[test]
+    fn ppk_dsa_is_detected_before_conversion() {
+        let ppk = b"PuTTY-User-Key-File-2: ssh-dss\nEncryption: none\n".to_vec();
+        let err = inspect(&PrivateKeySource::new(ppk, None)).unwrap_err();
+        assert_eq!(err.code, "SSH_KEY_DSA_UNSUPPORTED");
     }
 
     #[test]

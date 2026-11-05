@@ -12,6 +12,7 @@
 | `SSH_HOSTKEY_UNKNOWN` | 主机密钥没确认过 | 核对提示里的指纹；确认后接受 |
 | `SSH_HOSTKEY_CHANGED` | 主机密钥变了 | 先搞清楚为什么变（重装/换机/MITM） |
 | `SSH_KEY_PASSPHRASE_REQUIRED` | 私钥有口令但没给 | 填私钥口令 |
+| `SSH_KEY_DSA_UNSUPPORTED` | DSA 私钥不受支持 | `ssh-keygen -t ed25519` 生成新密钥并换到服务器 |
 | `SSH_FORWARD_DENIED` | 服务端禁止 TCP 转发 | `AllowTcpForwarding` / `GatewayPorts` |
 | `SSH_NO_COMMON_KEX` | 算法谈不拢 | 老服务器的算法被新版默认禁用了 |
 | `TUN_NO_SESSION` | 隧道没有承载会话 | 表单里重新填一次并启动（会覆盖保存） |
