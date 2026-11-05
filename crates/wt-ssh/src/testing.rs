@@ -201,25 +201,44 @@ impl russh_sftp::server::Handler for MemSftp {
         oldpath: String,
         newpath: String,
     ) -> Result<Status, StatusCode> {
-        let mut fs = self.fs.lock().await;
-        if let Some(data) = fs.remove(&oldpath) {
-            fs.insert(newpath, data);
-            return Ok(ok_status(id));
+        // 权限位表要跟着路径一起搬：真实服务端 `rename` 不换 inode，之前 `SETSTAT`
+        // 设过的权限仍在；mock 分两张表存，只搬内容的话「改名后的权限」会退回默认值，
+        // 「保留原文件权限位」这类断言就永远看不到真值。
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        {
+            let mut fs = self.fs.lock().await;
+            if let Some(data) = fs.remove(&oldpath) {
+                fs.insert(newpath.clone(), data);
+                pairs.push((oldpath.clone(), newpath.clone()));
+            } else {
+                // 目录：把整棵子树按前缀搬过去
+                let from = format!("{}/", oldpath.trim_end_matches('/'));
+                let moved: Vec<(String, Vec<u8>)> = fs
+                    .keys()
+                    .filter(|k| k.starts_with(&from))
+                    .map(|k| (k.clone(), fs.get(k).cloned().unwrap_or_default()))
+                    .collect();
+                if moved.is_empty() {
+                    return Err(StatusCode::NoSuchFile);
+                }
+                let to = format!("{}/", newpath.trim_end_matches('/'));
+                for (k, v) in moved {
+                    fs.remove(&k);
+                    let target = format!("{to}{}", &k[from.len()..]);
+                    pairs.push((k.clone(), target.clone()));
+                    fs.insert(target, v);
+                }
+            }
         }
-        // 目录：把整棵子树按前缀搬过去
-        let from = format!("{}/", oldpath.trim_end_matches('/'));
-        let moved: Vec<(String, Vec<u8>)> = fs
-            .keys()
-            .filter(|k| k.starts_with(&from))
-            .map(|k| (k.clone(), fs.get(k).cloned().unwrap_or_default()))
-            .collect();
-        if moved.is_empty() {
-            return Err(StatusCode::NoSuchFile);
-        }
-        let to = format!("{}/", newpath.trim_end_matches('/'));
-        for (k, v) in moved {
-            fs.remove(&k);
-            fs.insert(format!("{to}{}", &k[from.len()..]), v);
+        let mut modes = self.modes.lock().await;
+        for (from, to) in pairs {
+            // 目标原有的权限记录必须先丢掉：`rename` 换掉的是 inode，目标原来的
+            // 属性不再存在。留着它会让「临时文件没设权限」也看起来是保留成功的
+            // ——变异验证就是这么发现用例没生效的。
+            modes.remove(&to);
+            if let Some(mode) = modes.remove(&from) {
+                modes.insert(to, mode);
+            }
         }
         Ok(ok_status(id))
     }
@@ -292,12 +311,26 @@ impl russh_sftp::server::Handler for MemSftp {
     }
 
     async fn stat(&mut self, id: u32, path: String) -> Result<Attrs, StatusCode> {
-        let fs = self.fs.lock().await;
-        let Some(content) = fs.get(&path) else {
-            return Err(StatusCode::NoSuchFile);
+        let size = {
+            let fs = self.fs.lock().await;
+            match fs.get(&path) {
+                Some(content) => content.len() as u64,
+                None => return Err(StatusCode::NoSuchFile),
+            }
         };
-        let mut attrs = FileAttributes::dummy();
-        attrs.size = Some(content.len() as u64);
+        // 权限位要跟 `readdir` 用同一套（`SETSTAT` 改过的优先）。
+        // 不能再用 `FileAttributes::dummy()`：它把 permissions 写死成 `0o777|S_IFDIR`，
+        // 文件会被看成目录——客户端照这个值决定「保留什么权限位」时会拿到假值。
+        let mode = self
+            .modes
+            .lock()
+            .await
+            .get(&path)
+            .copied()
+            .unwrap_or(0o644 | 0o100000);
+        let mut attrs = FileAttributes::empty();
+        attrs.size = Some(size);
+        attrs.permissions = Some(mode);
         Ok(Attrs { id, attrs })
     }
 

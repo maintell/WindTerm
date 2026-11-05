@@ -304,3 +304,41 @@ async fn atomic_write_can_create_a_new_file() {
     assert!(atomic);
     assert_eq!(sftp.read_file("/fresh.txt").await.unwrap(), b"hello");
 }
+
+/// 编辑远端文件不能把原文件的权限位吃掉（`FIL-005`）。
+///
+/// 临时文件是按服务端 umask 建的，写完直接 `rename` 覆盖会把可执行位一起抹掉：
+/// 「编辑一个 755 的部署脚本，存完变成 644」——内容对了、权限没了，而且界面上
+/// 只看到「已保存」。所以替换前要把原件的权限位 `SETSTAT` 到临时文件上。
+#[tokio::test]
+async fn atomic_write_keeps_the_original_mode() {
+    let server = MockSshServer::start().await;
+    {
+        let mut fs = server.fs.lock().await;
+        fs.insert("/deploy.sh".into(), b"#!/bin/sh\necho old\n".to_vec());
+    }
+    let conn = SshConnection::connect_password(&cfg(server.port), "secret", HostKeyPolicy::AcceptAll)
+        .await
+        .expect("连接应成功");
+    let sftp = SftpClient::open(conn).await.expect("应能打开 sftp 子系统");
+    sftp.set_mode("/deploy.sh", 0o755 | 0o100000)
+        .await
+        .expect("先设成 755");
+
+    sftp.write_file_atomic("/deploy.sh", b"#!/bin/sh\necho new\n")
+        .await
+        .expect("原子写应成功");
+
+    let entries = sftp.list_dir("/").await.expect("列目录应成功");
+    let mode = entries
+        .iter()
+        .find(|e| e.name == "deploy.sh")
+        .and_then(|e| e.mode)
+        .expect("deploy.sh 应有 mode");
+    assert_eq!(mode & 0o777, 0o755, "编辑完可执行位不能丢：{mode:o}");
+    assert_eq!(mode & 0o170000, 0o100000, "类型位要保住：{mode:o}");
+    assert_eq!(
+        sftp.read_file("/deploy.sh").await.unwrap(),
+        b"#!/bin/sh\necho new\n"
+    );
+}

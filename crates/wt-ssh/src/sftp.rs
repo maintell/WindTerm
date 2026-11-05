@@ -150,8 +150,21 @@ impl SftpClient {
     /// 返回 `true` 表示走的是原子替换；`false` 表示服务端严格按 SFTP v3 在「目标已存在」
     /// 时拒绝 rename，只能退回「先删后改名」——那有一段短暂的不一致窗口，调用方应当
     /// 如实告诉用户，而不是假装原子。
+    ///
+    /// 权限位会被保留：临时文件是按服务端 umask 建的，直接换名会把可执行位、组权限
+    /// 一起抹掉（「编辑一个 755 的脚本，存完变成 644」），所以替换前把原件的权限位
+    /// `SETSTAT` 到临时文件上。服务端拒绝 `SETSTAT` 时内容照样保存、权限退回默认值
+    /// ——内容比权限重要，但这一点写在这里，不假装总能保留。
     pub async fn write_file_atomic(&self, path: &str, data: &[u8]) -> Result<bool, WtError> {
         use tokio::io::AsyncWriteExt;
+        // 先读原件的权限位。读不到（新文件、服务端不支持 stat、目标是符号链接）就当没有，
+        // 保持原来的建文件语义。
+        let prev_mode = self
+            .inner
+            .metadata(path)
+            .await
+            .ok()
+            .and_then(|a| a.permissions);
         let tmp = format!("{path}.wt-tmp-{}", unique_suffix());
         let write_tmp = async {
             let mut file = self.inner.create(&tmp).await.map_err(|e| {
@@ -169,6 +182,12 @@ impl SftpClient {
         if let Err(e) = write_tmp {
             let _ = self.remove_file(&tmp).await;
             return Err(e);
+        }
+        // 权限位要在替换**之前**设到临时文件上：换名的一瞬间文件就已经是最终权限，
+        // 不会出现「新内容配临时权限」的窗口。按 `set_mode` 的约定补上类型位
+        // （只写权限位、丢了 `S_IFREG`，有的服务端会把路径当成未知类型）。
+        if let Some(mode) = prev_mode {
+            let _ = self.set_mode(&tmp, (mode & 0o7777) | 0o100000).await;
         }
         match self.inner.rename(&tmp, path).await {
             Ok(()) => Ok(true),
