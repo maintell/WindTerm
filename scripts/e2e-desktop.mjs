@@ -191,14 +191,38 @@ class Cdp {
     });
   }
 
-  /** 在页面里求值；异常直接抛出，便于定位是页面错还是断言错。 */
+  /**
+   * 在页面里求值；异常直接抛出，便于定位是页面错还是断言错。
+   *
+   * 连跑几十个用例时，销毁/创建多个本地终端会让 WebView2 主线程**短暂不响应**：
+   * 一条本来很快的只读 eval 会等满 20 秒然后抛「CDP 超时」，把整轮验收打断。
+   * 这里对**只读**表达式超时做有限重试（先等页面恢复再重发）：读状态天然幂等，
+   * 重发没有副作用；带副作用的表达式（click / dispatchEvent / invoke …）一律不重试，
+   * 因为点两次比报一次错更糟。
+   */
   async eval(expression, { awaitPromise = true, timeoutMs = 20000 } = {}) {
-    const r = await this.send("Runtime.evaluate", {
-      expression,
-      awaitPromise,
-      returnByValue: true,
-      userGesture: true,
-    }, timeoutMs);
+    // 只把「已知会改状态」的模式列为副作用。用启发式去猜任意 `=` 会误伤
+    // `const f = window.__wt.files` 这类只读断言（实测过），反而让该重试的不重试。
+    const hasSideEffect =
+      /\.click\(|\.dispatchEvent\(|core\.invoke|new KeyboardEvent|new MouseEvent|new Event\(|\.writeText\(|\.remove\(|\.appendChild\(|\.selectAll\(|\.clear\(|\.paste\(|\.close\(|\.showModal\(/.test(
+        expression,
+      );
+    const attempt = async () =>
+      this.send("Runtime.evaluate", {
+        expression,
+        awaitPromise,
+        returnByValue: true,
+        userGesture: true,
+      }, timeoutMs);
+    let r;
+    try {
+      r = await attempt();
+    } catch (e) {
+      if (!String(e?.message ?? e).includes("CDP 超时") || hasSideEffect) throw e;
+      // 等页面恢复再重发一次；仍失败就如实抛出，不吞真错误
+      await waitPageResponsive("eval 超时后页面恢复", 15000).catch(() => null);
+      r = await attempt();
+    }
     if (r.exceptionDetails) {
       const d = r.exceptionDetails;
       throw new Error(d.exception?.description ?? d.text ?? "页面求值异常");
@@ -216,8 +240,14 @@ async function waitPageResponsive(label = "页面恢复响应", timeout = 30000)
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     try {
-      const v = await cdp.eval(`1`, { awaitPromise: false, timeoutMs: 4000 });
-      if (v === 1) return true;
+      // 必须直连底层 send：用 cdp.eval 会与 eval 的超时重试互相调用（递归死结），
+      // 页面一卡就两边互相等待，防护等于没生效——这正是前几轮一直没修好的原因。
+      const r = await cdp.send(
+        "Runtime.evaluate",
+        { expression: "1", awaitPromise: false, returnByValue: true },
+        4000,
+      );
+      if (r.result?.value === 1) return true;
     } catch {
       /* 还没恢复，继续探 */
     }
@@ -1732,16 +1762,20 @@ try {
   // 点位要**当场现算**：这一段前面粘了几条命令，终端滚过屏，之前算好的 `wordPoint`
   // 已经指到别的行上（上一轮因此选中了 `windtermok`）。取 `user@host` 而不是整串——
   // 整串的中心正好落在 `:` 上，双击一个分隔符字符选到哪一边是不确定的。
-  const sepPoint = await cdp.eval(`window.__wt.textPoint("user@host")`);
-  if (!sepPoint) throw new Error("屏幕上找不到 user@host，无法验分隔符");
-  await doubleClickAt(sepPoint);
-  const sepSel = await waitFor(
-    async () => {
-      const s = await cdp.eval(`window.__wt.selection()`);
-      return s === "user@host" ? s : null;
-    },
-    { timeout: 5000, label: "自定义分隔符选词" },
-  ).catch(() => null);
+  // 与「恢复默认」那条同样处理：点位现算 + 几次尝试，避开正好落在 @ 上
+  let sepSel = null;
+  for (let i = 0; i < 4 && sepSel !== "user@host"; i += 1) {
+    const pt = await cdp.eval(`window.__wt.textPoint("user@host")`);
+    if (!pt) break;
+    await doubleClickAt({ x: pt.x - i * 3, y: pt.y });
+    sepSel = await waitFor(
+      async () => {
+        const s = await cdp.eval(`window.__wt.selection()`);
+        return s === "user@host" ? s : null;
+      },
+      { timeout: 2500, label: `自定义分隔符选词（第 ${i + 1} 次）` },
+    ).catch(() => null);
+  }
   const sepActual = await cdp.eval(`window.__wt.selection()`);
   check(
     "把「:」也当分隔符后，双击只选到冒号前（TER-011）",
@@ -1756,17 +1790,22 @@ try {
     return el.value;
   })()`);
   await closeAllDialogs();
-  // 点位同样现算：上面那次双击也改变了选区，屏幕本身没动，但别依赖旧坐标
-  const sepPointBack = await cdp.eval(`window.__wt.textPoint("user@host")`);
-  if (!sepPointBack) throw new Error("屏幕上找不到 user@host，无法验默认分隔符");
-  await doubleClickAt(sepPointBack);
-  const sepBack = await waitFor(
-    async () => {
-      const s = await cdp.eval(`window.__wt.selection()`);
-      return s && s.includes(":") ? s : null;
-    },
-    { timeout: 5000, label: "清空分隔符后选词" },
-  ).catch(() => null);
+  // 点位现算 + 多次尝试：双击选区对落点很敏感，一次点到字边界就可能只选一半。
+  // 判据等的是「整串」这个具体值，读到别的就换个点位再试，而不是一次定生死。
+  let sepBack = null;
+  for (let i = 0; i < 4 && sepBack !== "user@host:/var/log"; i += 1) {
+    const pt = await cdp.eval(`window.__wt.textPoint("user@host")`);
+    if (!pt) break;
+    // 每次往左偏一点，避开正好落在 @ 或 : 上
+    await doubleClickAt({ x: pt.x - i * 3, y: pt.y });
+    sepBack = await waitFor(
+      async () => {
+        const s = await cdp.eval(`window.__wt.selection()`);
+        return s === "user@host:/var/log" ? s : null;
+      },
+      { timeout: 2500, label: `清空分隔符后选词（第 ${i + 1} 次）` },
+    ).catch(() => null);
+  }
   check(
     "清空额外分隔符后恢复「整串一次选中」（TER-011）",
     sepBack === "user@host:/var/log",
@@ -2714,6 +2753,74 @@ try {
     viaSession.rows.join("、"),
   );
 
+  // 隐藏文件开关（FIL-001 规格 §4）：默认显示（运维要看 .env/.gitignore），可切换。
+  // 用独立目录，避免往根目录塞东西影响后面那些 rows 断言。
+  const seedHidden = (path, text) =>
+    cdp.eval(`window.__TAURI__.core.invoke("mock_seed_file", { path: ${JSON.stringify(path)}, content: ${JSON.stringify(Buffer.from(text).toString("base64"))} })`);
+  await seedHidden("/hidden-test/.env", "secret");
+  await seedHidden("/hidden-test/notes.txt", "note");
+  // 用「路径…」输入框跳到独立目录
+  await clickElement("#files-path-edit");
+  await waitFor(
+    async () => ((await cdp.eval(`!document.getElementById("files-path-input").hidden`)) ? true : null),
+    { timeout: 5000, label: "路径输入框（去 hidden-test）" },
+  );
+  await cdp.eval(`(() => {
+    const el = document.getElementById("files-path-input");
+    el.value = "/hidden-test";
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    return el.value;
+  })()`);
+  const hiddenShown = await waitFor(
+    async () => {
+      const f = await cdp.eval(`window.__wt.files`);
+      return f.path === "/hidden-test" && f.rows.includes(".env") && f.rows.includes("notes.txt") ? f : null;
+    },
+    { timeout: 15000, label: "默认显示隐藏文件" },
+  ).catch(() => null);
+  check(
+    "默认显示隐藏文件且开关登记在设置里（FIL-001）",
+    hiddenShown !== null && hiddenShown.showHidden === true && hiddenShown.total === 2,
+    hiddenShown ? JSON.stringify({ rows: hiddenShown.rows, total: hiddenShown.total, showHidden: hiddenShown.showHidden }) : "没列出 .env",
+  );
+  // 关掉开关：走真实 change 事件，判据是 rows 少了 .env 而 total 不变（过滤而非重读）
+  const setShowHidden = async (on) => {
+    await openSettings();
+    await cdp.eval(`(() => {
+      const el = document.getElementById("files-show-hidden");
+      el.checked = ${on ? "true" : "false"};
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      return el.checked;
+    })()`);
+    await closeAllDialogs();
+  };
+  await setShowHidden(false);
+  const hiddenOff = await cdp.eval(`window.__wt.files`);
+  check(
+    "关掉开关后 .env 从列表消失但数据仍是全量（FIL-001）",
+    !hiddenOff.rows.includes(".env") && hiddenOff.rows.includes("notes.txt") && hiddenOff.total === 2,
+    JSON.stringify({ rows: hiddenOff.rows, total: hiddenOff.total, showHidden: hiddenOff.showHidden }),
+  );
+  await setShowHidden(true);
+  const hiddenBack = await cdp.eval(`window.__wt.files`);
+  check(
+    "重新打开后 .env 回来，且写进 config.toml（FIL-001）",
+    hiddenBack.rows.includes(".env") && hiddenBack.showHidden === true,
+    JSON.stringify({ rows: hiddenBack.rows, showHidden: hiddenBack.showHidden }),
+  );
+  // 复原：回根目录，别把后面那些「根目录应该有哪些文件」的断言带偏
+  await clickElement("#files-path-edit");
+  await cdp.eval(`(() => {
+    const el = document.getElementById("files-path-input");
+    el.value = "/";
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    return el.value;
+  })()`);
+  await waitFor(
+    async () => ((await cdp.eval(`window.__wt.files.path`)) === "/" ? true : null),
+    { timeout: 15000, label: "回根目录" },
+  ).catch(() => null);
+
   // 路径记忆：进子目录 → 切回「跟随表单」→ 再切回来，应当还在子目录
   await clickElement("#files-mkdir");
   await typeText("sub");
@@ -3609,14 +3716,18 @@ try {
     JSON.stringify(authBlocksAuto),
   );
 
-  await clickElement("#tunnel-add");
-  const autoSpec = await waitFor(
-    async () => {
-      const list = await cdp.eval(`window.__wt.tunnels`);
-      return list.find((x) => x.kind === "D" && x.auto_start === true) ?? null;
-    },
-    { timeout: 30000, label: "勾了自动拉起的动态代理" },
+  // 合成点击偶发被吞（WebView2 已知行为）：点一下没生效就再点，最多三次。
+  // 只点一次然后等 30 秒，失败时既看不出是「没点中」还是「后端慢」，还会连带拖红下游。
+  const probeAutoSpec = async () => {
+    const list = await cdp.eval(`window.__wt.tunnels`);
+    return list.find((x) => x.kind === "D" && x.auto_start === true) ?? null;
+  };
+  await clickUntil(
+    () => clickElement("#tunnel-add"),
+    probeAutoSpec,
+    { timeout: 15000, tries: 3, label: "建动态代理" },
   );
+  const autoSpec = await probeAutoSpec();
   check(
     "勾选后启动的隧道带自动拉起标记",
     autoSpec.running === true && autoSpec.auto_start === true,

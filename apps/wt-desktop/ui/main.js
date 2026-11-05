@@ -230,6 +230,7 @@ async function loadPrefs() {
     if (typeof p.localShellPath === "string") localShellPath = p.localShellPath;
     if (typeof p.localShellArgs === "string") localShellArgs = p.localShellArgs;
     if (typeof p.filesAutoOpen === "boolean") filesAutoOpen = p.filesAutoOpen;
+    if (typeof p.filesShowHidden === "boolean") filesShowHidden = p.filesShowHidden;
     if (Number.isFinite(p.netConnectTimeoutSecs)) netTimeout = p.netConnectTimeoutSecs;
     if (Number.isFinite(p.netKeepaliveSecs)) netKeepalive = p.netKeepaliveSecs;
     if (Number.isFinite(p.netKeepaliveMaxMissed)) netMaxMissed = p.netKeepaliveMaxMissed;
@@ -275,6 +276,7 @@ async function savePrefs() {
         localShellPath,
         localShellArgs,
         filesAutoOpen,
+        filesShowHidden,
         netConnectTimeoutSecs: netTimeout,
         netKeepaliveSecs: netKeepalive,
         netKeepaliveMaxMissed: netMaxMissed,
@@ -3183,6 +3185,13 @@ filesRefresh.addEventListener("click", async () => {
 const FILES_ROW_H = 20;
 /** 当前目录的全部条目。DOM 里只有可视窗口内的那些（`FIL-001` AC-1） */
 let filesEntries = [];
+/** 是否显示 `.` 开头的隐藏文件（`FIL-001` 规格 §4）：默认开，运维场景必须可见 */
+let filesShowHidden = true;
+
+/** 按「显示隐藏文件」开关过滤后的条目。列表渲染与 __wt.files.rows 都用它 */
+function visibleFiles() {
+  return filesShowHidden ? filesEntries : filesEntries.filter((e) => !e.name.startsWith("."));
+}
 /** 列目录失败的原因；非空时列表只显示这条，不再显示「（空目录）」 */
 let filesLoadError = "";
 let filesScrollRaf = 0;
@@ -3243,20 +3252,21 @@ function renderFileList() {
     filesList.appendChild(el);
     return;
   }
-  if (!filesEntries.length) {
+  const shown = visibleFiles();
+  if (!shown.length) {
     const el = document.createElement("div");
     el.className = "row";
-    el.textContent = "（空目录）";
+    el.textContent = filesEntries.length ? "（隐藏文件已全部隐藏）" : "（空目录）";
     filesList.appendChild(el);
     return;
   }
   const body = document.createElement("div");
   body.className = "vbody";
-  body.style.height = `${filesEntries.length * FILES_ROW_H}px`;
+  body.style.height = `${shown.length * FILES_ROW_H}px`;
   const viewport = filesList.clientHeight || 320;
   const start = Math.max(0, Math.floor(savedTop / FILES_ROW_H) - 4);
-  const end = Math.min(filesEntries.length, start + Math.ceil(viewport / FILES_ROW_H) + 8);
-  for (let i = start; i < end; i += 1) body.appendChild(buildFileRow(filesEntries[i], i));
+  const end = Math.min(shown.length, start + Math.ceil(viewport / FILES_ROW_H) + 8);
+  for (let i = start; i < end; i += 1) body.appendChild(buildFileRow(shown[i], i));
   filesList.appendChild(body);
   filesList.scrollTop = savedTop;
 }
@@ -4936,6 +4946,17 @@ filesAutoOpenBox.addEventListener("change", () => {
   setStatus(`连上 SSH 自动打开文件面板：${filesAutoOpen ? "开" : "关"}`);
 });
 
+// 显示隐藏文件（`FIL-001` 规格 §4）：默认开。切换只影响列表怎么画，
+// 不重新连服务端——filesEntries 一直是全量，开关只是过滤。
+const filesShowHiddenBox = document.getElementById("files-show-hidden");
+filesShowHiddenBox.addEventListener("change", () => {
+  filesShowHidden = filesShowHiddenBox.checked;
+  clearSelection();
+  renderFileList();
+  void savePrefs();
+  setStatus(filesShowHidden ? "显示隐藏文件：开" : "显示隐藏文件：关");
+});
+
 // ── 设置中心（`SET-001`）──────────────────────────────────
 //
 // 控件只有这一份：底栏不再重复放主题/字体/字号/编码，避免「两处都能改、状态不一致」。
@@ -4957,7 +4978,7 @@ const SET_GROUPS = [
   ["常规", ["ui-lang", "local-shell", "local-shell-path"]],
   ["外观", ["look-size", "look-height"]],
   ["终端", ["encoding", "look-theme", "theme-import-open", "look-font", "look-scrollback", "term-right-click", "look-word-sep", "look-paste-trim", "look-autocopy-on", "look-autocopy"]],
-  ["文件", ["files-auto-open"]],
+  ["文件", ["files-auto-open", "files-show-hidden"]],
   ["安全", ["master-open", "vault-rotate", "known-open"]],
   // 按「行里第一个带 id 的元素」认领：配置文件那行首个 id 是路径 span，不是按钮
   ["网络", ["net-timeout", "net-keepalive", "net-max-missed"]],
@@ -4982,6 +5003,7 @@ const SET_META = {
   "local-shell": ["跟随系统", false],
   "local-shell-path": ["（空）", false],
   "files-auto-open": ["开", false],
+  "files-show-hidden": ["开", false],
   "net-timeout": ["15 秒", false],
   "net-keepalive": ["30 秒", false],
   "net-max-missed": ["3 次", false],
@@ -5218,6 +5240,7 @@ const I18N = {
     "set.lineHeight": "行高",
     "set.scrollback": "回滚行数",
     "set.rightClick": "右键行为",
+    "set.showHidden": "显示隐藏文件",
     "set.vaultRotate": "轮换加密密钥",
     "set.pasteTrim": "粘贴时去掉行尾空白",
     "set.wordSeparator": "双击选词的额外分隔符",
@@ -5259,6 +5282,7 @@ const I18N = {
     "set.lineHeight": "Line height",
     "set.scrollback": "Scrollback lines",
     "set.rightClick": "Right-click action",
+    "set.showHidden": "Show hidden files",
     "set.vaultRotate": "Rotate vault key",
     "set.pasteTrim": "Trim trailing whitespace on paste",
     "set.wordSeparator": "Extra word separators (double-click)",
@@ -5516,7 +5540,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-110",
+  ui: "wt-ui-111",
   /**
    * 验收用：刷新会话树并等它**画完**。
    *
@@ -5644,7 +5668,10 @@ window.__wt = {
       path: sftpPath,
       msg: filesMsg.textContent,
       // 读**数据**而不是 DOM：列表是虚拟滚动的，DOM 里只有可视窗口内的那些条
-      rows: filesEntries.map(entryLabel),
+      rows: visibleFiles().map(entryLabel),
+      /** 全量条目数（含被隐藏的），与 rows 一起看能验「过滤真的生效」 */
+      total: filesEntries.length,
+      showHidden: filesShowHidden,
       /** 列目录失败的原因（空串表示这次是成功的） */
       error: filesLoadError,
       /** 当前选中项的名字（验收与脚本用） */
@@ -5829,6 +5856,7 @@ window.__wt = {
   applyLang();
   await refreshAppPaths();
   filesAutoOpenBox.checked = filesAutoOpen;
+  filesShowHiddenBox.checked = filesShowHidden;
   initBroadcast();
   loadTree();
   try {

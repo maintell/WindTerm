@@ -854,6 +854,9 @@ struct PrefsDto {
     /// SSH 连上就打开文件面板（`FIL-001`）。规格要求默认开、但要能关——
     /// 有人只想开一个终端。
     files_auto_open: bool,
+    /// 显示 `.` 开头的隐藏文件（`FIL-001` 规格 §4）：默认**开**——
+    /// 运维场景 `.env` / `.gitignore` 必须可见，藏起来反而危险。可切换。
+    files_show_hidden: bool,
     /// 建连超时（秒，`SET-001` 的「网络」组）
     net_connect_timeout_secs: u32,
     /// keepalive 间隔（秒，0 = 关闭）
@@ -909,6 +912,7 @@ impl Default for PrefsDto {
             local_shell_path: String::new(),
             local_shell_args: String::new(),
             files_auto_open: true,
+            files_show_hidden: true,
             net_connect_timeout_secs: 15,
             net_keepalive_secs: 30,
             net_keepalive_max_missed: 3,
