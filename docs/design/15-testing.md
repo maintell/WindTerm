@@ -140,6 +140,9 @@ def test_ssh_connect(server, wt):
 | 合成可信鼠标事件里没有 `pointerdown` | 实测 WebView2：`Input.dispatchMouseEvent` 会产生 `pointerup`，但**不产生 `pointerdown`**，`auxclick` 也不一定触发。用指针事件写的拖拽/中键关闭在验收里表现为「处理器计数一直是 0」——看着像功能没写。改用 `mousedown`/`mousemove`/`mouseup`，并把 move/up 挂到 `document`（鼠标事件没有指针捕获，光标离开元素就收不到了） |
 | DTO 没写 `rename_all` 时，字段名是 snake_case | `RemoteEntryDto` 没有 camelCase 重命名，序列化出来是 `is_symlink` / `link_target`；界面按 `e.isSymlink` 去读只会拿到 `undefined`，症状是「后端字段有值、界面就是没反应」，而且不报错。同一个仓库里 `PrefsDto` 是 camelCase、这个是 snake_case，**看 DTO 定义再写前端** |
 | `dataset` 里取出来永远是字符串 | 会话键是数字时，`dataset.id` 拿去 `indexOf` 一个都匹配不上。症状极具迷惑性：拖拽计数全对、`moved` 为真、目标也拿到了，**顺序就是不变**。比较前统一 `String()` |
+| 按坐标点 `<dialog>` 里的按钮，会点到旁边那个 | `<dialog>` 是居中的，正文一换行高度就变，按钮跟着上下移动：量到的是旧位置，点下去落到隔壁按钮上。「重置偏好」因此点成了「取消」——`returnValue` 不是 `yes`，处理函数直接 return，界面上**毫无异常**，只表现为「点了没反应」。做法：点之前用 `elementFromPoint` 命中测试（不是那个按钮就等下一轮），点完核对 `returnValue` |
+| `__wt.tabs()` 读的是会话集合，不是 DOM | 本地 shell 起来之前标签还没渲染、名字还是默认的「本地终端」。用它数「有几个标签」会抢跑：断言以为三条都在，实际 `#tabs .tab` 一个都没有，后面按坐标点标签就拿到 `null`。要等「DOM 里的标签数对得上，且名字已经定了」再动 |
+| 老用例可能把「漏洞」断言成「正确行为」 | 改安全语义前先回头看既有断言：`host_key_change_is_detected` 原本断言密钥变更被报成 `SSH_HOSTKEY_UNKNOWN`——而那正是「变更被当成第一次见、于是自动信任」的入口。用例全绿并不代表行为对，只代表行为和当时写的断言一致 |
 
 当前覆盖 280 项断言：
 
