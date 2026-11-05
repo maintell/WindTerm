@@ -4838,6 +4838,56 @@ try {
   ).catch(() => null);
   check("SGR 鼠标序列也真的到了服务端（TER-022）", sgrArrived === true, sgrArrived === true);
 
+  // 1003（移动事件跟踪，ANY 协议）：开 1003 后不按键的移动也要上报。
+  // xterm.js 内建支持（DECSET 1003 -> activeProtocol=ANY），编码仍是 X10 的 ESC[M。
+  await cdp.eval(`window.__TAURI__.core.invoke("term_write", {
+    handle: ${JSON.stringify(mouseHandle)}, data: "__mouseany__",
+  })`);
+  const anyBefore = await cdp.eval(`window.__wt.inputLog.length`);
+  // mouseMoved 不带任何按键：1003 之前这种模式不会上报，开了才会
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mouseMoved", x: termBox.x + 12, y: termBox.y + 8, button: "none", buttons: 0,
+  });
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mouseMoved", x: termBox.x + 24, y: termBox.y + 8, button: "none", buttons: 0,
+  });
+  const anyMove = await waitFor(
+    async () => {
+      const log = await cdp.eval(`window.__wt.inputLog.slice(${anyBefore})`);
+      // 接受 X10(ESC[M) 或 SGR(ESC[<)：DECSET 累积时编码不固定，
+      // 这里要验的是「移动也上报」这个能力，不是某一种编码。
+      return log.find((d) => d.startsWith("\u001b[M") || d.startsWith("\u001b[<")) ?? null;
+    },
+    { timeout: 4000, label: "1003 移动上报" },
+  ).catch(() => null);
+  check(
+    "开 1003 后鼠标移动也上报（TER-022 移动跟踪）",
+    anyMove !== null,
+    anyMove ? JSON.stringify(anyMove.slice(0, 6)) : "没发移动序列",
+  );
+
+  // 1005（UTF-8 扩展编码）：vendor 的 xterm.js 明确不支持
+  // （DECSET 1005 -> 日志 not supported，DECRQM 恒返回 4）。不假装做了：
+  // 专项验收只确认「不支持时是明确忽略，既不静默吞掉也不卡死」——
+  // 开启 1005 后编码仍回落到 X10（ESC[M），点击照常产生序列。
+  await cdp.eval(`window.__TAURI__.core.invoke("term_write", {
+    handle: ${JSON.stringify(mouseHandle)}, data: "__mouseutf8__",
+  })`);
+  const utf8Before = await cdp.eval(`window.__wt.inputLog.length`);
+  await clickTerm(0);
+  const utf8Click = await waitFor(
+    async () => {
+      const log = await cdp.eval(`window.__wt.inputLog.slice(${utf8Before})`);
+      return log.find((d) => d.startsWith("\u001b[M") || d.startsWith("\u001b[<")) ?? null;
+    },
+    { timeout: 4000, label: "1005 被忽略后点击照常" },
+  ).catch(() => null);
+  check(
+    "1005 不被支持时明确忽略、点击仍按 X10 编码上报（TER-022）",
+    utf8Click !== null,
+    utf8Click ? JSON.stringify(utf8Click.slice(0, 6)) : "点击没产生序列",
+  );
+
   // 远端 `OSC 2` 标题（`TER-001`）：ssh 里跑 vim/top 时标签能显示「在跑什么」。
   // 两处都要变：`__wt.tabs()` 里的 label 与标签栏的实际文字——只改字段不重画，
   // 用户什么也看不到。

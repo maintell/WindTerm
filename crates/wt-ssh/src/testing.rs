@@ -669,6 +669,20 @@ impl russh::server::Handler for MockHandler {
             session.data(channel, b"\x1b[?1002h\x1b[?1006h".to_vec())?;
             return Ok(());
         }
+        // 1003（移动事件跟踪，ANY 协议）：只开 1003、不叠加 1006，
+        // 这样验收能单独确认「移动也上报」且编码仍是 X10 的 `\e[M`。
+        // DECSET 是累积的：前面 `__mousesgr__` 开的 1006(SGR)/1002(DRAG) 不会自动关，
+        // 不先 DECRST 的话新用例发的是 SGR 编码，混在一起测不出 1003 本身。
+        if String::from_utf8_lossy(data).contains("__mouseany__") {
+            session.data(channel, b"\x1b[?1006l\x1b[?1002l\x1b[?1000h\x1b[?1003h".to_vec())?;
+            return Ok(());
+        }
+        // 1005（UTF-8 扩展编码）：xterm.js 明确不支持（DECSET 1005 not supported）。
+        // 这里照样把序列回给客户端，让验收确认「不支持时是明确忽略、不是静默吞掉/卡死」。
+        if String::from_utf8_lossy(data).contains("__mouseutf8__") {
+            session.data(channel, b"\x1b[?1006l\x1b[?1002l\x1b[?1000h\x1b[?1005h".to_vec())?;
+            return Ok(());
+        }
         // 大量行（`TER-020` 的滚动动作）：验收需要一个真的能滚起来的缓冲
         if String::from_utf8_lossy(data).contains("__manylines__") {
             let mut out = String::new();
