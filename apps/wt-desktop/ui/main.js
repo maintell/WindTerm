@@ -3267,7 +3267,10 @@ filesSessionSelect.addEventListener("change", async () => {
   await loadDir(restored);
 });
 
-filesUp.addEventListener("click", () => loadDir(parentPath(sftpPath)));
+async function goUpDir() {
+  await loadDir(parentPath(sftpPath));
+}
+filesUp.addEventListener("click", () => void goUpDir());
 filesRefresh.addEventListener("click", async () => {
   await loadDir(sftpPath);
   // 目录树也跟着刷：缓存里的子目录可能已经变了（`FIL-001`）。
@@ -3491,6 +3494,71 @@ function renderFileList() {
   filesList.scrollTop = savedTop;
 }
 
+/**
+ * 键盘移动选中项（`FIL-001` 规格第 8 条）。
+ *
+ * 列表是虚拟滚动的：只有可视窗口内的行真的存在。所以先把目标行滚进可视区、
+ * 再渲染、再按标签找回那一行——顺序反过来就会选到一个还没渲染出来的条目。
+ */
+function moveSelection(delta) {
+  const list = visibleFiles();
+  if (!list.length) return;
+  const cur = list.findIndex((e) => e.name === selectedEntry?.name);
+  const next = Math.max(0, Math.min(list.length - 1, (cur < 0 ? 0 : cur) + delta));
+  const top = next * FILES_ROW_H;
+  const view = filesList.scrollTop;
+  const h = filesList.clientHeight;
+  if (top < view) filesList.scrollTop = top;
+  else if (top + FILES_ROW_H > view + h) filesList.scrollTop = top + FILES_ROW_H - h;
+  renderFileList();
+  const want = entryLabel(list[next]);
+  const row = [...filesList.querySelectorAll(".vrow")].find(
+    (r) => r.querySelector("span")?.textContent === want,
+  );
+  if (row) selectEntry(list[next], row);
+}
+
+// `Ctrl+A` / `Ctrl+C/V`（全选、复制/移动）还没做——当前模型是单选，
+// 加多选要连删/移动/拖拽一起改，先别用半套假的多选糊过去。这里遇到带修饰键的
+// 一律放行，交给别处的快捷键处理。
+filesList.addEventListener("keydown", (ev) => {
+  if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  switch (ev.key) {
+    case "ArrowDown":
+      ev.preventDefault();
+      moveSelection(1);
+      break;
+    case "ArrowUp":
+      ev.preventDefault();
+      moveSelection(-1);
+      break;
+    case "Enter":
+      if (!selectedEntry) return;
+      ev.preventDefault();
+      // 文件走「编辑」按钮那条流程：先把远端文件下载成临时副本再交给编辑器。
+      // 直接把远端路径传给 openEditor 是错的——它读的是**本地**文件。
+      if (selectedEntry.is_dir) void loadDir(joinPath(sftpPath, selectedEntry.name));
+      else filesEdit.click();
+      break;
+    case "Backspace":
+      ev.preventDefault();
+      void goUpDir();
+      break;
+    case "F2":
+      if (!selectedEntry) return;
+      ev.preventDefault();
+      void renameEntry();
+      break;
+    case "Delete":
+      if (!selectedEntry) return;
+      ev.preventDefault();
+      void removeEntryConfirmed(selectedEntry);
+      break;
+    default:
+      break;
+  }
+});
+
 filesList.addEventListener("scroll", () => {
   // 滚动事件很密：一帧只重建一次
   if (filesScrollRaf) return;
@@ -3627,6 +3695,8 @@ filesList.addEventListener("contextmenu", (ev) => {
 
 function selectEntry(entry, row) {
   selectedEntry = entry;
+  // 键盘导航要求列表本身能拿焦点（`FIL-001` 规格第 8 条）：行是 div，点它不会移焦点
+  if (document.activeElement !== filesList) filesList.focus();
   for (const r of filesList.children) r.classList.remove?.("selected");
   row.classList.add("selected");
   filesRename.disabled = false;

@@ -3131,6 +3131,67 @@ try {
   );
   await cdp.eval(`document.getElementById("ctx-menu").hidden = true`);
 
+  // 键盘导航（`FIL-001` 规格第 8 条）：↑↓ 移动、Enter 打开、F2 改名、Delete 删除。
+  // 键盘事件必须送到列表本身——行是 div，点它不会移焦点，所以点完要确认焦点已经在列表上。
+  await clickFileRow("notes.txt");
+  const kbFocus = await cdp.eval(`document.activeElement?.id ?? null`);
+  check("点选文件后焦点落在列表上（FIL-001）", kbFocus === "files-list", String(kbFocus));
+  const selBefore = await cdp.eval(`window.__wt.files.selected`);
+  await pressChord(0, "ArrowDown", "ArrowDown", 40);
+  const selDown = await cdp.eval(`window.__wt.files.selected`);
+  check(
+    "↓ 把选中项往下移（FIL-001）",
+    selDown !== null && selDown !== selBefore,
+    `${selBefore} → ${selDown}`,
+  );
+  await pressChord(0, "ArrowUp", "ArrowUp", 38);
+  const selUp = await cdp.eval(`window.__wt.files.selected`);
+  check("↑ 移回来（FIL-001）", selUp === selBefore, `${selDown} → ${selUp}`);
+  await pressChord(0, "Enter", "Enter", 13);
+  const enterDlg = await waitFor(
+    async () => ((await cdp.eval(`document.getElementById("edit-dialog").open`)) ? true : null),
+    { timeout: 8000, label: "Enter 打开编辑器" },
+  ).catch(() => null);
+  check("Enter 打开选中文件（FIL-001）", enterDlg === true, enterDlg === true ? "已打开" : "没反应");
+  await closeAllDialogs();
+  await clickFileRow("notes.txt");
+  await pressChord(0, "F2", "F2", 113);
+  const f2Dlg = await waitFor(
+    async () => {
+      const d = await cdp.eval(`(() => ({
+        open: document.getElementById("name-dialog").open,
+        title: document.getElementById("name-title").textContent,
+      }))()`);
+      return d.open ? d : null;
+    },
+    { timeout: 5000, label: "F2 改名" },
+  ).catch(() => null);
+  check(
+    "F2 弹出改名并带着原名（FIL-001）",
+    f2Dlg !== null && f2Dlg.title.includes("notes.txt"),
+    f2Dlg ? f2Dlg.title : "没弹框",
+  );
+  await closeAllDialogs();
+  await clickFileRow("notes.txt");
+  await pressChord(0, "Delete", "Delete", 46);
+  const delDlg = await waitFor(
+    async () => {
+      const d = await cdp.eval(`(() => ({
+        open: document.getElementById("ask-dialog").open,
+        title: document.getElementById("ask-title").textContent,
+        body: document.getElementById("ask-body").textContent,
+      }))()`);
+      return d.open ? d : null;
+    },
+    { timeout: 5000, label: "Delete 确认框" },
+  ).catch(() => null);
+  check(
+    "Delete 先要确认、且点名那个文件（FIL-001）",
+    delDlg !== null && delDlg.title.includes("notes.txt") && delDlg.body.includes("不可恢复"),
+    delDlg ? `${delDlg.title}｜${delDlg.body}` : "没弹框",
+  );
+  await closeAllDialogs();
+
   // 自动刷新（`FIL-001` 规格 §6）：窗口获得焦点时按「可配间隔」节流刷新。
   // 默认关；设为 5 秒后写进 config.toml；节流：距上次列目录不足间隔时不刷，
   // 用 _ageDirLoad 模拟「已过去足够久」再模拟一次焦点，应刷新一次且计数 +1。
