@@ -2446,6 +2446,11 @@ try {
     files.rows.join("、"),
   );
 
+  // 连接复用（`SEC-002` AC-2）：列目录与下载共用同一条已认证连接。
+  // 之前每个 sftp_* 命令都是「连接→握手→认证→开 subsystem」全套，
+  // 所以在同一个会话里连着做几次文件操作，opens 只会涨一次。
+  const poolBefore = await cdp.eval(`window.__TAURI__.core.invoke("sftp_pool_stats")`);
+
   // 16c. 双击下载：文件必须真的落到本地，内容与远端一致
   await doubleClickFileRow("notes.txt");
   const savedMsg = await waitFor(
@@ -2461,6 +2466,12 @@ try {
     "双击把远端文件下载到本地且内容一致",
     firstText === "hello from server",
     `落点 ${first} 内容=${JSON.stringify(firstText)}`,
+  );
+  const poolAfter = await cdp.eval(`window.__TAURI__.core.invoke("sftp_pool_stats")`);
+  check(
+    "列目录与下载复用同一条连接，不再重新握手（SEC-002 AC-2）",
+    poolAfter.opens === poolBefore.opens && poolAfter.reuses > poolBefore.reuses,
+    `opens ${poolBefore.opens}→${poolAfter.opens}，reuses ${poolBefore.reuses}→${poolAfter.reuses}，池里 ${poolAfter.pooled} 条`,
   );
 
   // 再下一次：同名文件不能被覆盖（覆盖就是数据丢失）。

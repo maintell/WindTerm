@@ -53,6 +53,16 @@ struct AppState {
     /// 存在 state 里是为了**跨命令**持有 SFTP 写句柄：前端每次只发一块，
     /// 整文件不再进内存。`SftpWriter` 自己持有连接，所以条目本身就是守卫。
     uploads: std::sync::Mutex<HashMap<String, wt_ssh::SftpWriter>>,
+    /// 复用的 SFTP 连接（`SEC-002` AC-2），键见 `sftp_pool_key`。
+    ///
+    /// 外层用 `std::sync::Mutex`：只在查表/插表这一瞬持锁，不跨 await。
+    /// 每条连接自己那把 `tokio::sync::Mutex` 才是跨请求的串行化点。
+    sftp_pool: std::sync::Mutex<HashMap<String, PooledSftp>>,
+    /// `SEC-002` AC-2 的可观测计数：新建了几条连接、复用了几次。
+    ///
+    /// 没有这两个数，「连接复用了」只能靠感觉——验收要能说清「这一轮 N 次操作只开了 1 条连接」。
+    sftp_opens: std::sync::atomic::AtomicU64,
+    sftp_reuses: std::sync::atomic::AtomicU64,
 }
 
 /// 一条运行中的隧道。`-L`/`-D` 在本地监听、`-R` 在服务端监听——
@@ -1016,9 +1026,18 @@ async fn sftp_edit_download(
     path: String,
     jump: Option<JumpReq>,
 ) -> Result<EditDownloadDto, String> {
-    let sftp = open_sftp(&state, req, jump).await?;
-    let data = sftp.read_file(&path).await.map_err(|e| e.to_string())?;
-    drop(sftp);
+    let (key, conn) = sftp_pooled(&state, req, jump).await?;
+    let out = {
+        let c = conn.lock().await;
+        c.read_file(&path).await
+    };
+    let data = match out {
+        Ok(v) => v,
+        Err(e) => {
+            sftp_forget(&state, &key);
+            return Err(e.to_string());
+        }
+    };
 
     let dir = download_dir().join("wt-edit");
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建临时目录失败：{e}"))?;
@@ -1060,34 +1079,46 @@ async fn sftp_edit_save(
     jump: Option<JumpReq>,
 ) -> Result<EditSaveDto, String> {
     let data = std::fs::read(&local_path).map_err(|e| format!("读取本地副本失败：{e}"))?;
-    let sftp = open_sftp(&state, req, jump).await?;
-
-    // 冲突检测：远端大小与下载时不一致，说明期间有人动过
-    let (dir, name) = match path.rsplit_once('/') {
-        Some((d, n)) => (if d.is_empty() { "/" } else { d }, n),
-        None => ("/", path.as_str()),
-    };
-    if let Ok(entries) = sftp.list_dir(dir).await {
-        if let Some(e) = entries.iter().find(|e| e.name == name) {
-            if e.size as usize != expected_size {
-                return Err(format!(
-                    "[SFTP_CONFLICT] 远端文件已被改动（下载时 {expected_size} 字节，现在 {} 字节），拒绝覆盖；先重新下载确认差异",
-                    e.size
-                ));
+    let (key, conn) = sftp_pooled(&state, req, jump).await?;
+    // 整段操作都在锁里：先看远端大小再写，中间不能让别人插进一次改动
+    let result = {
+        let sftp = conn.lock().await;
+        async {
+            // 冲突检测：远端大小与下载时不一致，说明期间有人动过
+            let (dir, name) = match path.rsplit_once('/') {
+                Some((d, n)) => (if d.is_empty() { "/" } else { d }, n),
+                None => ("/", path.as_str()),
+            };
+            if let Ok(entries) = sftp.list_dir(dir).await {
+                if let Some(e) = entries.iter().find(|e| e.name == name) {
+                    if e.size as usize != expected_size {
+                        return Err(format!(
+                            "[SFTP_CONFLICT] 远端文件已被改动（下载时 {expected_size} 字节，现在 {} 字节），拒绝覆盖；先重新下载确认差异",
+                            e.size
+                        ));
+                    }
+                } else {
+                    return Err("[SFTP_CONFLICT] 远端文件已不存在（可能被删除），不重建".to_string());
+                }
             }
-        } else {
-            return Err("[SFTP_CONFLICT] 远端文件已不存在（可能被删除），不重建".into());
-        }
-    }
 
-    let atomic = sftp
-        .write_file_atomic(&path, &data)
+            let atomic = sftp
+                .write_file_atomic(&path, &data)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(EditSaveDto {
+                bytes: data.len(),
+                atomic,
+            })
+        }
         .await
-        .map_err(|e| e.to_string())?;
-    Ok(EditSaveDto {
-        bytes: data.len(),
-        atomic,
-    })
+    };
+    // 冲突是业务错误、连接是好的，但分不清就不分：摘掉最多让下一次重连一次，
+    // 反过来「抱着一条死连接继续用」的代价更大
+    if result.is_err() {
+        sftp_forget(&state, &key);
+    }
+    result
 }
 
 /// 编辑器能打开的上限（`FIL-011` 的「大文件保护」）。
@@ -2337,6 +2368,100 @@ async fn open_sftp(
     Ok(client)
 }
 
+// ── SFTP 连接复用（`SEC-002` AC-2）───────────────────────────
+//
+// 以前每个 `sftp_*` 命令都是「连接 → 握手 → 认证 → 开 subsystem」一条全套：
+// 打开一个目录、改个权限、拉个文件各建一条连接，在远端看来就是一串登录。
+//
+// 复用的难点不在缓存，而在**并发**：`russh_sftp::SftpSession` 的方法都取 `&self`，
+// 但请求号与应答是共享状态。多个命令并发打到同一条连接会错配应答，实测表现为
+// 随机卡死（CDP 超时、建目录或回根目录无响应、分屏建连失败）——这正是当初把复用
+// 回退掉的原因。所以这里每条连接外面套一把异步互斥锁：同一连接同一时刻只跑一个
+// 请求，牺牲并发换确定性。要做真并发得先让底层串行化请求队列，不是这里能绕过去的。
+
+/// 池里的一条连接。`last_used` 只为淘汰用——每条都是一个活着的 SSH 连接，
+/// 不设上限时连过的每台机器都会一直挂着。
+struct PooledSftp {
+    conn: std::sync::Arc<tokio::sync::Mutex<wt_ssh::SftpClient>>,
+    last_used: std::time::Instant,
+}
+
+const SFTP_POOL_MAX: usize = 16;
+
+/// 池的键：同一用户、同一主机端口共享一条已认证连接。
+///
+/// 经跳板机的连接返回**空键**，即不入池：链路不同（跳板机可能换），键得把整条跳板链
+/// 算进去才安全，而跳板场景本来就少；不入池只是退回「每次新建」，不是功能缺失。
+fn sftp_pool_key(req: &SshOpenReq, jump: Option<&JumpReq>) -> String {
+    match jump {
+        Some(_) => String::new(),
+        None => format!("{}@{}:{}", req.user, req.host, req.port.unwrap_or(22)),
+    }
+}
+
+/// `WT_SFTP_NO_POOL=1` 关掉复用：A/B 排查用。复用一旦出问题，第一件事就是排除它。
+fn sftp_pool_disabled() -> bool {
+    std::env::var("WT_SFTP_NO_POOL").map(|v| v == "1").unwrap_or(false)
+}
+
+/// 取一条可复用的连接；池里没有就新建并放进去。
+async fn sftp_pooled(
+    state: &AppState,
+    req: SshOpenReq,
+    jump: Option<JumpReq>,
+) -> Result<(String, std::sync::Arc<tokio::sync::Mutex<wt_ssh::SftpClient>>), String> {
+    let key = sftp_pool_key(&req, jump.as_ref());
+    let poolable = !key.is_empty() && !sftp_pool_disabled();
+    if poolable {
+        if let Ok(mut m) = state.sftp_pool.lock() {
+            if let Some(entry) = m.get_mut(&key) {
+                entry.last_used = std::time::Instant::now();
+                state
+                    .sftp_reuses
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                trace(&format!("[sftp_pool] 复用 {key}"));
+                return Ok((key, entry.conn.clone()));
+            }
+        }
+    }
+    let client = open_sftp(state, req, jump).await?;
+    state
+        .sftp_opens
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let conn = std::sync::Arc::new(tokio::sync::Mutex::new(client));
+    if poolable {
+        if let Ok(mut m) = state.sftp_pool.lock() {
+            if m.len() >= SFTP_POOL_MAX {
+                // 淘汰最久没用的那条：`min_by_key` 拿的是引用，键要 clone 出来才能删
+                if let Some(victim) = m.iter().min_by_key(|(_, e)| e.last_used).map(|(k, _)| k.clone()) {
+                    m.remove(&victim);
+                    trace(&format!("[sftp_pool] 淘汰 {victim}"));
+                }
+            }
+            m.insert(
+                key.clone(),
+                PooledSftp {
+                    conn: conn.clone(),
+                    last_used: std::time::Instant::now(),
+                },
+            );
+        }
+    }
+    Ok((key, conn))
+}
+
+/// 出错的连接立刻从池里摘掉：下次调用会重连，而不是抱着一条坏连接一直失败。
+fn sftp_forget(state: &AppState, key: &str) {
+    if key.is_empty() {
+        return;
+    }
+    if let Ok(mut m) = state.sftp_pool.lock() {
+        if m.remove(key).is_some() {
+            trace(&format!("[sftp_pool] 摘掉 {key}"));
+        }
+    }
+}
+
 /// `sftp_list` 的入参。
 ///
 /// 收成**单个**结构体参数，而不是 `(req, path)` 两个参数。
@@ -2367,9 +2492,20 @@ async fn sftp_list(
         path,
         jump.is_some()
     ));
-    let sftp = open_sftp(&state, req, jump).await?;
-    trace("[sftp_list] open_sftp 完成");
-    let entries = sftp.list_dir(&path).await.map_err(|e| e.to_string())?;
+    let (key, conn) = sftp_pooled(&state, req, jump).await?;
+    trace("[sftp_list] 连接就绪");
+    // 锁的范围就是这一次请求：拿到结果立刻松开，别让下一个命令排队等在这里
+    let out = {
+        let c = conn.lock().await;
+        c.list_dir(&path).await
+    };
+    let entries = match out {
+        Ok(v) => v,
+        Err(e) => {
+            sftp_forget(&state, &key);
+            return Err(e.to_string());
+        }
+    };
     trace(&format!("[sftp_list] list_dir 完成，{} 条", entries.len()));
     let dto = SftpListDto {
         path,
@@ -2447,8 +2583,18 @@ async fn sftp_download(
     jump: Option<JumpReq>,
 ) -> Result<DownloadDto, String> {
     let _scope = TraceScope::enter("sftp_download");
-    let sftp = open_sftp(&state, req, jump).await?;
-    let data = sftp.read_file(&path).await.map_err(|e| e.to_string())?;
+    let (key, conn) = sftp_pooled(&state, req, jump).await?;
+    let out = {
+        let c = conn.lock().await;
+        c.read_file(&path).await
+    };
+    let data = match out {
+        Ok(v) => v,
+        Err(e) => {
+            sftp_forget(&state, &key);
+            return Err(e.to_string());
+        }
+    };
     trace(&format!("[sftp_download] 读到 {} 字节", data.len()));
 
     let name = path
@@ -3244,15 +3390,25 @@ async fn sftp_mkdir(
     path: String,
     jump: Option<JumpReq>,
 ) -> Result<(), String> {
-    let sftp = open_sftp(&state, req, jump).await?;
-    sftp.create_dir(&path).await.map_err(|e| e.to_string())
+    let (key, conn) = sftp_pooled(&state, req, jump).await?;
+    let out = {
+        let c = conn.lock().await;
+        c.create_dir(&path).await
+    };
+match out {
+    Ok(()) => Ok(()),
+    Err(e) => {
+        sftp_forget(&state, &key);
+        Err(e.to_string())
+    }
+}
 }
 
 /// 路径解析（`FIL-001` 规格 §5「支持输入完整路径，含 `~` 展开」）。
 ///
 /// SFTP 没有 shell，`~` 不会被自动展开；用 `SSH_FXP_REALPATH` 让服务端解析，
-/// 比在前端猜 home 目录可靠。这条命令与 `sftp_list` 一样每次独立建连
-/// （连接复用已因并发回归回退，见 P0 表 `SEC-002`），不引入共享状态。
+/// 比在前端猜 home 目录可靠。与其它 `sftp_*` 命令共用同一条已认证连接
+/// （`SEC-002` AC-2：按「用户@主机:端口」复用 + 每条连接串行化）。
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SftpPathArg {
@@ -3269,8 +3425,18 @@ async fn sftp_canonicalize(
     arg: SftpPathArg,
 ) -> Result<String, String> {
     let SftpPathArg { req, path, jump } = arg;
-    let sftp = open_sftp(&state, req, jump).await?;
-    sftp.canonicalize(&path).await.map_err(|e| e.to_string())
+    let (key, conn) = sftp_pooled(&state, req, jump).await?;
+    let out = {
+        let c = conn.lock().await;
+        c.canonicalize(&path).await
+    };
+match out {
+    Ok(v) => Ok(v),
+    Err(e) => {
+        sftp_forget(&state, &key);
+        Err(e.to_string())
+    }
+}
 }
 
 /// 改名 / 移动。
@@ -3282,8 +3448,18 @@ async fn sftp_rename(
     to: String,
     jump: Option<JumpReq>,
 ) -> Result<(), String> {
-    let sftp = open_sftp(&state, req, jump).await?;
-    sftp.rename(&from, &to).await.map_err(|e| e.to_string())
+    let (key, conn) = sftp_pooled(&state, req, jump).await?;
+    let out = {
+        let c = conn.lock().await;
+        c.rename(&from, &to).await
+    };
+match out {
+    Ok(()) => Ok(()),
+    Err(e) => {
+        sftp_forget(&state, &key);
+        Err(e.to_string())
+    }
+}
 }
 
 /// 删除：按 `is_dir` 分派到 `rmdir` / `unlink`。
@@ -3298,12 +3474,22 @@ async fn sftp_remove(
     is_dir: bool,
     jump: Option<JumpReq>,
 ) -> Result<(), String> {
-    let sftp = open_sftp(&state, req, jump).await?;
-    if is_dir {
-        sftp.remove_dir(&path).await.map_err(|e| e.to_string())
-    } else {
-        sftp.remove_file(&path).await.map_err(|e| e.to_string())
+    let (key, conn) = sftp_pooled(&state, req, jump).await?;
+    let out = {
+        let c = conn.lock().await;
+        if is_dir {
+            c.remove_dir(&path).await
+        } else {
+            c.remove_file(&path).await
+        }
+    };
+match out {
+    Ok(()) => Ok(()),
+    Err(e) => {
+        sftp_forget(&state, &key);
+        Err(e.to_string())
     }
+}
 }
 
 /// 改权限位（`FIL-002` 的 `SETSTAT`）。
@@ -3318,8 +3504,42 @@ async fn sftp_chmod(
     mode: u32,
     jump: Option<JumpReq>,
 ) -> Result<(), String> {
-    let sftp = open_sftp(&state, req, jump).await?;
-    sftp.set_mode(&path, mode).await.map_err(|e| e.to_string())
+    let (key, conn) = sftp_pooled(&state, req, jump).await?;
+    let out = {
+        let c = conn.lock().await;
+        c.set_mode(&path, mode).await
+    };
+match out {
+    Ok(()) => Ok(()),
+    Err(e) => {
+        sftp_forget(&state, &key);
+        Err(e.to_string())
+    }
+}
+}
+
+/// SFTP 连接池的可观测状态（`SEC-002` AC-2）。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SftpPoolDto {
+    /// 当前池里有几条连接
+    pooled: usize,
+    /// 累计新建了几条池化连接（每一条都是一次完整的握手 + 认证）。
+    /// 上传是独占连接、不走池，所以不计在内。
+    opens: u64,
+    /// 累计复用了几次
+    reuses: u64,
+}
+
+/// 读连接池状态。验收用它证明「多次文件操作只建了一条连接」。
+#[tauri::command]
+fn sftp_pool_stats(state: State<'_, AppState>) -> SftpPoolDto {
+    let pooled = state.sftp_pool.lock().map(|m| m.len()).unwrap_or(0);
+    SftpPoolDto {
+        pooled,
+        opens: state.sftp_opens.load(std::sync::atomic::Ordering::Relaxed),
+        reuses: state.sftp_reuses.load(std::sync::atomic::Ordering::Relaxed),
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -3400,6 +3620,9 @@ fn main() {
             tunnels: std::sync::Mutex::new(HashMap::new()),
             tunnel_specs: std::sync::Mutex::new(load_tunnel_specs()),
             uploads: std::sync::Mutex::new(HashMap::new()),
+        sftp_pool: std::sync::Mutex::new(HashMap::new()),
+        sftp_opens: std::sync::atomic::AtomicU64::new(0),
+        sftp_reuses: std::sync::atomic::AtomicU64::new(0),
         })
         .setup(|app| {
             create_main_window(app)?;
@@ -3434,6 +3657,7 @@ fn main() {
             sftp_rename,
             sftp_remove,
             sftp_chmod,
+        sftp_pool_stats,
             tunnel_start,
             tunnel_start_saved,
             tunnel_autostart,

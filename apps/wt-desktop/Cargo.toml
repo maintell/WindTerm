@@ -23,6 +23,9 @@ serde_json = { workspace = true }
 toml = "0.8"
 base64 = { workspace = true }
 zeroize = { workspace = true }
+# SFTP 连接复用要一把异步互斥锁（`SEC-002` AC-2）：`std::sync::Mutex` 的守卫不能跨
+# await，而这里必须跨住整个请求。只用 `sync` 特性，不引入运行时。
+tokio = { workspace = true }
 
 [features]
 # 端到端验收用：在应用内起一个进程内 SSH 服务端，让界面真的去连一台「服务器」。

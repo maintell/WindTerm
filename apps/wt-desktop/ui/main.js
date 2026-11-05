@@ -3192,6 +3192,7 @@ async function loadDir(path) {
     filesEntries = r.entries;
     renderFileList();
     setFilesMsg("");
+    dirLoadCount += 1;
     return true;
   } catch (e) {
     // 旧请求的失败同样不该覆盖新视图
@@ -3295,6 +3296,8 @@ let autoRefreshSecs = 0;
 let lastDirLoadAt = 0;
 /** 焦点自动刷新实际触发了几次（验收可观察，证明不是点了没反应） */
 let autoRefreshCount = 0;
+/** 成功列目录的次数。验收用它当「这次重列已经落地」的信号，别去猜 DOM */
+let dirLoadCount = 0;
 
 /**
  * 列表排序（`FIL-001` 规格 §1「可排序」）。
@@ -6048,6 +6051,8 @@ window.__wt = {
       showModeCol,
       autoRefreshSecs,
       autoRefreshCount,
+      /** 成功列目录的累计次数（`SEC-002` AC-2 的验收靠它对齐操作与连接数） */
+      listCount: dirLoadCount,
       savePrefsCount,
       /** 列目录失败的原因（空串表示这次是成功的） */
       error: filesLoadError,
