@@ -5770,6 +5770,55 @@ try {
     JSON.stringify(tabCss),
   );
 
+  // 标签栏位置可配（`TER-001`）：顶部 / 底部。判据不只是 class —— 要真的量
+  // getBoundingClientRect：底部时 #tabs 的顶边必须在 #term 底边之下。
+  const tabPosProbe = "(() => {" + " const bar=document.getElementById('tabs');" + " const term=document.getElementById('term');" + " const b=bar.getBoundingClientRect(), t=term.getBoundingClientRect();" + " return {cls:document.getElementById('right').className," + "   order:getComputedStyle(bar).order, barTop:Math.round(b.top)," + "   termBottom:Math.round(t.bottom), pos:window.__wt.files.tabsPosition};" + "})()";
+  const tabPosState = () => cdp.eval(tabPosProbe);
+  const posTop = await tabPosState();
+  check(
+    "默认标签栏在顶部（TER-001）",
+    posTop.pos === "top" && posTop.barTop < posTop.termBottom,
+    JSON.stringify(posTop),
+  );
+  const setTabsPos = async (v) => {
+    await openSettings();
+    await cdp.eval(
+      "(() => { const el=document.getElementById('tabs-position');"
+      + " el.value=" + JSON.stringify(v) + ";"
+      + " el.dispatchEvent(new Event('change',{bubbles:true}));"
+      + " return el.value; })()"
+    );
+    await closeAllDialogs();
+  };
+  await setTabsPos("bottom");
+  const posBottom = await waitFor(
+    async () => {
+      const s = await tabPosState();
+      return s.pos === "bottom" && s.barTop >= s.termBottom - 2 ? s : null;
+    },
+    { timeout: 5000, label: "标签栏移到底部" },
+  ).catch(() => null);
+  check(
+    "切到「底部」后标签栏真的排到终端下方（TER-001）",
+    posBottom !== null && posBottom.cls.includes("tabs-bottom") && posBottom.order === "1",
+    JSON.stringify(posBottom ?? await tabPosState()),
+  );
+  const posSaved = await waitFor(
+    async () => {
+      let t;
+      try { t = readFileSync(prefsFile, "utf8"); } catch { return null; }
+      return /tabsPosition\s*=\s*"bottom"/.test(t) ? true : null;
+    },
+    { timeout: 10000, label: "标签栏位置落盘" },
+  ).catch(() => null);
+  check("标签栏位置写进 config.toml（TER-001）", posSaved === true, posSaved === true ? "已写入" : "没落盘");
+  await setTabsPos("top");
+  const posRestored = await waitFor(
+    () => cdp.eval("window.__wt.files.tabsPosition").then((v) => (v === "top" ? true : null)),
+    { timeout: 5000, label: "标签栏复原顶部" },
+  ).catch(() => null);
+  check("标签栏位置改回顶部（不污染后续）", posRestored === true, `${posRestored}`);
+
   // 中键关闭：中间那个标签
   const midBox = await cdp.eval(`(() => {
     const t = document.querySelectorAll("#tabs .tab")[1];

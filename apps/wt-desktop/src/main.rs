@@ -838,6 +838,8 @@ struct PrefsDto {
     scrollback: u32,
     /// 终端输出编码（`TER-006`）
     encoding: String,
+    /// 标签栏位置（`TER-001`）：`top` / `bottom`。
+    tabs_position: String,
     /// 键位（`TER-020`）：`action → chords[]`
     keymap: std::collections::BTreeMap<String, Vec<String>>,
     /// 导入的配色方案（`TER-005`）：跟内置的放一起，重启后还在
@@ -906,6 +908,7 @@ impl Default for PrefsDto {
             line_height: 1.2,
             scrollback: 10_000,
             encoding: "utf-8".into(),
+            tabs_position: "top".into(),
             keymap: std::collections::BTreeMap::new(),
             custom_themes: Vec::new(),
             local_shell: "auto".into(),

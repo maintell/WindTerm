@@ -294,6 +294,15 @@
         overflow-x: auto;
         border-bottom: 1px solid #33333a;
         flex: none;
+        order: 0;
+      }
+      /* 标签栏可配到底部（TER-001）：用 order 排到正文之后，不动 DOM 顺序，
+         这样标签的拖拽/中键/溢出滚动逻辑全部照常工作。 */
+      #right.tabs-bottom #tabs {
+        order: 1;
+        padding: 0 4px 2px;
+        border-bottom: 0;
+        border-top: 1px solid #33333a;
       }
       .tab {
         display: flex;
@@ -1263,6 +1272,14 @@
           <span class="set-name" data-i18n="set.lineHeight">行高</span>
           <span class="set-scope">全局</span>
           <input id="look-height" type="number" min="1" max="2" step="0.05" />
+        </div>
+        <div class="set-row" data-kw="标签栏 标签 位置 顶部 底部 tab bar bottom 顶部">
+          <span class="set-name" data-i18n="set.tabsPosition">标签栏位置</span>
+          <span class="set-scope">全局</span>
+          <select id="tabs-position">
+            <option value="top">顶部</option>
+            <option value="bottom">底部</option>
+          </select>
         </div>
         <div class="set-row" data-kw="回滚 滚动 缓冲 scrollback 行数 历史">
           <span class="set-name" data-i18n="set.scrollback">回滚行数</span>

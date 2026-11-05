@@ -226,6 +226,7 @@ async function loadPrefs() {
     if (Number.isFinite(p.lineHeight)) look.lineHeight = clampNum(p.lineHeight, 1, 2);
     if (Number.isFinite(p.scrollback)) look.scrollback = clampNum(p.scrollback, 1000, 1000000);
     if (typeof p.encoding === "string" && p.encoding) encoding = p.encoding;
+    if (p.tabsPosition === "top" || p.tabsPosition === "bottom") tabsPosition = p.tabsPosition;
     if (typeof p.localShell === "string" && p.localShell) localShell = p.localShell;
     if (typeof p.localShellPath === "string") localShellPath = p.localShellPath;
     if (typeof p.localShellArgs === "string") localShellArgs = p.localShellArgs;
@@ -270,6 +271,7 @@ async function savePrefs() {
         lineHeight: look.lineHeight,
         scrollback: look.scrollback,
         encoding,
+        tabsPosition,
         keymap: plain,
         customThemes,
         localShell,
@@ -3185,6 +3187,8 @@ filesRefresh.addEventListener("click", async () => {
 const FILES_ROW_H = 20;
 /** 当前目录的全部条目。DOM 里只有可视窗口内的那些（`FIL-001` AC-1） */
 let filesEntries = [];
+/** 标签栏位置（`TER-001`）：`top` / `bottom`，写进 config.toml */
+let tabsPosition = "top";
 /** 是否显示 `.` 开头的隐藏文件（`FIL-001` 规格 §4）：默认开，运维场景必须可见 */
 let filesShowHidden = true;
 
@@ -5003,6 +5007,22 @@ filesAutoOpenBox.addEventListener("change", () => {
   setStatus(`连上 SSH 自动打开文件面板：${filesAutoOpen ? "开" : "关"}`);
 });
 
+// 标签栏位置（`TER-001`）：顶部 / 底部。只切 #right 的 class，不动 DOM 顺序，
+// 所以标签的拖拽 / 中键关闭 / 溢出滚动逻辑不受影响。
+const tabsPositionSelect = document.getElementById("tabs-position");
+const rightPane = document.getElementById("right");
+function applyTabsPosition() {
+  rightPane.classList.toggle("tabs-bottom", tabsPosition === "bottom");
+}
+tabsPositionSelect.addEventListener("change", () => {
+  tabsPosition = tabsPositionSelect.value === "bottom" ? "bottom" : "top";
+  applyTabsPosition();
+  // 位置变了，终端尺寸没变但要重新 fit 一次，避免某些浏览器不重算
+  active?.fit.fit();
+  void savePrefs();
+  setStatus(tabsPosition === "bottom" ? "标签栏：底部" : "标签栏：顶部");
+});
+
 // 显示隐藏文件（`FIL-001` 规格 §4）：默认开。切换只影响列表怎么画，
 // 不重新连服务端——filesEntries 一直是全量，开关只是过滤。
 const filesShowHiddenBox = document.getElementById("files-show-hidden");
@@ -5033,7 +5053,7 @@ const setEmpty = document.getElementById("set-empty");
  */
 const SET_GROUPS = [
   ["常规", ["ui-lang", "local-shell", "local-shell-path"]],
-  ["外观", ["look-size", "look-height"]],
+  ["外观", ["look-size", "look-height", "tabs-position"]],
   ["终端", ["encoding", "look-theme", "theme-import-open", "look-font", "look-scrollback", "term-right-click", "look-word-sep", "look-paste-trim", "look-autocopy-on", "look-autocopy"]],
   ["文件", ["files-auto-open", "files-show-hidden"]],
   ["安全", ["master-open", "vault-rotate", "known-open"]],
@@ -5055,6 +5075,7 @@ const SET_META = {
   "look-font": ["JetBrains Mono", false],
   "look-size": ["13", false],
   "look-height": ["1.2", false],
+  "tabs-position": ["顶部", false],
   "look-scrollback": ["10000", false],
   "ui-lang": ["中文", false],
   "local-shell": ["跟随系统", false],
@@ -5297,6 +5318,7 @@ const I18N = {
     "set.lineHeight": "行高",
     "set.scrollback": "回滚行数",
     "set.rightClick": "右键行为",
+    "set.tabsPosition": "标签栏位置",
     "set.showHidden": "显示隐藏文件",
     "set.vaultRotate": "轮换加密密钥",
     "set.pasteTrim": "粘贴时去掉行尾空白",
@@ -5339,6 +5361,7 @@ const I18N = {
     "set.lineHeight": "Line height",
     "set.scrollback": "Scrollback lines",
     "set.rightClick": "Right-click action",
+    "set.tabsPosition": "Tab bar position",
     "set.showHidden": "Show hidden files",
     "set.vaultRotate": "Rotate vault key",
     "set.pasteTrim": "Trim trailing whitespace on paste",
@@ -5597,7 +5620,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-112",
+  ui: "wt-ui-113",
   /**
    * 验收用：刷新会话树并等它**画完**。
    *
@@ -5740,6 +5763,7 @@ window.__wt = {
       showHidden: filesShowHidden,
       sortKey: filesSortKey,
       sortDir: filesSortDir,
+      tabsPosition,
       /** 列目录失败的原因（空串表示这次是成功的） */
       error: filesLoadError,
       /** 当前选中项的名字（验收与脚本用） */
@@ -5925,6 +5949,8 @@ window.__wt = {
   await refreshAppPaths();
   filesAutoOpenBox.checked = filesAutoOpen;
   filesShowHiddenBox.checked = filesShowHidden;
+  tabsPositionSelect.value = tabsPosition;
+  applyTabsPosition();
   renderSortHeader();
   initBroadcast();
   loadTree();
