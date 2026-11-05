@@ -828,6 +828,9 @@ struct PrefsDto {
     /// 双击选词时**额外**当分隔符的字符（`TER-011`）。空串表示只用 xterm 默认那一套；
     /// 想把 `/` 也当分隔符的人填一个 `/` 即可（默认不填，`user@host:/var/log` 才能一次选中）。
     word_separator_extra: String,
+    /// 粘贴时去掉每行末尾的空格/制表符（`TER-011` 规格第 1 条「去除尾部空白（可配）」）。
+    /// 默认**关**：改用户粘贴进来的内容是危险动作，要开也得用户自己开。
+    paste_trim_trailing: bool,
     /// 选中即复制（`TER-011`）：规格要求默认开、可关。有人剪贴板里放着别的东西，
     /// 选区一动就被覆盖很烦。关掉之后 `Ctrl+Shift+C` 仍然可用。
     auto_copy_on_select: bool,
@@ -873,6 +876,7 @@ impl Default for PrefsDto {
             net_keepalive_max_missed: 3,
             right_click_action: "menu".into(),
             word_separator_extra: String::new(),
+            paste_trim_trailing: false,
             auto_copy_on_select: true,
             auto_copy_delay_ms: 120,
             language: "zh".into(),

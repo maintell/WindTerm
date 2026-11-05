@@ -238,6 +238,7 @@ async function loadPrefs() {
     }
     if (typeof p.wordSeparatorExtra === "string") wordSeparatorExtra = p.wordSeparatorExtra;
     if (Number.isFinite(p.autoCopyDelayMs)) autoCopyDelay = clampNum(p.autoCopyDelayMs, 0, 2000);
+    if (typeof p.pasteTrimTrailing === "boolean") pasteTrimTrailing = p.pasteTrimTrailing;
     if (typeof p.autoCopyOnSelect === "boolean") autoCopy = p.autoCopyOnSelect;
     if (p.language === "en" || p.language === "zh") uiLang = p.language;
     // 导入的配色要在建会话之前就进表，否则第一个终端会先闪一下默认配色
@@ -279,6 +280,7 @@ async function savePrefs() {
         netKeepaliveMaxMissed: netMaxMissed,
         rightClickAction,
         wordSeparatorExtra,
+        pasteTrimTrailing,
         autoCopyOnSelect: autoCopy,
         autoCopyDelayMs: autoCopyDelay,
         language: uiLang,
@@ -897,10 +899,15 @@ async function runSshOpen(req, jump, label) {
   setStatus(view.status);
   sshBtn.disabled = true;
   try {
-    const r = await invoke("ssh_open", {
-      req: { ...req, cols: view.term.cols, rows: view.term.rows },
-      jump,
-    });
+    // 死线兜底：后端万一卡住，`await` 永远不返回，界面上就是「一直正在连接」、
+    // 按钮一直禁用（点第二次什么都不发生）。60 秒给足（连接超时 15 秒 + 可能的
+    // TOFU probe 一次），超时就明确说出来，至少按钮能恢复、能重试。
+    const r = await invokeWithTimeout(
+      "ssh_open",
+      { req: { ...req, cols: view.term.cols, rows: view.term.rows }, jump },
+      60000,
+      "连接",
+    );
     view.handle = r.handle;
     const text = `已连接 ${label}${r.host_key_added ? "（已记录主机密钥）" : ""}`;
     afterOpen(view, text);
@@ -1891,6 +1898,9 @@ let defaultWordSeparator = null;
 /** 自动复制失败只提示一次，避免每拖一次选就刷一条状态 */
 let autoCopyWarned = false;
 
+/** 粘贴时去掉每行末尾的空格/制表符（`TER-011`）。默认关：改用户内容要用户自己点头。 */
+let pasteTrimTrailing = false;
+
 /** 多行粘贴确认门限：含 ≥ 2 个换行就确认（TER-013） */
 const PASTE_CONFIRM_LINES = 2;
 
@@ -1962,14 +1972,22 @@ function confirmPaste(text, view) {
  * 顺序是刻意的：先确认，确认通过后才 `term.paste()`。反过来写就会留下
  * 「取消之后远端已经收到一半」这种最难解释的现象。
  */
-async function pasteText(text, view = active) {
+async function pasteText(raw, view = active) {
   if (!view?.handle) {
     setStatus("没有活动会话");
     return;
   }
-  if (!text) return;
+  if (!raw) return;
 
-  const newlines = (text.match(/\r\n|\r|\n/g) ?? []).length;
+  // 规范化（`TER-011` 规格第 1 条）：`\r\n` / `\n` 一律变成 `\r`（终端语义），
+  // 再按设置决定要不要去掉每行末尾的空格与制表符。xterm 的 paste 自己也会处理换行，
+  // 但「去尾空白」只能我们做；而且先把文本定死，验收才能看到**到底送出去了什么**。
+  let text = raw.replace(/\r\n/g, "\r").replace(/\n/g, "\r");
+  if (pasteTrimTrailing) text = text.replace(/[ \t]+(?=\r|$)/g, "");
+  // 记下这次真正粘贴的文本（验收用：规范化与去尾空白都要能观察，别靠肉眼看）
+  view.lastPaste = text;
+
+  const newlines = (text.match(/\r/g) ?? []).length;
   if (newlines >= PASTE_CONFIRM_LINES && !(await confirmPaste(text, view))) {
     setStatus("粘贴已取消");
     return;
@@ -3676,6 +3694,7 @@ const lookAutoCopySelect = document.getElementById("look-autocopy");
 const lookAutoCopyOnBox = document.getElementById("look-autocopy-on");
 const termRightClickSelect = document.getElementById("term-right-click");
 const lookWordSepInput = document.getElementById("look-word-sep");
+const lookPasteTrimBox = document.getElementById("look-paste-trim");
 const lookFontSelect = document.getElementById("look-font");
 const lookFontWarn = document.getElementById("look-font-warn");
 const lookMonoWarn = document.getElementById("look-mono-warn");
@@ -4328,6 +4347,7 @@ function initLookControls() {
   lookAutoCopyOnBox.checked = autoCopy;
   termRightClickSelect.value = rightClickAction;
   lookWordSepInput.value = wordSeparatorExtra;
+  lookPasteTrimBox.checked = pasteTrimTrailing;
 }
 
 lookThemeSelect.addEventListener("change", () => {
@@ -4350,6 +4370,14 @@ termRightClickSelect.addEventListener("change", () => {
       ? "右键：直接粘贴（Ctrl+右键 / Shift+右键 弹菜单）"
       : "右键：弹菜单",
   );
+});
+
+// 粘贴时去掉行尾空白（`TER-011` 规格第 1 条）：默认关——改用户粘贴进来的内容
+// 是危险动作，要开也得用户自己开。
+lookPasteTrimBox.addEventListener("change", () => {
+  pasteTrimTrailing = lookPasteTrimBox.checked;
+  void savePrefs();
+  setStatus(pasteTrimTrailing ? "粘贴：去掉行尾空白" : "粘贴：保留原样");
 });
 
 // 双击选词的额外分隔符（`TER-011`）：直接改所有视图的 `wordSeparator`，立刻生效。
@@ -4756,7 +4784,7 @@ const setEmpty = document.getElementById("set-empty");
 const SET_GROUPS = [
   ["常规", ["ui-lang", "local-shell", "local-shell-path"]],
   ["外观", ["look-size", "look-height"]],
-  ["终端", ["encoding", "look-theme", "theme-import-open", "look-font", "look-scrollback", "term-right-click", "look-word-sep", "look-autocopy-on", "look-autocopy"]],
+  ["终端", ["encoding", "look-theme", "theme-import-open", "look-font", "look-scrollback", "term-right-click", "look-word-sep", "look-paste-trim", "look-autocopy-on", "look-autocopy"]],
   ["文件", ["files-auto-open"]],
   ["安全", ["master-open", "known-open"]],
   // 按「行里第一个带 id 的元素」认领：配置文件那行首个 id 是路径 span，不是按钮
@@ -4787,6 +4815,7 @@ const SET_META = {
   "net-max-missed": ["3 次", false],
   "term-right-click": ["弹菜单", false],
   "look-word-sep": ["（空）", false],
+  "look-paste-trim": ["关", false],
   "look-autocopy-on": ["开", false],
   "look-autocopy": ["120 毫秒", false],
 };
@@ -5017,6 +5046,7 @@ const I18N = {
     "set.lineHeight": "行高",
     "set.scrollback": "回滚行数",
     "set.rightClick": "右键行为",
+    "set.pasteTrim": "粘贴时去掉行尾空白",
     "set.wordSeparator": "双击选词的额外分隔符",
     "set.autoCopy": "选中即复制",
     "set.autoCopyDelay": "选中即复制延迟",
@@ -5056,6 +5086,7 @@ const I18N = {
     "set.lineHeight": "Line height",
     "set.scrollback": "Scrollback lines",
     "set.rightClick": "Right-click action",
+    "set.pasteTrim": "Trim trailing whitespace on paste",
     "set.wordSeparator": "Extra word separators (double-click)",
     "set.autoCopy": "Copy on select",
     "set.autoCopyDelay": "Copy-on-select delay",
@@ -5311,7 +5342,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-105",
+  ui: "wt-ui-107",
   /**
    * 验收用：刷新会话树并等它**画完**。
    *
@@ -5394,6 +5425,10 @@ window.__wt = {
     return null;
   },
   /** 粘贴次数：断言「取消后零字节」时对比它没变 */
+  /** 上一次真正粘贴出去的文本（`TER-011`：规范化与去尾空白都靠它观察） */
+  get lastPaste() {
+    return active?.lastPaste ?? null;
+  },
   get pasteCount() {
     return active?.pasteCount ?? 0;
   },

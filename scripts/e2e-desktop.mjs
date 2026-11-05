@@ -1327,6 +1327,60 @@ try {
     midRan === true ? "已执行" : "屏幕上没看到结果",
   );
 
+  // 打开设置中心（后面几段都要用；定义在第一次使用之前，否则会撞上 TDZ）
+  const openSettings = async () => {
+    if (await cdp.eval(`document.getElementById("settings").open`)) return true;
+    await clickUntil(
+      () => clickElement("#tree-settings"),
+      async () => ((await cdp.eval(`document.getElementById("settings").open`)) ? true : null),
+      { timeout: 5000, tries: 3, label: "打开设置" },
+    );
+    return true;
+  };
+
+  // 粘贴规范化（`TER-011` 规格第 1 条）：`\r\n` / `\n` 一律变成 `\r`；
+  // 「去掉行尾空白」默认关、可开。判据是 `__wt.lastPaste`——那是**真正交给终端**的
+  // 文本，比看屏幕可靠得多（行尾空格在屏幕上看不出来）。
+  const pasteAndRead = async (text) => {
+    const before = await cdp.eval(`window.__wt.pasteCount`);
+    await cdp.eval(`navigator.clipboard.writeText(${JSON.stringify(text)})`);
+    await pressChord(2 | 8, "V", "KeyV", 86);
+    await waitFor(
+      async () => ((await cdp.eval(`window.__wt.pasteCount`)) > before ? true : null),
+      { timeout: 5000, label: "粘贴动作" },
+    ).catch(() => null);
+    return cdp.eval(`window.__wt.lastPaste`);
+  };
+  const crlfKept = await pasteAndRead("one   \r\ntwo");
+  check(
+    "粘贴时 CRLF 规范成 CR，行尾空格默认保留（TER-011）",
+    crlfKept === "one   \rtwo",
+    JSON.stringify(crlfKept),
+  );
+  await openSettings();
+  await cdp.eval(`(() => {
+    const el = document.getElementById("look-paste-trim");
+    el.checked = true;
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return el.checked;
+  })()`);
+  await closeAllDialogs();
+  const crlfTrimmed = await pasteAndRead("one   \r\ntwo");
+  check(
+    "打开「去掉行尾空白」后，行尾空格被去掉（TER-011）",
+    crlfTrimmed === "one\rtwo",
+    JSON.stringify(crlfTrimmed),
+  );
+  // 复原：这条会写进 config.toml，默认是关
+  await openSettings();
+  await cdp.eval(`(() => {
+    const el = document.getElementById("look-paste-trim");
+    el.checked = false;
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return el.checked;
+  })()`);
+  await closeAllDialogs();
+
   // 粘贴不能把 ^V 当控制字符漏给远端：那会让 shell 收到一个 0x16
   const leaked = await cdp.eval(`window.__wt.inputLog.slice(${logBefore})`);
   check(
@@ -1378,15 +1432,6 @@ try {
   // 延迟可配（`TER-011`）：调到 600 毫秒后，选完 250 毫秒还不该复制、2 秒内必须复制。
   // 只验「延迟真的生效」，不去卡精确毫秒——那会变成测定时器精度。
   await closeAllDialogs();
-  const openSettings = async () => {
-    if (await cdp.eval(`document.getElementById("settings").open`)) return true;
-    await clickUntil(
-      () => clickElement("#tree-settings"),
-      async () => ((await cdp.eval(`document.getElementById("settings").open`)) ? true : null),
-      { timeout: 5000, tries: 3, label: "打开设置" },
-    );
-    return true;
-  };
   const setDelay = async (v) =>
     cdp.eval(`(() => {
       const el = document.getElementById("look-autocopy");
@@ -4013,7 +4058,23 @@ try {
     async () => ((await cdp.eval(`window.__wt.tabs().length`)) === 0 ? true : null),
     { timeout: 15000, label: "标签真的关闭干净" },
   );
+  // 点「连接」之前先确认按钮是启用的：上一次 `ssh_open` 万一没返回，按钮会一直禁用，
+  // 这时点下去什么都不会发生，表现出来又是一次「30 秒超时」。把这种卡死单独认出来，
+  // 比让它伪装成超时有用得多。
+  const waitSshReady = (ms = 20000) =>
+    waitFor(
+      async () => {
+        const st = await cdp.eval(`({ disabled: document.getElementById("ssh").disabled, status: document.getElementById("status").textContent })`);
+        return st.disabled ? null : st;
+      },
+      { timeout: ms, label: "连接按钮回到可用" },
+    ).catch(() => null);
   const connectOnce = async (label, ms) => {
+    const ready = await waitSshReady();
+    if (!ready) {
+      const st = await cdp.eval(`document.getElementById("status").textContent`);
+      throw new Error(`连接按钮一直禁用着，状态栏：${st}`);
+    }
     await clickElement("#ssh");
     return waitFor(
       async () => {
