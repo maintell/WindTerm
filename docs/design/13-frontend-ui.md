@@ -359,6 +359,13 @@ export function t(key: string, params?: Record<string, string | number>): string
 
 **切换语言**：`currentLang` 是 signal，切换后所有 `t()` 调用自动重渲染（Solid 的细粒度更新）。
 
+> **当前实现的偏差**（别照本节的 ts 代码去找文件）：前端是零构建的 `ui/main.js`，没有 Solid、
+> 也没有 `i18n/index.ts`；词表是 `I18N` 字面对象 + 元素上的 `data-i18n` 属性 + 状态栏的
+> `STATUS_EN` 查表。上表四条约束里目前只做到「两份词表键集合一致」与「`data-i18n` 键齐全」
+> （`check-docs.ps1` 第 9 项），外加一条本表没有的「纯字面量状态文案必须有英文词条、且不许留
+> 死词条」。「源码中无中文字符串字面量」离得很远——错误消息、右键菜单、带变量的状态模板
+> 字符串都还是中文，覆盖面如实写在 README 的进度表与已知缺口里。
+
 ## 9. 可访问性
 
 | 要求 | 实现 |

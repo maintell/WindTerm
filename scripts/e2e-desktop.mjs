@@ -7164,6 +7164,10 @@ try {
   // 对话框标题也要跟着变：它们是最容易漏翻的一批（用户在弹窗里才看到）
   const dlgEn = await cdp.eval(`document.getElementById("keys-title").textContent`);
   check("对话框标题也翻了（SET-012）", dlgEn === "Keybindings", `${dlgEn}`);
+  // 状态栏字面量必须跟着翻。静态门禁只保证词表里有这一条，没法证明它真的作用到 DOM 上；
+  // 这里走一遍真的 setStatus，读回来的是状态栏实际显示的字。
+  const stEn = await cdp.eval(`window.__wt._setStatus("已关闭")`);
+  check("英文下状态栏字面量也翻译（SET-012）", stEn.shown === "Closed", `${stEn.raw} → ${stEn.shown}`);
   await setLang("zh");
   const backToChinese = await waitFor(
     async () => {
@@ -7173,6 +7177,8 @@ try {
     { timeout: 8000, label: "切回中文" },
   ).catch(() => null);
   check("切回中文也生效（SET-012）", backToChinese !== null, `${backToChinese ?? "没变"}`);
+  const stZh = await cdp.eval(`window.__wt._setStatus("已关闭")`);
+  check("中文下状态栏保持原文（SET-012）", stZh.shown === "已关闭", `${stZh.shown}`);
 
   // 词表缺口门禁：页面里用到的键必须在两份词表里都存在——漏翻一处就红，
   // 而不是等到用户把界面切成英文才发现某处还是中文

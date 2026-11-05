@@ -108,8 +108,59 @@ function mruRemember(view) {
   mruViews.unshift(view);
 }
 
+let uiLang = "zh";
+
+/**
+ * 状态栏文案的中文→英文对照（SET-012）。
+ *
+ * 状态栏有 130 多处 setStatus 调用，绝大多数是带变量的模板字符串，逐条国际化
+ * 不现实；这里只覆盖**纯字面量**那一批，并在 setStatus 里统一查表，所以调用点
+ * 一个都不用改，覆盖到哪儿一眼可数。模板字符串仍是中文——不假装状态栏已全英文。
+ *
+ * 门禁：scripts/check-docs.ps1 第 9 项核对「每个纯字面量 setStatus 都有词条」
+ * 且「表里没有没人用的死词条」。加一条状态文案却忘了配英文，检查会直接失败。
+ */
+const STATUS_EN = {
+  "已关闭": "Closed",
+  "没有选中内容": "Nothing selected",
+  "打开失败": "Open failed",
+  "请先填主机与用户名": "Enter host and username first",
+  "请先选择私钥文件": "Choose a private key file first",
+  "请重新输入密码（连上后会覆盖已保存的口令）": "Re-enter password (overwrites the saved one once connected)",
+  "这条标签没有记录连接参数，无法复制": "This tab has no recorded connection settings to copy",
+  "已移动": "Moved",
+  "已调整顺序": "Order changed",
+  "填名称与主机后保存；连接则用当前参数": "Fill name and host to save; Connect uses the current values",
+  "保存会话需要名称与主机": "Saving a session needs a name and host",
+  "读剪贴板被拒绝，请用 Ctrl+Shift+V 粘贴": "Clipboard read denied; use Ctrl+Shift+V to paste",
+  "没有活动会话": "No active session",
+  "粘贴已取消": "Paste cancelled",
+  "已清屏": "Screen cleared",
+  "没有匹配": "No matches",
+  "已全部替换（记得保存）": "Replaced all (remember to save)",
+  "键位已恢复默认": "Keybindings restored to defaults",
+  "文件面板需要先填主机与用户名": "The file panel needs host and username first",
+  "没有可广播的会话": "No sessions to broadcast to",
+  "已取消广播": "Broadcast cancelled",
+  "还没有广播结果可导出": "No broadcast results to export yet",
+  "已关闭分屏": "Split view closed",
+  "分屏需要至少两个已连接的会话": "Split view needs at least two connected sessions",
+  "已更换主密码": "Master password changed",
+  "保险库已移除": "Vault removed",
+  "请输入主密码": "Enter the master password",
+  "保险库已锁定": "Vault locked",
+  "密码已记住（仅本次运行）": "Password remembered (this run only)",
+  "就绪（点击「新建本地终端」开始）": "Ready (click New local terminal to start)",
+};
+
+let lastStatus = "";
+
 function setStatus(text) {
-  statusEl.textContent = text;
+  // 存原文而不是成品：切到 English 时能把当前这条也重刷一遍，
+  // 不然「已关闭」会一直挂到下一次状态变化才变英文
+  lastStatus = text;
+  statusEl.textContent =
+    uiLang === "en" && Object.hasOwn(STATUS_EN, text) ? STATUS_EN[text] : text;
 }
 
 /** 打开/关闭按钮的可用状态：多会话后开新会话不该被禁用 */
@@ -5479,8 +5530,6 @@ const I18N = {
   },
 };
 
-let uiLang = "zh";
-
 function t(key) {
   return I18N[uiLang]?.[key] ?? I18N.zh[key] ?? key;
 }
@@ -5982,6 +6031,18 @@ window.__wt = {
   /** 最近生成的密钥（`LOC-014`）：验收读它，别去解析对话框里的文本 */
   get lastKey() {
     return lastKey ? { ...lastKey } : null;
+  },
+  /**
+   * 状态栏（`SET-012`）：raw 是写进去的原文，shown 是实际显示的字。
+   * 验收靠这两者判断「翻译表里有词条」之外，字到底有没有换掉。
+   */
+  get status() {
+    return { raw: lastStatus, shown: statusEl.textContent };
+  },
+  /** 验收用：走一遍真的 setStatus，验证中英切换落到状态栏上 */
+  _setStatus(text) {
+    setStatus(text);
+    return { raw: lastStatus, shown: statusEl.textContent };
   },
   /** 键位表（`TER-020`）：验收读它，别去解析对话框里的文本 */
   get keymap() {

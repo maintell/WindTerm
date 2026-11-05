@@ -290,6 +290,39 @@ else {
 $kmMatch = [regex]::Match($mainText, "const KEYMAP_DEFAULT = [{].*?[}];", [System.Text.RegularExpressions.RegexOptions]::Singleline)
 $kmKeys = [regex]::Matches($kmMatch.Value, "[ \t]{2}([A-Za-z][A-Za-z0-9]*):[ \t]*[{][ \t]*label:").Count
 Assert-ReadmeNumber "可用（([0-9]+)[ \t]*个动作可重绑）" $kmKeys "TER-020 动作数"
+# 9d. 状态栏文案 i18n（SET-012）：纯字面量的 setStatus 必须有英文词条，表里也不许留死词条
+#     带变量的模板字符串不在此列（它们仍是中文，如实记在 README 缺口里），但只写字面量
+#     的那批必须能翻——否则「切成 English 后状态栏还是中文」只能靠人肉发现。
+$stPat = [regex]::Escape("setStatus(") + $dq + "([^" + $dq + "]*)" + $dq + [regex]::Escape(")")
+$statusLiterals = @([regex]::Matches($mainText, $stPat) | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+Assert-ReadmeNumber "状态栏[ \t]*([0-9]+)[ \t]*条字面量" $statusLiterals.Count "SET-012 状态栏字面量数"
+$nlCh = [string][char]10
+$mainLines = $mainText.Split($nlCh)
+$mapStart = -1
+for ($i = 0; $i -lt $mainLines.Length; $i++) {
+    if ($mainLines[$i] -match "const STATUS_EN = [{]") { $mapStart = $i; break }
+}
+if ($mapStart -lt 0) {
+    Fail "main.js 里找不到 STATUS_EN（状态栏中文→英文词表）"
+} else {
+    $mapKeyPat = "^[ \t]*" + $dq + "([^" + $dq + "]+)" + $dq + ":"
+    $mapKeys = [System.Collections.Generic.List[string]]::new()
+    for ($j = $mapStart + 1; $j -lt $mainLines.Length; $j++) {
+        $ln = $mainLines[$j]
+        if ($ln -match "^[}];") { break }
+        $k = [regex]::Match($ln, $mapKeyPat)
+        if ($k.Success) { $mapKeys.Add($k.Groups[1].Value) }
+    }
+    $missingKeys = @($statusLiterals | Where-Object { $mapKeys -notcontains $_ })
+    if ($missingKeys.Count -gt 0) {
+        Fail ("有 {0} 条纯字面量状态文案没有英文词条：{1}" -f $missingKeys.Count, ($missingKeys -join " / "))
+    }
+    $deadKeys = @($mapKeys | Where-Object { $statusLiterals -notcontains $_ })
+    if ($deadKeys.Count -gt 0) {
+        Fail ("STATUS_EN 有 {0} 条没人用的死词条：{1}" -f $deadKeys.Count, ($deadKeys -join " / "))
+    }
+    Write-Host ("状态栏文案：字面量 {0} 条 / 词表 {1} 条（缺 {2}、死 {3}）" -f $statusLiterals.Count, $mapKeys.Count, $missingKeys.Count, $deadKeys.Count)
+}
 Write-Host ("README 对账：i18n {0} 键/{1} 处、P0 {2}/{3}/{4}、动作 {5} 项" -f $i18nKeyCount, $i18nElCount, $p0Ok, $p0Wip, $p0None, $kmKeys)
 # 输出
 # ─────────────────────────────────────────────────────────────
