@@ -669,6 +669,15 @@ impl russh::server::Handler for MockHandler {
             session.data(channel, b"\x1b[?1002h\x1b[?1006h".to_vec())?;
             return Ok(());
         }
+        // 大量行（`TER-020` 的滚动动作）：验收需要一个真的能滚起来的缓冲
+        if String::from_utf8_lossy(data).contains("__manylines__") {
+            let mut out = String::new();
+            for i in 1..=120 {
+                out.push_str(&format!("line {i}\r\n"));
+            }
+            session.data(channel, out.into_bytes())?;
+            return Ok(());
+        }
         // 远端标题（`TER-001` 的 `OSC 2`）：真实 shell 里是 vim/top 之类在设，
         // 客户端应当把它显示成标签名
         if String::from_utf8_lossy(data).contains("__title__") {

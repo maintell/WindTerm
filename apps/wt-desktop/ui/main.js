@@ -2055,6 +2055,23 @@ const KEYMAP_DEFAULT = {
   settingsOpen: { label: "打开设置", chords: ["Ctrl+,"] },
   keysOpen: { label: "键位设置", chords: ["Ctrl+K"] },
   splitToggle: { label: "左右分屏", chords: ["Ctrl+Shift+S"] },
+  // 第二批量：标签管理、滚动、清屏、全选、侧栏。**每一条都有真行为**——
+  // 规格里 30+ 个动作，但填一堆按了没反应的条目比数量不够更糟（`TER-020`）。
+  closeTab: { label: "关闭当前标签", chords: ["Ctrl+Alt+Q"] },
+  duplicateTab: { label: "复制当前标签", chords: ["Ctrl+Shift+U"] },
+  renameTab: { label: "重命名当前标签", chords: ["Ctrl+Alt+R"] },
+  clearScreen: { label: "清屏", chords: ["Ctrl+Shift+K"] },
+  selectAll: { label: "全选", chords: ["Ctrl+Shift+A"] },
+  scrollPageUp: { label: "上滚一页", chords: ["Shift+PageUp"] },
+  scrollPageDown: { label: "下滚一页", chords: ["Shift+PageDown"] },
+  scrollLineUp: { label: "上滚一行", chords: ["Shift+ArrowUp"] },
+  scrollLineDown: { label: "下滚一行", chords: ["Shift+ArrowDown"] },
+  scrollTop: { label: "滚到顶", chords: ["Shift+Home"] },
+  scrollBottom: { label: "滚到底", chords: ["Shift+End"] },
+  sidebarToggle: { label: "显示/隐藏侧栏", chords: ["Ctrl+Alt+B"] },
+  jumpTab1: { label: "跳到第 1 个标签", chords: ["Ctrl+Alt+F1"] },
+  jumpTab2: { label: "跳到第 2 个标签", chords: ["Ctrl+Alt+F2"] },
+  jumpTab3: { label: "跳到第 3 个标签", chords: ["Ctrl+Alt+F3"] },
 };
 
 
@@ -2175,6 +2192,62 @@ function runAction(action) {
     case "splitToggle":
       document.getElementById("split-toggle").click();
       return true;
+    case "closeTab":
+      if (!active) return false;
+      void closeView(active);
+      return true;
+    case "duplicateTab":
+      if (!active) return false;
+      void duplicateTab(active);
+      return true;
+    case "renameTab":
+      if (!active) return false;
+      void renameTab(active);
+      return true;
+    case "clearScreen":
+      if (!active) return false;
+      // xterm 的 clear 连回滚区一起清；这正是「清屏」在终端里被期待的效果。
+      // 注意别在这里发 `\x1b[2J`：那只是往缓冲里写字符，滚动条还在。
+      active.term.clear();
+      setStatus("已清屏");
+      return true;
+    case "selectAll":
+      if (!active) return false;
+      active.term.selectAll();
+      return true;
+    case "scrollPageUp":
+    case "scrollPageDown":
+    case "scrollLineUp":
+    case "scrollLineDown":
+    case "scrollTop":
+    case "scrollBottom": {
+      if (!active) return false;
+      const t = active.term;
+      if (action === "scrollPageUp") t.scrollPages(-1);
+      else if (action === "scrollPageDown") t.scrollPages(1);
+      else if (action === "scrollLineUp") t.scrollLines(-1);
+      else if (action === "scrollLineDown") t.scrollLines(1);
+      else if (action === "scrollTop") t.scrollToTop();
+      else t.scrollToBottom();
+      return true;
+    }
+    case "sidebarToggle": {
+      const tree = document.getElementById("tree");
+      tree.hidden = !tree.hidden;
+      // 侧栏宽度变了，终端要重新 fit，否则行列数还按老宽度算，输出会串行
+      active?.fit.fit();
+      setStatus(tree.hidden ? "侧栏已隐藏" : "侧栏已显示");
+      return true;
+    }
+    case "jumpTab1":
+    case "jumpTab2":
+    case "jumpTab3": {
+      const idx = Number(action.slice(-1)) - 1;
+      const target = [...sessions.values()][idx];
+      if (!target) return false;
+      activateByUser(target);
+      return true;
+    }
     default:
       return false;
   }
@@ -5342,7 +5415,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-107",
+  ui: "wt-ui-108",
   /**
    * 验收用：刷新会话树并等它**画完**。
    *
@@ -5384,6 +5457,12 @@ window.__wt = {
   /** 拖拽命中计数（验收用：分清「事件没到」「没越门槛」「没找着目标」） */
   tabDrag() {
     return { ...tabDrag };
+  },
+  /** 滚动位置（验收用：上滚/下滚/到顶/到底看这个，不要看屏幕猜） */
+  scroll() {
+    if (!active) return null;
+    const b = active.term.buffer.active;
+    return { viewportY: b.viewportY, baseY: b.baseY, atBottom: b.viewportY === b.baseY };
   },
   /** 当前选区文本（验收与脚本用） */
   selection() {

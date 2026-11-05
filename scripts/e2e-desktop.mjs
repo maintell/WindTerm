@@ -3907,22 +3907,25 @@ try {
 
   await clickElement("#keys-open");
   const keyRows = await cdp.eval(`document.querySelectorAll("#keys-list .key-row").length`);
-  check("键位表列出所有可重绑动作", keyRows >= 8, `${keyRows} 项`);
+  // 规格要求 30+ 个动作（`TER-020`）：这条要真的盯住数量，否则少一半也没人知道
+  check("键位表列出所有可重绑动作", keyRows >= 30, `${keyRows} 项`);
 
   await clickKeyRow("find");
-  await pressChord(2 | 8, "k", "KeyK", 75);
+  // 用 `Ctrl+Shift+Y`：`Ctrl+Shift+K` 现在被「清屏」占着（默认键位），拿来当测试目标
+  // 会立刻撞冲突，测的就不是「能不能重绑」了。
+  await pressChord(2 | 8, "y", "KeyY", 89);
   const rebound = await waitFor(
     async () => {
       const km = await cdp.eval(`window.__wt.keymap`);
-      return km.find.chords.includes("Ctrl+Shift+K") ? km : null;
+      return km.find.chords.includes("Ctrl+Shift+Y") ? km : null;
     },
     { timeout: 5000, label: "录制新键位" },
   );
-  check("能把「查找」重绑到 Ctrl+Shift+K", rebound !== null, rebound?.find?.chords?.join("/"));
+  check("能把「查找」重绑到 Ctrl+Shift+Y", rebound !== null, rebound?.find?.chords?.join("/"));
 
-  // 冲突：把「放大字号」也录成 Ctrl+Shift+K，必须被拒且原绑定不动
+  // 冲突：把「放大字号」也录成 Ctrl+Shift+Y，必须被拒且原绑定不动
   await clickKeyRow("zoomIn");
-  await pressChord(2 | 8, "k", "KeyK", 75);
+  await pressChord(2 | 8, "y", "KeyY", 89);
   const conflict = await waitFor(
     async () => {
       const st = await cdp.eval(`document.getElementById("status").textContent`);
@@ -3946,7 +3949,7 @@ try {
   const keymapText = keymapPath ? readFileSync(keymapPath, "utf8") : "";
   check(
     "键位方案能导出成文件（TER-020）",
-    keymapText.includes('"format": "windterm-keymap"') && keymapText.includes("Ctrl+Shift+K"),
+    keymapText.includes('"format": "windterm-keymap"') && keymapText.includes("Ctrl+Shift+Y"),
     keymapPath ? `${keymapPath}` : "没导出",
   );
 
@@ -3970,7 +3973,8 @@ try {
     active: window.__wt.tabs().find((t) => t.active)?.label ?? null,
     dialogOpen: document.getElementById("keys-dialog").open,
   })`);
-  await pressChord(2 | 8, "k", "KeyK", 75);
+  // 导入的方案里「查找」是 `Ctrl+Shift+Y`（`Ctrl+Shift+K` 归「清屏」）
+  await pressChord(2 | 8, "y", "KeyY", 89);
   const findByNewChord = await waitFor(
     async () =>
       (await cdp.eval(`document.getElementById("find-bar").hidden`)) ? null : true,
@@ -3987,6 +3991,157 @@ try {
     JSON.stringify({ prePress, keyDiag }),
   );
   await pressChord(0, "Escape", "Escape", 27);
+
+  // 第二批量动作（`TER-020`）：表里多几行不算数，**每一条都要有真行为**。
+  // 判据尽量读状态（`__wt.scroll()` / `selection()` / `tabs()`），不看屏幕猜。
+  const sessHandle = await cdp.eval(`window.__wt.handle`);
+  await cdp.eval(`window.__TAURI__.core.invoke("term_write", {
+    handle: ${JSON.stringify(sessHandle)}, data: "__manylines__",
+  })`);
+  const buffered = await waitFor(
+    async () => {
+      const s = await cdp.eval(`window.__wt.scroll()`);
+      return s && s.baseY > 5 ? s : null;
+    },
+    { timeout: 10000, label: "缓冲攒够可滚的行" },
+  ).catch(() => null);
+  check("mock 回 120 行后缓冲能滚（前提）", buffered !== null, JSON.stringify(buffered));
+  await pressChord(8, "Home", "Home", 36);
+  const scrollTop = await waitFor(
+    async () => {
+      const s = await cdp.eval(`window.__wt.scroll()`);
+      return s && s.viewportY === 0 ? s : null;
+    },
+    { timeout: 3000, label: "滚到顶" },
+  ).catch(() => null);
+  check("Shift+Home 滚到顶（TER-020）", scrollTop !== null, JSON.stringify(await cdp.eval(`window.__wt.scroll()`)));
+  await pressChord(8, "PageDown", "PageDown", 34);
+  const paged = await waitFor(
+    async () => {
+      const s = await cdp.eval(`window.__wt.scroll()`);
+      return s && s.viewportY > 0 ? s : null;
+    },
+    { timeout: 3000, label: "下滚一页" },
+  ).catch(() => null);
+  check("Shift+PageDown 下滚一页（TER-020）", paged !== null, JSON.stringify(await cdp.eval(`window.__wt.scroll()`)));
+  await pressChord(8, "End", "End", 35);
+  const scrollEnd = await waitFor(
+    async () => {
+      const s = await cdp.eval(`window.__wt.scroll()`);
+      return s && s.atBottom ? s : null;
+    },
+    { timeout: 3000, label: "滚到底" },
+  ).catch(() => null);
+  check("Shift+End 滚到底（TER-020）", scrollEnd !== null, JSON.stringify(await cdp.eval(`window.__wt.scroll()`)));
+  await pressChord(8, "ArrowUp", "ArrowUp", 38);
+  const lineUp = await waitFor(
+    async () => {
+      const s = await cdp.eval(`window.__wt.scroll()`);
+      return s && !s.atBottom ? s : null;
+    },
+    { timeout: 3000, label: "上滚一行" },
+  ).catch(() => null);
+  check("Shift+↑ 上滚一行（TER-020）", lineUp !== null, JSON.stringify(await cdp.eval(`window.__wt.scroll()`)));
+  await pressChord(8, "ArrowDown", "ArrowDown", 40);
+  const lineDown = await waitFor(
+    async () => {
+      const s = await cdp.eval(`window.__wt.scroll()`);
+      return s && s.atBottom ? s : null;
+    },
+    { timeout: 3000, label: "下滚一行" },
+  ).catch(() => null);
+  check("Shift+↓ 下滚一行（TER-020）", lineDown !== null, JSON.stringify(await cdp.eval(`window.__wt.scroll()`)));
+  await pressChord(8, "PageUp", "PageUp", 33);
+  const pageUp = await waitFor(
+    async () => {
+      const s = await cdp.eval(`window.__wt.scroll()`);
+      return s && !s.atBottom ? s : null;
+    },
+    { timeout: 3000, label: "上滚一页" },
+  ).catch(() => null);
+  check("Shift+PageUp 上滚一页（TER-020）", pageUp !== null, JSON.stringify(await cdp.eval(`window.__wt.scroll()`)));
+
+  // 全选 / 清屏 / 侧栏
+  await pressChord(2 | 8, "a", "KeyA", 65);
+  const selAll = await waitFor(
+    async () => {
+      const s = await cdp.eval(`window.__wt.selection()`);
+      return s && s.length > 100 ? s : null;
+    },
+    { timeout: 3000, label: "全选" },
+  ).catch(() => null);
+  check("Ctrl+Shift+A 全选（TER-020）", selAll !== null, `${selAll ? selAll.length : 0} 字符`);
+  await pressChord(2 | 8, "k", "KeyK", 75);
+  const screenCleared = await waitFor(
+    async () => {
+      const s = await cdp.eval(`window.__wt.screen()`);
+      return s.includes("line 120") ? null : s;
+    },
+    { timeout: 3000, label: "清屏" },
+  ).catch(() => null);
+  check("Ctrl+Shift+K 清屏（TER-020）", screenCleared !== null, screenCleared === null ? "还有旧内容" : "已清");
+  const treeBefore = await cdp.eval(`document.getElementById("tree").hidden`);
+  await pressChord(2 | 1, "b", "KeyB", 66);
+  const treeToggled = await waitFor(
+    async () => {
+      const h = await cdp.eval(`document.getElementById("tree").hidden`);
+      return h !== treeBefore ? h : null;
+    },
+    { timeout: 3000, label: "侧栏开关" },
+  ).catch(() => null);
+  check("Ctrl+Alt+B 显示/隐藏侧栏（TER-020）", treeToggled !== null, `${treeBefore} → ${treeToggled}`);
+  await pressChord(2 | 1, "b", "KeyB", 66);
+  await waitFor(
+    async () => ((await cdp.eval(`document.getElementById("tree").hidden`)) === treeBefore ? true : null),
+    { timeout: 3000, label: "侧栏复原" },
+  ).catch(() => null);
+
+  // 标签类动作：复制 / 重命名 / 跳转 / 关闭
+  const tabsBeforeDup = await cdp.eval(`window.__wt.tabs().length`);
+  await pressChord(2 | 8, "u", "KeyU", 85);
+  const dupByKey = await waitFor(
+    async () => {
+      const n = await cdp.eval(`window.__wt.tabs().length`);
+      return n > tabsBeforeDup ? n : null;
+    },
+    { timeout: 30000, label: "Ctrl+Shift+U 复制标签" },
+  ).catch(() => null);
+  check("Ctrl+Shift+U 复制当前标签（TER-020）", dupByKey !== null, `标签数 ${tabsBeforeDup} → ${dupByKey}`);
+  await pressChord(2 | 1, "r", "KeyR", 82);
+  await waitFor(
+    async () => ((await cdp.eval(`document.getElementById("name-dialog").open`)) ? true : null),
+    { timeout: 5000, label: "重命名对话框" },
+  );
+  await confirmName("按键改名");
+  const renamedByKey = await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.tabs()`);
+      return t.some((x) => x.label === "按键改名") ? t : null;
+    },
+    { timeout: 5000, label: "按键重命名生效" },
+  ).catch(() => null);
+  check("Ctrl+Alt+R 重命名当前标签（TER-020）", renamedByKey !== null, renamedByKey ? "已改名" : "没改名");
+  const jumpTarget = await cdp.eval(`window.__wt.tabs()[0]?.label ?? null`);
+  await pressChord(2 | 1, "F1", "F1", 112);
+  const jumpedByKey = await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.tabs().find((x) => x.active)?.label ?? null`);
+      return t && t === jumpTarget ? t : null;
+    },
+    { timeout: 3000, label: "Ctrl+Alt+F1 跳到第一个标签" },
+  ).catch(() => null);
+  check("Ctrl+Alt+F1 跳到第 1 个标签（TER-020）", jumpedByKey !== null, `${jumpedByKey ?? "没跳"}`);
+  const tabsBeforeClose = await cdp.eval(`window.__wt.tabs().length`);
+  await pressChord(2 | 1, "q", "KeyQ", 81);
+  const closedByKey = await waitFor(
+    async () => {
+      const n = await cdp.eval(`window.__wt.tabs().length`);
+      return n < tabsBeforeClose ? n : null;
+    },
+    { timeout: 10000, label: "Ctrl+Alt+Q 关闭标签" },
+  ).catch(() => null);
+  check("Ctrl+Alt+Q 关闭当前标签（TER-020）", closedByKey !== null, `标签数 ${tabsBeforeClose} → ${closedByKey}`);
+
   await closeAllTabs();
 
   // 新增的可重绑动作必须**真的有效果**，不能只是表里多几行
@@ -4045,10 +4200,10 @@ try {
       { timeout: 25000, label: "三条标签渲染完成" },
     ).catch(() => null);
   };
-  let tabReady = await buildThreeTabs();
-  if (tabReady === null) {
-    // 本地 shell 偶发起不来（ConPTY 起来慢或超时）。清干净重来一次：偶发一次不该
-    // 把后面关于 MRU 的断言全带红——那会让真正的回归淹没在噪声里。
+  // 本地 shell 偶发起不来（ConPTY 起来慢或超时，连跑几轮后更明显）。清干净重来，
+  // 最多三轮：偶发不该把后面关于 MRU 的断言全带红——那会让真正的回归淹没在噪声里。
+  let tabReady = null;
+  for (let attempt = 0; attempt < 3 && tabReady === null; attempt += 1) {
     tabReady = await buildThreeTabs();
   }
   check(
@@ -4104,6 +4259,9 @@ try {
     async () => ((await cdp.eval(`window.__wt.tabs().length`)) === 0 ? true : null),
     { timeout: 15000, label: "标签真的关闭干净" },
   );
+  // 收尾是异步的（后端要杀子进程、放 ConPTY）。紧接着建连时偶发卡在「正在连接」，
+  // 给一拍让收尾先落地——比单纯把超时从 30 秒拉到 60 秒更对症。
+  await new Promise((r) => setTimeout(r, 1500));
   // 点「连接」之前先确认按钮是启用的：上一次 `ssh_open` 万一没返回，按钮会一直禁用，
   // 这时点下去什么都不会发生，表现出来又是一次「30 秒超时」。把这种卡死单独认出来，
   // 比让它伪装成超时有用得多。
@@ -4142,22 +4300,31 @@ try {
     await fillInput("#port", String(sshPort));
     firstConnected = await connectOnce("分屏第一个会话（重试）", 45000);
   }
-  check("分屏前第一条会话连上了（前提）", firstConnected !== null, `${firstConnected ?? "没连上"}`);
-  await clickElement("#ssh");
-  await waitFor(
-    async () => ((await cdp.eval(`window.__wt.tabs().length`)) >= 2 ? true : null),
-    { timeout: 30000, label: "分屏第二个会话" },
+  check(
+    "分屏前第一条会话连上了（前提）",
+    firstConnected !== null,
+    firstConnected ??
+      `没连上（状态栏：${await cdp.eval(`document.getElementById("status").textContent`)}）`,
   );
-  await waitFor(
-    async () => {
-      const t = await cdp.eval(`window.__wt.screen()`);
-      return t.includes("WELCOME") ? true : null;
-    },
-    { timeout: 15000, label: "第二个会话横幅" },
-  );
+  // 前提没连上就别再点第二下：继续只会堆出一串「超时」，真正的原因被埋掉。
+  if (firstConnected) {
+    await clickElement("#ssh");
+    await waitFor(
+      async () => ((await cdp.eval(`window.__wt.tabs().length`)) >= 2 ? true : null),
+      { timeout: 30000, label: "分屏第二个会话" },
+    ).catch(() => null);
+    await waitFor(
+      async () => {
+        const t = await cdp.eval(`window.__wt.screen()`);
+        return t.includes("WELCOME") ? true : null;
+      },
+      { timeout: 15000, label: "第二个会话横幅" },
+    ).catch(() => null);
+  }
 
-  await clickElement("#split-toggle");
-  const splitOn = await waitFor(
+  if (firstConnected) await clickElement("#split-toggle");
+  const splitOn = firstConnected
+    ? await waitFor(
     async () => {
       const s = await cdp.eval(`window.__wt.split`);
       const panes = await cdp.eval(
@@ -4167,16 +4334,18 @@ try {
         ? { ...s, panes }
         : null;
     },
-    { timeout: 10000, label: "分屏生效" },
-  );
+        { timeout: 10000, label: "分屏生效" },
+      ).catch(() => null)
+    : null;
   check(
     "分屏后两个 pane 各有一个会话",
-    splitOn.panes.a === 1 && splitOn.panes.b === 1,
-    `左 ${splitOn.panes.a} / 右 ${splitOn.panes.b}（右=${splitOn.right}）`,
+    splitOn?.panes.a === 1 && splitOn?.panes.b === 1,
+    splitOn ? `左 ${splitOn.panes.a} / 右 ${splitOn.panes.b}（右=${splitOn.right}）` : "前提没连上，跳过",
   );
 
-  await clickElement("#split-toggle");
-  const splitOff = await waitFor(
+  if (firstConnected) await clickElement("#split-toggle");
+  const splitOff = firstConnected
+    ? await waitFor(
     async () => {
       const s = await cdp.eval(`window.__wt.split`);
       const panes = await cdp.eval(
@@ -4184,9 +4353,14 @@ try {
       );
       return !s.on && panes.b === 0 && panes.bHidden === true ? panes : null;
     },
-    { timeout: 10000, label: "关闭分屏" },
+        { timeout: 10000, label: "关闭分屏" },
+      ).catch(() => null)
+    : null;
+  check(
+    "关闭分屏后会话都回到左 pane",
+    splitOff?.a === 2,
+    splitOff ? `左 ${splitOff.a} 个` : "前提没连上，跳过",
   );
-  check("关闭分屏后会话都回到左 pane", splitOff.a === 2, `左 ${splitOff.a} 个`);
   await closeAllTabs();
 
   // 19l. Truecolor 与宽字符（`TER-024` / `TER-025`）：从 buffer 里读颜色与单元格宽度
