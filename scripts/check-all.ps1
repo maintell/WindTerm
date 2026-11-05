@@ -2,7 +2,7 @@
 # WindTerm 一键验收
 #
 # 把分散的检查合成一条命令，输出一张汇总表：单元测试 / clippy（零告警）/ 文档与需求对账，
-# 加上 -WithE2e 再跑端到端验收（会自己起停窗口，约 8 分钟）。
+# 加上 -WithE2e 再跑端到端验收：先构建带 `e2e-mock` 的产物，再起停窗口跑，约 10 分钟。
 #
 # 用法：
 #   pwsh ./scripts/check-all.ps1              # 快速档（不跑 e2e）
@@ -62,6 +62,13 @@ Run-Step '文档与需求对账' {
 
 if ($WithE2e) {
     Run-Step '端到端验收' {
+        # 必须先构建带 `e2e-mock` 的产物：`cargo test` / `clippy` 都不会写这个二进制，
+        # 不构建就是在验一份**旧产物**——判断「代码改了、产物没更新」最费时间的一种假绿。
+        # 构建与跑放在同一步里：构建失败这一步就抛错，绝不会带着旧二进制继续跑 e2e。
+        $build = & cargo build --manifest-path (Join-Path $repoRoot 'Cargo.toml') -p wt-desktop --features e2e-mock 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw ("构建 e2e-mock 产物失败（退出码 " + $LASTEXITCODE + "）" + $nl + (($build | Select-Object -Last 6) -join $nl))
+        }
         $out = & node (Join-Path $PSScriptRoot 'e2e-desktop.mjs') 2>&1
         if ($LASTEXITCODE -ne 0) {
             $tail = ($out | Select-Object -Last 6) -join $nl
