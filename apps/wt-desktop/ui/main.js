@@ -3560,11 +3560,12 @@ function paintTunnelRow(n, t) {
 }
 
 /** 隧道分组（`NET-004`）：顺序就是面板里的显示顺序 */
-const TUNNEL_GROUPS = [
-  ["L", "本地转发 -L"],
-  ["R", "远程转发 -R"],
-  ["D", "动态代理 -D"],
-];
+/** 没有自定义分组时按类型分组（`NET-004`） */
+const TUNNEL_TYPE_LABEL = {
+  L: "本地转发 -L",
+  R: "远程转发 -R",
+  D: "动态代理 -D",
+};
 
 function renderTunnels(rows) {
   lastTunnels = rows;
@@ -3588,13 +3589,25 @@ function renderTunnels(rows) {
     tunnelList.appendChild(empty);
     return;
   }
-  // 按类型分组（`NET-004`）：本地/远程/动态混在一起时，得一行行看端点才知道是哪类
-  for (const [kind, title] of TUNNEL_GROUPS) {
-    const inGroup = rows.filter((t) => t.kind === kind);
+  // 分组（`NET-004`）：用户填了分组名就按它排，没填就退回按类型（-L/-R/-D）。
+  // 两种混在一张列表里时，一行行看端点才知道是哪类——这正是要分的原因。
+  const grouped = new Map();
+  for (const t of rows) {
+    const key = (t.group ?? "").trim() || TUNNEL_TYPE_LABEL[t.kind] || t.kind;
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(t);
+  }
+  for (const [title, inGroup] of [...grouped.entries()].sort((a, b) =>
+    a[0].localeCompare(b[0]),
+  )) {
     if (!inGroup.length) continue;
     const group = document.createElement("div");
     group.className = "tun-group";
-    group.dataset.kind = kind;
+    group.dataset.group = title;
+    // 整组同类型时保留 data-kind：老验收与新分组各取所需，不互相妨碍
+    if (inGroup.every((t) => t.kind === inGroup[0].kind)) {
+      group.dataset.kind = inGroup[0].kind;
+    }
     const h = document.createElement("h4");
     h.className = "tun-group-title";
     h.textContent = `${title}（${inGroup.length}）`;
@@ -3743,6 +3756,8 @@ async function startTunnel() {
           socksPassword: dynamic ? tunnelSocksPass.value || null : null,
           autoStart: tunnelAuto.checked,
           viaSessionId: tunnelSessionSelect.value || null,
+          // 自定义分组（`NET-004`）：留空就按类型自动分
+          group: document.getElementById("tunnel-group").value.trim() || null,
           jump: jumpReq(),
         },
       }),
@@ -4838,7 +4853,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-86",
+  ui: "wt-ui-87",
   /** 「本次记住」存了几条（验收用：只回数量，不回口令） */
   sessionPasswords() {
     return sessionPasswords.size;

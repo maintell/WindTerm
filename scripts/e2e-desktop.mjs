@@ -2541,6 +2541,8 @@ try {
     kind.dispatchEvent(new Event("change", { bubbles: true }));
     set("tunnel-listen", "0");
     set("tunnel-target", ${JSON.stringify(`127.0.0.1:${echo.port}`)});
+    // 自定义分组（NET-004）：这次建成「生产」组，下面要断言它真的按分组名归类
+    set("tunnel-group", "生产");
     document.getElementById("tunnel-lan").checked = false;
     // 承载连接显式「跟随表单」：走会话路径要保险库口令，而这一步它可能是锁着的
     set("tunnel-session", "");
@@ -2565,6 +2567,23 @@ try {
     tunFile.format === "windterm-tunnels" && tunFile.tunnels.length === 1,
     `${tunPath}（${tunFile.tunnels?.length ?? 0} 条）`,
   );
+
+  // 自定义分组（`NET-004`）：分组名优先于「按类型自动分」
+  const customGroup = await cdp.eval(`(() => {
+    const g = [...document.querySelectorAll("#tunnel-list .tun-group")].find(
+      (x) => x.dataset.group === "生产",
+    );
+    return g ? g.querySelector(".tun-group-title")?.textContent ?? null : null;
+  })()`);
+  check(
+    "隧道能按自定义分组归类（NET-004）",
+    typeof customGroup === "string" && customGroup.includes("生产"),
+    `${customGroup ?? "没有这个分组"}`,
+  );
+  await cdp.eval(`(() => {
+    document.getElementById("tunnel-group").value = "";
+    return true;
+  })()`);
 
   // 用后端命令删，不走列表按钮：列表每秒重排一次，按钮坐标会过期（这一条踩过）
   const tunList = await cdp.eval(`window.__TAURI__.core.invoke("tunnel_stats")`);

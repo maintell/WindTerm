@@ -16,11 +16,16 @@ use wt_common::WtError;
 use wt_core::{Environment, Folder, FolderId, Session, SessionId, SessionKind, TunnelKind, TunnelSpec};
 
 /// 当前支持的最高 schema 版本。
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 const MIGRATIONS: &[(i64, &str, &str)] = &[
     (1, "init", include_str!("../migrations/0001_init.sql")),
     (2, "tunnels", include_str!("../migrations/0002_tunnels.sql")),
+    (
+        3,
+        "tunnel_group",
+        include_str!("../migrations/0003_tunnel_group.sql"),
+    ),
 ];
 
 /// 一次加载的结果。
@@ -244,8 +249,8 @@ impl Store {
         let tx = self.conn.transaction().map_err(map_sqlite)?;
         tx.execute(
             "INSERT INTO tunnels (id, name, kind, listen_host, listen_port, target_host,
-                                  target_port, via_session_id, auto_start, rev)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1)
+                                  target_port, via_session_id, auto_start, grp, rev)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1)
              ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 kind = excluded.kind,
@@ -255,6 +260,7 @@ impl Store {
                 target_port = excluded.target_port,
                 via_session_id = excluded.via_session_id,
                 auto_start = excluded.auto_start,
+                grp = excluded.grp,
                 rev = tunnels.rev + 1",
             params![
                 t.id,
@@ -266,6 +272,7 @@ impl Store {
                 t.target_port.map(i64::from),
                 t.via_session_id.as_ref().map(|s| s.as_str()),
                 i64::from(t.auto_start),
+                t.group,
             ],
         )
         .map_err(map_sqlite)?;
@@ -510,7 +517,7 @@ impl Store {
             .conn
             .prepare(
                 "SELECT id, name, kind, listen_host, listen_port, target_host, target_port,
-                        via_session_id, auto_start
+                        via_session_id, auto_start, grp
                  FROM tunnels ORDER BY name, id",
             )
             .map_err(map_sqlite)?;
@@ -526,13 +533,14 @@ impl Store {
                     row.get::<_, Option<i64>>(6)?,
                     row.get::<_, Option<String>>(7)?,
                     row.get::<_, i64>(8)?,
+                    row.get::<_, Option<String>>(9)?,
                 ))
             })
             .map_err(map_sqlite)?;
 
         let mut out = Vec::new();
         for r in rows {
-            let (id, name, kind_s, listen_host, listen_port, th, tp, via, auto_start) =
+            let (id, name, kind_s, listen_host, listen_port, th, tp, via, auto_start, grp) =
                 r.map_err(map_sqlite)?;
             let kind = match kind_s.as_str() {
                 "local" => TunnelKind::Local,
@@ -555,6 +563,7 @@ impl Store {
                 target_port: tp.and_then(|p| u16::try_from(p).ok()),
                 via_session_id: via.map(SessionId::from),
                 auto_start: auto_start != 0,
+                group: grp,
             });
         }
         Ok(out)
@@ -839,6 +848,7 @@ mod tests {
             target_port: Some(3306),
             via_session_id: None,
             auto_start: true,
+            group: Some("生产".into()),
         };
 
         s.upsert_tunnel(&spec).unwrap();

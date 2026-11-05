@@ -431,6 +431,9 @@ pub struct TunnelSpec {
     pub via_session_id: Option<SessionId>,
     /// `manual` / `onAppStart`：应用启动后自动拉起
     pub auto_start: bool,
+    /// 用户自定义分组（`NET-004`）。空表示不分组——界面退回按类型（`-L`/`-R`/`-D`）自动分。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 impl TunnelSpec {
@@ -702,6 +705,7 @@ mod tests {
             target_port: Some(3306),
             via_session_id: None,
             auto_start: false,
+            group: None,
         };
         assert!(base.validate().is_ok(), "正常的本地转发应当通过");
         assert!(base.wants_ephemeral_port(), "端口 0 表示系统分配");

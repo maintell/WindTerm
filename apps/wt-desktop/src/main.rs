@@ -2472,6 +2472,8 @@ struct TunnelDto {
     down_bytes: u64,
     /// 最近一次转发失败的原因；成功转发后清空。界面据此把「运行中」降级成红色
     last_error: Option<String>,
+    /// 用户自定义分组（`NET-004`）；空表示按类型自动分组
+    group: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -2489,6 +2491,9 @@ struct TunnelStartArg {
     /// 承载会话：存下来，下次可以从这条会话的凭据直接拉起
     #[serde(default)]
     via_session_id: Option<String>,
+    /// 用户自定义分组（`NET-004`）。空表示按类型自动分组
+    #[serde(default)]
+    group: Option<String>,
     #[serde(default)]
     listen_host: Option<String>,
     listen_port: u16,
@@ -2535,6 +2540,8 @@ fn tunnel_dto(meta: &TunnelMeta, fwd: &RunningTunnel) -> TunnelDto {
         up_bytes: s.up_bytes,
         down_bytes: s.down_bytes,
         last_error: s.last_error,
+        // 运行中的实例本身不带分组；`tunnel_stats` 会从配置缓存里补上
+        group: None,
     }
 }
 
@@ -2557,6 +2564,7 @@ fn tunnel_dto_from_spec(spec: &wt_core::TunnelSpec) -> TunnelDto {
         kind: kind.to_string(),
         listen: format!("{}:{}", spec.listen_host, spec.listen_port),
         target,
+        group: spec.group.clone(),
         via: spec
             .via_session_id
             .as_ref()
@@ -2759,6 +2767,12 @@ async fn tunnel_start(
         target_port: if dynamic { None } else { Some(arg.target_port) },
         via_session_id,
         auto_start: arg.auto_start.unwrap_or(false),
+        group: arg
+            .group
+            .as_deref()
+            .map(str::trim)
+            .filter(|g| !g.is_empty())
+            .map(str::to_string),
     };
     if socks_auth.is_some() {
         // 有代理口令就不落库：把它写进配置库等于把口令明文存盘。
@@ -2818,7 +2832,12 @@ fn tunnel_stats(state: State<'_, AppState>) -> Result<Vec<TunnelDto>, String> {
     let mut out = Vec::new();
     for spec in specs.iter() {
         match running.get(&spec.id) {
-            Some((meta, fwd)) => out.push(tunnel_dto(meta, fwd)),
+            Some((meta, fwd)) => {
+                // 运行中的实例拿不到分组，从配置缓存里补：界面的分组必须与库里一致
+                let mut dto = tunnel_dto(meta, fwd);
+                dto.group = spec.group.clone();
+                out.push(dto);
+            }
             None => out.push(tunnel_dto_from_spec(spec)),
         }
     }
