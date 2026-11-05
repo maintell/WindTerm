@@ -1823,6 +1823,16 @@ const KEYMAP_DEFAULT = {
   broadcast: { label: "多执行广播", chords: ["Ctrl+Shift+B"] },
   files: { label: "文件面板", chords: ["Ctrl+Shift+F"] },
   tunnels: { label: "隧道面板", chords: ["Ctrl+Shift+T"] },
+  // 下面这些是**真有行为**的，不是凑数：每一条都在 runAction 里有对应分支。
+  // 规格说 30+ 个动作，但填一堆点了没反应的条目比数量不够更糟。
+  newLocal: { label: "新建本地终端", chords: ["Ctrl+T"] },
+  nextTab: { label: "下一个标签", chords: ["Ctrl+Tab"] },
+  prevTab: { label: "上一个标签", chords: ["Ctrl+Shift+Tab"] },
+  findNext: { label: "查找下一个", chords: ["F3"] },
+  findPrev: { label: "查找上一个", chords: ["Shift+F3"] },
+  settingsOpen: { label: "打开设置", chords: ["Ctrl+,"] },
+  keysOpen: { label: "键位设置", chords: ["Ctrl+K"] },
+  splitToggle: { label: "左右分屏", chords: ["Ctrl+Shift+S"] },
 };
 
 
@@ -1857,6 +1867,17 @@ function chordOwner(chord, exceptAction) {
   return null;
 }
 
+/** 在标签之间循环切换（`TER-020` 的「下一个/上一个标签」）。只有一条时不算命中。 */
+function cycleTab(delta) {
+  const order = [...sessions.values()];
+  if (order.length < 2) return false;
+  const at = order.indexOf(active);
+  const next = order[(at + delta + order.length) % order.length];
+  if (!next) return false;
+  setActive(next);
+  return true;
+}
+
 function runAction(action) {
   switch (action) {
     case "copy":
@@ -1886,6 +1907,31 @@ function runAction(action) {
       return true;
     case "tunnels":
       document.getElementById("tunnels-toggle").click();
+      return true;
+    case "newLocal":
+      void openLocal();
+      return true;
+    case "nextTab":
+      return cycleTab(1);
+    case "prevTab":
+      return cycleTab(-1);
+    case "findNext":
+    case "findPrev": {
+      if (findBar.hidden || !active) return false;
+      const q = findInput.value;
+      const opts = { decorations: FIND_DECORATIONS };
+      if (action === "findNext") active.search.findNext(q, opts);
+      else active.search.findPrevious(q, opts);
+      return true;
+    }
+    case "settingsOpen":
+      openSettings();
+      return true;
+    case "keysOpen":
+      keysOpen.click();
+      return true;
+    case "splitToggle":
+      document.getElementById("split-toggle").click();
       return true;
     default:
       return false;
@@ -4792,7 +4838,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-84",
+  ui: "wt-ui-86",
   /** 「本次记住」存了几条（验收用：只回数量，不回口令） */
   sessionPasswords() {
     return sessionPasswords.size;

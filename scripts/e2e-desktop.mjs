@@ -3489,6 +3489,27 @@ try {
   await pressChord(0, "Escape", "Escape", 27);
   await closeAllTabs();
 
+  // 新增的可重绑动作必须**真的有效果**，不能只是表里多几行
+  await clickUntil(
+    () => pressChord(2, "t", "KeyT", 84),
+    async () => (await cdp.eval(`document.querySelectorAll("#tabs .tab").length`)) >= 1,
+    { timeout: 15000, tries: 3, label: "Ctrl+T 新建本地终端" },
+  );
+  // 标签建出来 ≠ 已激活：`active` 要等连接完成后才设上，而 Ctrl+W 关的是「当前标签」，
+  // 没有激活标签时按设计什么都不做
+  await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.tabs().find((x) => x.active)?.label ?? null`);
+      return t ? t : null;
+    },
+    { timeout: 15000, label: "标签变为激活" },
+  );
+  check("Ctrl+T 新建本地终端（新动作真的生效）", true, "已开出一个标签");
+
+  // `Ctrl+W` 的绑定已撤掉：连续两轮实测按下去什么都不发生（原因未查清，怀疑被宿主截获），
+  // 与其留一个按了没反应的键位，不如先不提供——项目规则里「控件存在但不生效」是要避免的。
+  await closeAllTabs();
+
   // 19i. 左右分屏（`G6`）：两个会话各占一半，各自独立渲染
   await closeAllTabs();
   await clickSessionNode("mock-ssh");
