@@ -3612,6 +3612,84 @@ try {
   );
   check("Ctrl+T 新建本地终端（新动作真的生效）", true, "已开出一个标签");
 
+  // 19k-1. `Ctrl+Tab` 按**最近使用**切，不是按标签位置（`TER-001` / `TER-020`）
+  //
+  // 三条标签上位置顺序与最近使用顺序必然不同：先激活第一条，再按 Ctrl+Tab，
+  // 应该回到「上一条用过的」（第三条）；按位置切会落到第二条。这一点分得清，
+  // 断言才有意义。
+  await closeAllTabs();
+  for (let i = 0; i < 3; i += 1) {
+    await clickElement("#open");
+    await waitFor(
+      async () =>
+        (await cdp.eval(`window.__wt.tabs().length`)) === i + 1 ? true : null,
+      { timeout: 20000, label: `第 ${i + 1} 条本地标签` },
+    );
+  }
+  // `__wt.tabs()` 读的是会话集合，不是 DOM：本地 shell 起来之前标签还没画出来、
+  // 名字也还是默认的「本地终端」。所以要等到「渲染出 3 个且名字都定了」再动。
+  const tabReady = await waitFor(
+    async () => {
+      const t = await cdp.eval(`({
+        labels: window.__wt.tabs().map((x) => x.label),
+        boxes: [...document.querySelectorAll("#tabs .tab")].map((el) => {
+          const r = el.getBoundingClientRect();
+          return {
+            label: el.querySelector(".label")?.textContent ?? "",
+            x: Math.round(r.x + r.width / 2),
+            y: Math.round(r.y + r.height / 2),
+          };
+        }),
+      })`);
+      return t.labels.length === 3 &&
+        t.boxes.length === 3 &&
+        t.boxes.every((b) => b.label && b.label !== "本地终端")
+        ? t
+        : null;
+    },
+    { timeout: 20000, label: "三条标签渲染完成" },
+  ).catch(() => null);
+  check(
+    "三条标签都渲染出来了（前提）",
+    tabReady !== null,
+    tabReady ? JSON.stringify(tabReady.labels) : "没渲染全",
+  );
+  const tabLabels = tabReady?.labels ?? [];
+  const boxOf = (label) => tabReady?.boxes.find((b) => b.label === label) ?? null;
+  if (boxOf(tabLabels[0])) {
+    await clickAt(boxOf(tabLabels[0]));
+    await waitFor(
+      async () =>
+        (await cdp.eval(`window.__wt.tabs().find((t) => t.active)?.label ?? null`)) === tabLabels[0]
+          ? true
+          : null,
+      { timeout: 5000, label: "激活第一条标签" },
+    );
+  }
+  await pressChord(2, "Tab", "Tab", 9);
+  const mruFirst = await waitFor(
+    async () => {
+      const a = await cdp.eval(`window.__wt.tabs().find((t) => t.active)?.label ?? null`);
+      return a === tabLabels[2] ? a : null;
+    },
+    { timeout: 4000, label: "Ctrl+Tab 跳到上一条用过的" },
+  ).catch(() => null);
+  check(
+    "Ctrl+Tab 按最近使用切，不是按标签位置（TER-001）",
+    mruFirst === tabLabels[2],
+    `${mruFirst ?? "没切"}（位置上的是 ${tabLabels[1]}）`,
+  );
+  await pressChord(2, "Tab", "Tab", 9);
+  const mruDeeper = await waitFor(
+    async () => {
+      const a = await cdp.eval(`window.__wt.tabs().find((t) => t.active)?.label ?? null`);
+      return a === tabLabels[1] ? a : null;
+    },
+    { timeout: 4000, label: "再按一次沿最近顺序往下" },
+  ).catch(() => null);
+  check("再按一次沿最近顺序继续往下（TER-001）", mruDeeper === tabLabels[1], `${mruDeeper ?? "没切"}`);
+  await closeAllTabs();
+
   // `Ctrl+W` 的绑定已撤掉：连续两轮实测按下去什么都不发生（原因未查清，怀疑被宿主截获），
   // 与其留一个按了没反应的键位，不如先不提供——项目规则里「控件存在但不生效」是要避免的。
   await closeAllTabs();

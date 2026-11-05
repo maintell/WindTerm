@@ -90,6 +90,24 @@ const sessions = new Map();
 let active = null;
 let nextViewId = 1;
 
+/**
+ * 最近使用的标签顺序（`TER-001` / `TER-020`），第一个永远是最新激活的。
+ *
+ * 规格要求 `Ctrl+Tab` 按 **MRU** 而不是标签位置切换：标签一多，按位置切几乎必然
+ * 切错。做法与 Alt+Tab 一致——连续按时沿「最近顺序」往下走，停手 1.5 秒后结束这一轮。
+ */
+const mruViews = [];
+/** 正在连续切换时的那一轮顺序快照与游标；`null` 表示这一轮还没开始 */
+let mruBurst = null;
+let mruTimer = null;
+
+/** 把某个标签提到 MRU 最前（切走时用；关闭标签时顺手清掉已消失的） */
+function mruRemember(view) {
+  const at = mruViews.indexOf(view);
+  if (at >= 0) mruViews.splice(at, 1);
+  mruViews.unshift(view);
+}
+
 function setStatus(text) {
   statusEl.textContent = text;
 }
@@ -633,6 +651,7 @@ function moveTab(from, to) {
 
 function setActive(view) {
   active = view;
+  if (view) mruRemember(view);
   for (const v of sessions.values()) {
     v.el.classList.toggle("active", v === view);
   }
@@ -847,6 +866,9 @@ async function closeView(view) {
     }
   }
   sessions.delete(view.id);
+  // MRU 里也要摘掉：否则关掉的 view（连它的 xterm 实例）会被一直引用着
+  const mruAt = mruViews.indexOf(view);
+  if (mruAt >= 0) mruViews.splice(mruAt, 1);
   view.el.remove();
   // 关掉的正是右侧那个：分屏跟着取消，别留一个空 pane
   if (splitViewId === view.id) {
@@ -1931,13 +1953,33 @@ function chordOwner(chord, exceptAction) {
   return null;
 }
 
-/** 在标签之间循环切换（`TER-020` 的「下一个/上一个标签」）。只有一条时不算命中。 */
+/**
+ * MRU 切换标签（`TER-020` 的「下一个/上一个标签」，`TER-001` 要求按最近使用排序）。
+ *
+ * 第一次按进入一轮新的切换：顺序是「当前 → 最近用过的 → 再早的…」；之后每次按都在
+ * 这一轮里前后走（到两头就绕回去）。停手 1.5 秒，这一轮结束，顺序按新的使用情况重排。
+ * 只有一条标签时不算命中（返回 false，让按键继续往下传）。
+ */
 function cycleTab(delta) {
-  const order = [...sessions.values()];
-  if (order.length < 2) return false;
-  const at = order.indexOf(active);
-  const next = order[(at + delta + order.length) % order.length];
-  if (!next) return false;
+  if (sessions.size < 2) return false;
+  const now = Date.now();
+  if (!mruBurst || now > mruBurst.expires) {
+    const order = active ? [active] : [];
+    for (const v of mruViews) {
+      if (v !== active && sessions.has(v.id)) order.push(v);
+    }
+    mruBurst = { order, cursor: 0, expires: now + 1500 };
+  }
+  const { order } = mruBurst;
+  const step = delta > 0 ? 1 : -1;
+  mruBurst.cursor = (mruBurst.cursor + step + order.length) % order.length;
+  mruBurst.expires = now + 1500;
+  if (mruTimer) clearTimeout(mruTimer);
+  mruTimer = setTimeout(() => {
+    mruBurst = null;
+  }, 1600);
+  const next = order[mruBurst.cursor];
+  if (!next || next === active || !sessions.has(next.id)) return false;
   setActive(next);
   return true;
 }
@@ -5086,7 +5128,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-96",
+  ui: "wt-ui-97",
   /**
    * 验收用：刷新会话树并等它**画完**。
    *
