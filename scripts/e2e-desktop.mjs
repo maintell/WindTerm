@@ -7348,6 +7348,26 @@ try {
     `${i18nInfo.used.length} 处`,
   );
 
+  // 密码保存默认值（`SEC-002` 规格：「可在设置中改为默认不勾」）：设置里改的初值
+  // 必须真的落到连接表单上——只改配置不改表单，等于这个设置没有用
+  const rememberProbe = await cdp.eval(`(() => {
+    const sel = document.getElementById("remember-default");
+    sel.value = "no";
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    return { setting: sel.value, form: document.getElementById("remember").value };
+  })()`);
+  check(
+    "设置里改「密码保存默认值」会同步到连接表单（SEC-002）",
+    rememberProbe.setting === "no" && rememberProbe.form === "no",
+    `设置=${rememberProbe.setting} 表单=${rememberProbe.form}`,
+  );
+  await cdp.eval(`(() => {
+    const sel = document.getElementById("remember-default");
+    sel.value = "persist";
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  })()`);
+
   // 死控件门禁（项目硬规则「控件存在但点了不生效」）：逐个对值型设置控件派发
   // change（不改值、零副作用），验证每个都真的触发了 savePrefs。
   // 纯静态「有 getElementById」不够——接了引用但忘了挂监听，用户改了没反应最难发现。

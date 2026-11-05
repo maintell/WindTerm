@@ -903,6 +903,10 @@ struct PrefsDto {
     /// 界面语言（`SET-012`）：`zh` / `en`。只覆盖标了 `data-i18n` 的元素，
     /// 其余文案仍是中文硬编码——如实写在 README 里。
     language: String,
+    /// 「密码」控件的默认值（`SEC-002` 规格：「保存勾选框默认勾选，可在设置中改为
+    /// 默认不勾」）：`persist` 永久记住（默认，与三态控件的第一项一致）/ `session`
+    /// 本次记住 / `no` 不记住。只影响**新建连接时表单的初值**，用户随时可改。
+    remember_default: String,
 }
 
 /// 一套导入的配色：4 个界面色 + 16 个 ANSI 色，和内置的结构一致。
@@ -946,6 +950,7 @@ impl Default for PrefsDto {
             auto_copy_on_select: true,
             auto_copy_delay_ms: 120,
             language: "zh".into(),
+            remember_default: "persist".into(),
         }
     }
 }

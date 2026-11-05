@@ -63,6 +63,8 @@ let pwFromStore = false;
 let keyPem = null;
 
 const rememberBox = document.getElementById("remember");
+/** 「密码」控件的默认值（`SEC-002`）：只影响新建连接时表单的初值 */
+let rememberDefault = "persist";
 const vaultRow = document.getElementById("vault-row");
 const masterPassInput = document.getElementById("master-pass");
 const vaultOpenBtn = document.getElementById("vault-open");
@@ -145,6 +147,7 @@ const STATUS_EN = {
   "还没有广播结果可导出": "No broadcast results to export yet",
   "实时广播已开启": "Live broadcast on",
   "危险命令被拦下，实时广播已关闭": "Dangerous command blocked; live broadcast turned off",
+  "密码保存默认值已更新": "Saved password default updated",
   "实时广播已关闭": "Live broadcast off",
   "已关闭分屏": "Split view closed",
   "分屏需要至少两个已连接的会话": "Split view needs at least two connected sessions",
@@ -286,6 +289,9 @@ async function loadPrefs() {
     if (typeof p.localShellArgs === "string") localShellArgs = p.localShellArgs;
     if (typeof p.filesAutoOpen === "boolean") filesAutoOpen = p.filesAutoOpen;
     if (typeof p.filesShowHidden === "boolean") filesShowHidden = p.filesShowHidden;
+    if (["persist", "session", "no"].includes(p.rememberDefault)) {
+      rememberDefault = p.rememberDefault;
+    }
     if (typeof p.showSizeCol === "boolean") showSizeCol = p.showSizeCol;
     if (typeof p.showModeCol === "boolean") showModeCol = p.showModeCol;
     if (Number.isFinite(p.autoRefreshSecs)) autoRefreshSecs = clampNum(p.autoRefreshSecs, 0, 3600);
@@ -339,6 +345,7 @@ async function savePrefs() {
         localShellArgs,
         filesAutoOpen,
         filesShowHidden,
+        rememberDefault,
         showSizeCol,
         showModeCol,
         autoRefreshSecs,
@@ -5285,6 +5292,19 @@ filesShowHiddenBox.addEventListener("change", () => {
   setStatus(filesShowHidden ? "显示隐藏文件：开" : "显示隐藏文件：关");
 });
 
+// 密码保存默认值（`SEC-002` 规格：「可在设置中改为默认不勾」）。
+// 它改的是**表单初值**，不是「已经记住的密码」——已存的口令要删得去保险库那边，
+// 所以这里只把新值同步到表单，不碰任何已存凭据。
+const rememberDefaultBox = document.getElementById("remember-default");
+rememberDefaultBox.addEventListener("change", () => {
+  rememberDefault = rememberDefaultBox.value;
+  // 表单上正显示着旧默认值就换掉；用户已经手改成别的话... 无从判断，直接同步更可预期
+  rememberBox.value = rememberDefault;
+  vaultRow.hidden = rememberBox.value !== "persist";
+  void savePrefs();
+  setStatus("密码保存默认值已更新");
+});
+
 // ── 设置中心（`SET-001`）──────────────────────────────────
 //
 // 控件只有这一份：底栏不再重复放主题/字体/字号/编码，避免「两处都能改、状态不一致」。
@@ -5306,8 +5326,8 @@ const SET_GROUPS = [
   ["常规", ["ui-lang", "local-shell", "local-shell-path"]],
   ["外观", ["look-size", "look-height", "tabs-position"]],
   ["终端", ["encoding", "look-theme", "theme-import-open", "look-font", "look-scrollback", "term-right-click", "look-word-sep", "look-paste-trim", "look-autocopy-on", "look-autocopy"]],
-  ["文件", ["files-auto-open", "files-show-hidden", "files-col-size", "files-auto-refresh"]],
-  ["安全", ["master-open", "vault-rotate", "known-open"]],
+  ["文件", ["files-auto-open", "files-show-hidden", "files-col-size", "files-col-mode", "files-auto-refresh"]],
+  ["安全", ["master-open", "remember-default", "vault-rotate", "known-open"]],
   // 按「行里第一个带 id 的元素」认领：配置文件那行首个 id 是路径 span，不是按钮
   ["网络", ["net-timeout", "net-keepalive", "net-max-missed"]],
   ["高级", ["app-prefs-path", "prefs-reset"]],
@@ -5321,6 +5341,7 @@ const SET_GROUPS = [
  * 动作类行（管理主密码、导入配色、重置偏好…）没有「默认值」，不登记。
  */
 const SET_META = {
+  "remember-default": ["永久记住", false],
   encoding: ["UTF-8", false],
   "look-theme": ["WindTerm Dark", false],
   "look-font": ["JetBrains Mono", false],
@@ -5585,6 +5606,7 @@ const I18N = {
     "set.themeImport": "导入配色方案",
     "set.font": "字体",
     "set.master": "主密码",
+    "set.rememberDefault": "密码保存默认值",
     "set.knownHosts": "已知主机",
     "set.configFile": "配置文件",
     "set.resetPrefs": "重置偏好",
@@ -5630,6 +5652,7 @@ const I18N = {
     "set.themeImport": "Import color scheme",
     "set.font": "Font",
     "set.master": "Master password",
+    "set.rememberDefault": "Saved password default",
     "set.knownHosts": "Known hosts",
     "set.configFile": "Config file",
     "set.resetPrefs": "Reset preferences",
@@ -6258,6 +6281,8 @@ window.__wt = {
   await refreshAppPaths();
   filesAutoOpenBox.checked = filesAutoOpen;
   filesShowHiddenBox.checked = filesShowHidden;
+  rememberDefaultBox.value = rememberDefault;
+  rememberBox.value = rememberDefault;
   filesColSizeBox.checked = showSizeCol;
   filesColModeBox.checked = showModeCol;
   filesAutoRefreshSelect.value = String(autoRefreshSecs);
