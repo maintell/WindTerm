@@ -233,6 +233,10 @@ async function loadPrefs() {
     if (Number.isFinite(p.netConnectTimeoutSecs)) netTimeout = p.netConnectTimeoutSecs;
     if (Number.isFinite(p.netKeepaliveSecs)) netKeepalive = p.netKeepaliveSecs;
     if (Number.isFinite(p.netKeepaliveMaxMissed)) netMaxMissed = p.netKeepaliveMaxMissed;
+    if (p.rightClickAction === "menu" || p.rightClickAction === "paste") {
+      rightClickAction = p.rightClickAction;
+    }
+    if (typeof p.wordSeparatorExtra === "string") wordSeparatorExtra = p.wordSeparatorExtra;
     if (Number.isFinite(p.autoCopyDelayMs)) autoCopyDelay = clampNum(p.autoCopyDelayMs, 0, 2000);
     if (typeof p.autoCopyOnSelect === "boolean") autoCopy = p.autoCopyOnSelect;
     if (p.language === "en" || p.language === "zh") uiLang = p.language;
@@ -273,6 +277,8 @@ async function savePrefs() {
         netConnectTimeoutSecs: netTimeout,
         netKeepaliveSecs: netKeepalive,
         netKeepaliveMaxMissed: netMaxMissed,
+        rightClickAction,
+        wordSeparatorExtra,
         autoCopyOnSelect: autoCopy,
         autoCopyDelayMs: autoCopyDelay,
         language: uiLang,
@@ -376,6 +382,10 @@ function createView(label) {
   term.loadAddon(search);
   term.open(el);
 
+  // 记下 xterm 的默认分隔符（第一次建视图时），并套上用户额外加的那几个字符
+  if (defaultWordSeparator === null) defaultWordSeparator = term.options.wordSeparator;
+  if (wordSeparatorExtra) term.options.wordSeparator = defaultWordSeparator + wordSeparatorExtra;
+
   const view = {
     id: nextViewId++,
     label,
@@ -473,12 +483,18 @@ function createView(label) {
 
   // 右键与中键粘贴（TER-011）。用捕获阶段：应用开启鼠标上报时，
   // xterm 会先把这两个键拿去当鼠标事件，冒泡阶段就轮不到我们了。
+  // 右键（`TER-011`）：规格要求**默认弹菜单**，可配成「直接粘贴」，那时的菜单用
+  // `Ctrl+右键` / `Shift+右键` 唤出。之前这里固定是粘贴，菜单根本不存在。
   el.addEventListener(
     "contextmenu",
     (ev) => {
       ev.preventDefault();
       if (view !== active) return;
-      void pasteFromClipboard(view);
+      if (rightClickAction === "paste" && !ev.ctrlKey && !ev.shiftKey) {
+        void pasteFromClipboard(view);
+        return;
+      }
+      openTermMenu(ev.clientX, ev.clientY, view);
     },
     true,
   );
@@ -745,6 +761,32 @@ function activateByUser(view) {
     if (v !== view && !v.running) v.focusOnReady = false;
   }
   setActive(view);
+}
+
+/**
+ * 终端里的右键菜单（`TER-011`）。
+ *
+ * 复用会话树的那个浮层（`#ctx-menu`），但用 `data-kind="terminal"` 标记来源——
+ * 否则验收脚本读 `#ctx-menu button` 时分不清拿到的是哪一套菜单。
+ */
+function openTermMenu(x, y, view) {
+  const hasSel = Boolean(view.term.getSelection());
+  showCtxMenu(
+    x,
+    y,
+    [
+      {
+        label: "复制",
+        run: () => (hasSel ? copySelection() : setStatus("没有选中内容")),
+      },
+      { label: "粘贴", run: () => pasteFromClipboard(view) },
+      { label: "全选", run: () => view.term.selectAll() },
+      { label: "查找…", run: () => openFind() },
+      { label: "清屏", run: () => view.term.clear() },
+      { label: "左右分屏", run: () => runAction("splitToggle") },
+    ],
+    "terminal",
+  );
 }
 
 /** 会话建立后的公共收尾：激活标签、开始拉取 */
@@ -1241,7 +1283,9 @@ function closeCtxMenu() {
   ctxMenu.hidden = true;
 }
 
-function showCtxMenu(x, y, items) {
+function showCtxMenu(x, y, items, kind = "session") {
+  // 记来源：会话树的菜单和终端里的菜单共用一个浮层，验收要能分清是哪一个
+  ctxMenu.dataset.kind = kind;
   ctxMenu.textContent = "";
   for (const it of items) {
     const b = document.createElement("button");
@@ -1838,6 +1882,12 @@ function applyLook() {
 let autoCopy = true;
 /** 防抖延迟（毫秒，`TER-011`）：拖选会连续触发，不防抖就每挪一格写一次剪贴板 */
 let autoCopyDelay = 120;
+/** 右键行为（`TER-011`）：`menu` 弹菜单（规格默认）/ `paste` 直接粘贴 */
+let rightClickAction = "menu";
+/** 双击选词额外当分隔符的字符（`TER-011`）：空串表示只用 xterm 默认那一套 */
+let wordSeparatorExtra = "";
+/** xterm 的默认分隔符：第一次建视图时记下来，用户清空自定义时要还原成它 */
+let defaultWordSeparator = null;
 /** 自动复制失败只提示一次，避免每拖一次选就刷一条状态 */
 let autoCopyWarned = false;
 
@@ -3624,6 +3674,8 @@ const encodingSelect = document.getElementById("encoding");
 const lookThemeSelect = document.getElementById("look-theme");
 const lookAutoCopySelect = document.getElementById("look-autocopy");
 const lookAutoCopyOnBox = document.getElementById("look-autocopy-on");
+const termRightClickSelect = document.getElementById("term-right-click");
+const lookWordSepInput = document.getElementById("look-word-sep");
 const lookFontSelect = document.getElementById("look-font");
 const lookFontWarn = document.getElementById("look-font-warn");
 const lookMonoWarn = document.getElementById("look-mono-warn");
@@ -4274,6 +4326,8 @@ function initLookControls() {
   lookScrollbackInput.value = String(look.scrollback);
   lookAutoCopySelect.value = String(autoCopyDelay);
   lookAutoCopyOnBox.checked = autoCopy;
+  termRightClickSelect.value = rightClickAction;
+  lookWordSepInput.value = wordSeparatorExtra;
 }
 
 lookThemeSelect.addEventListener("change", () => {
@@ -4284,6 +4338,33 @@ lookThemeSelect.addEventListener("change", () => {
 lookFontSelect.addEventListener("change", () => {
   look.fontFamily = lookFontSelect.value;
   applyLook();
+});
+
+// 右键行为（`TER-011`）：规格默认弹菜单，可配成直接粘贴——那时用 `Ctrl+右键`
+// 或 `Shift+右键` 唤出菜单。
+termRightClickSelect.addEventListener("change", () => {
+  rightClickAction = termRightClickSelect.value === "paste" ? "paste" : "menu";
+  void savePrefs();
+  setStatus(
+    rightClickAction === "paste"
+      ? "右键：直接粘贴（Ctrl+右键 / Shift+右键 弹菜单）"
+      : "右键：弹菜单",
+  );
+});
+
+// 双击选词的额外分隔符（`TER-011`）：直接改所有视图的 `wordSeparator`，立刻生效。
+// 默认留空——xterm 默认那条能让 `user@host:/var/log` 一次选中，别替用户改掉。
+lookWordSepInput.addEventListener("change", () => {
+  wordSeparatorExtra = lookWordSepInput.value.trim();
+  for (const v of sessions.values()) {
+    v.term.options.wordSeparator = (defaultWordSeparator ?? "") + wordSeparatorExtra;
+  }
+  void savePrefs();
+  setStatus(
+    wordSeparatorExtra
+      ? `双击选词：额外把「${wordSeparatorExtra}」当分隔符`
+      : "双击选词：只用默认分隔符",
+  );
 });
 
 // 选中即复制的防抖延迟（`TER-011`）：拖选时每挪一格都写一次剪贴板很浪费，
@@ -4675,7 +4756,7 @@ const setEmpty = document.getElementById("set-empty");
 const SET_GROUPS = [
   ["常规", ["ui-lang", "local-shell", "local-shell-path"]],
   ["外观", ["look-size", "look-height"]],
-  ["终端", ["encoding", "look-theme", "theme-import-open", "look-font", "look-scrollback", "look-autocopy-on", "look-autocopy"]],
+  ["终端", ["encoding", "look-theme", "theme-import-open", "look-font", "look-scrollback", "term-right-click", "look-word-sep", "look-autocopy-on", "look-autocopy"]],
   ["文件", ["files-auto-open"]],
   ["安全", ["master-open", "known-open"]],
   // 按「行里第一个带 id 的元素」认领：配置文件那行首个 id 是路径 span，不是按钮
@@ -4704,6 +4785,8 @@ const SET_META = {
   "net-timeout": ["15 秒", false],
   "net-keepalive": ["30 秒", false],
   "net-max-missed": ["3 次", false],
+  "term-right-click": ["弹菜单", false],
+  "look-word-sep": ["（空）", false],
   "look-autocopy-on": ["开", false],
   "look-autocopy": ["120 毫秒", false],
 };
@@ -4933,6 +5016,8 @@ const I18N = {
     "set.fontSize": "字号",
     "set.lineHeight": "行高",
     "set.scrollback": "回滚行数",
+    "set.rightClick": "右键行为",
+    "set.wordSeparator": "双击选词的额外分隔符",
     "set.autoCopy": "选中即复制",
     "set.autoCopyDelay": "选中即复制延迟",
     "set.encoding": "终端编码",
@@ -4970,6 +5055,8 @@ const I18N = {
     "set.fontSize": "Font size",
     "set.lineHeight": "Line height",
     "set.scrollback": "Scrollback lines",
+    "set.rightClick": "Right-click action",
+    "set.wordSeparator": "Extra word separators (double-click)",
     "set.autoCopy": "Copy on select",
     "set.autoCopyDelay": "Copy-on-select delay",
     "set.encoding": "Terminal encoding",
@@ -5224,7 +5311,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-103",
+  ui: "wt-ui-105",
   /**
    * 验收用：刷新会话树并等它**画完**。
    *
@@ -5478,6 +5565,10 @@ window.__wt = {
       ...look,
       appliedBackground: active?.term.options.theme?.background ?? null,
       appliedScrollback: active?.term.options.scrollback ?? null,
+      // 双击选词的分隔符（`TER-011`）：验收要能分清「设置没生效」与「xterm 不认」，
+      // 只看最终选区是分不出来的
+      wordSeparator: active?.term.options.wordSeparator ?? null,
+      rightClickAction,
     };
   },
   /** 在激活会话里查找（验收与脚本用），返回是否命中与当前计数文本 */

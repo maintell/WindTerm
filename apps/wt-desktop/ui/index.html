@@ -1243,6 +1243,19 @@
           <span class="set-scope">全局</span>
           <input id="look-scrollback" type="number" min="1000" max="1000000" step="1000" />
         </div>
+        <div class="set-row" data-kw="右键 right click 菜单 menu 粘贴 paste context">
+          <span class="set-name" data-i18n="set.rightClick">右键行为</span>
+          <span class="set-scope">全局</span>
+          <select id="term-right-click">
+            <option value="menu">弹菜单</option>
+            <option value="paste">直接粘贴</option>
+          </select>
+        </div>
+        <div class="set-row" data-kw="双击 选词 分隔符 分隔 word separator 边界 符号">
+          <span class="set-name" data-i18n="set.wordSeparator">双击选词的额外分隔符</span>
+          <span class="set-scope">全局</span>
+          <input id="look-word-sep" type="text" placeholder="留空 = 只用默认" spellcheck="false" />
+        </div>
         <div class="set-row" data-kw="选中 复制 自动 autoselect copy 剪贴板 关闭 关掉">
           <span class="set-name" data-i18n="set.autoCopy">选中即复制</span>
           <span class="set-scope">全局</span>

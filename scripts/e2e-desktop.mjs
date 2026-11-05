@@ -1512,24 +1512,152 @@ try {
     `选区 ${JSON.stringify(triSel.slice(0, 40))}（${triSel.length} 字符）`,
   );
 
-  // 右键粘贴（H:rightclick-paste）。它走 `navigator.clipboard.readText()`，
-  // 这条 API 要用户激活才放行——用可信右键验证它在真实手势下到底通不通，
-  // 不通就把原因如实报出来，而不是留一个「点了没反应」。
+  // 右键（`TER-011` / `H:rightclick-paste`）：规格要求**默认弹菜单**，可配成直接粘贴。
+  // 两条都要验——只验其中一条，另一条坏了也没人知道。
+  const rightClickAt = async (modifiers = 0) => {
+    const rb = { x: wordPoint.x, y: wordPoint.y, button: "right", clickCount: 1, modifiers };
+    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...rb });
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...rb });
+  };
   await cdp.eval(`navigator.clipboard.writeText("echo right-paste\\r")`);
-  const rb = { x: wordPoint.x, y: wordPoint.y, button: "right", clickCount: 1 };
-  await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...rb });
-  await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...rb });
-  const rightStatus = await waitFor(
+  await rightClickAt();
+  const termMenu = await waitFor(
+    async () => {
+      const m = await cdp.eval(`({
+        hidden: document.getElementById("ctx-menu").hidden,
+        kind: document.getElementById("ctx-menu").dataset.kind ?? null,
+        items: [...document.querySelectorAll("#ctx-menu button")].map((b) => b.textContent),
+      })`);
+      return !m.hidden && m.kind === "terminal" ? m : null;
+    },
+    { timeout: 5000, label: "终端右键菜单" },
+  ).catch(() => null);
+  check(
+    "右键默认弹菜单（不是直接粘贴，TER-011）",
+    termMenu !== null && termMenu.items.includes("粘贴") && termMenu.items.includes("复制"),
+    termMenu ? JSON.stringify(termMenu.items) : "没弹菜单",
+  );
+  const rightBefore = await cdp.eval(`window.__wt.pasteCount`);
+  await clickCtxItem("粘贴");
+  const menuPasted = await waitFor(
     async () => {
       const s = await cdp.eval(`document.getElementById("status").textContent`);
-      return /^(已粘贴|读剪贴板)/.test(s) ? s : null;
+      return /^已粘贴/.test(s) ? s : null;
     },
-    { timeout: 8000, label: "右键粘贴反馈" },
+    { timeout: 8000, label: "菜单里的粘贴" },
+  ).catch(() => null);
+  check(
+    "菜单里的「粘贴」真的把剪贴板内容送进终端（TER-011）",
+    menuPasted !== null && (await cdp.eval(`window.__wt.pasteCount`)) > rightBefore,
+    `${menuPasted ?? "没粘贴"}`,
   );
-  // 这条**已经收紧成「必须真的粘上」**：早先 WebView2 里 `readText()` 拿不到权限，
-  // 右键只能退化，断言才放成「有反馈就算过」。现在右键是真的粘上了（连续多轮都是
-  // 「已粘贴 N 字符」），继续容忍退化就等于把回归放过去。
-  check("右键粘贴真的把剪贴板内容送进终端", /^已粘贴/.test(rightStatus), rightStatus);
+
+  // 切成「直接粘贴」：右键一下就粘，`Ctrl+右键` 才弹菜单
+  await openSettings();
+  await cdp.eval(`(() => {
+    const el = document.getElementById("term-right-click");
+    el.value = "paste";
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return el.value;
+  })()`);
+  await closeAllDialogs();
+  await cdp.eval(`navigator.clipboard.writeText("echo direct-paste" + String.fromCharCode(13))`);
+  const directBefore = await cdp.eval(`window.__wt.pasteCount`);
+  await rightClickAt();
+  const directPasted = await waitFor(
+    async () => ((await cdp.eval(`window.__wt.pasteCount`)) > directBefore ? true : null),
+    { timeout: 8000, label: "右键直接粘贴" },
+  ).catch(() => null);
+  const menuHidden = await cdp.eval(`document.getElementById("ctx-menu").hidden`);
+  check(
+    "配成「直接粘贴」后右键就粘、不弹菜单（TER-011）",
+    directPasted === true && menuHidden === true,
+    `粘贴=${directPasted === true}，菜单隐藏=${menuHidden}`,
+  );
+  await rightClickAt(2);
+  const ctrlMenu = await waitFor(
+    async () => {
+      const m = await cdp.eval(`({
+        hidden: document.getElementById("ctx-menu").hidden,
+        kind: document.getElementById("ctx-menu").dataset.kind ?? null,
+      })`);
+      return !m.hidden && m.kind === "terminal" ? true : null;
+    },
+    { timeout: 5000, label: "Ctrl+右键弹菜单" },
+  ).catch(() => null);
+  check("配成「直接粘贴」时 Ctrl+右键仍能弹菜单（TER-011）", ctrlMenu === true, ctrlMenu === true);
+  await cdp.eval(`(() => { document.getElementById("ctx-menu").hidden = true; return true; })()`);
+  // 复原：默认是弹菜单，别把后面的用例带偏
+  await openSettings();
+  await cdp.eval(`(() => {
+    const el = document.getElementById("term-right-click");
+    el.value = "menu";
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return el.value;
+  })()`);
+  await closeAllDialogs();
+
+  // 双击选词的分隔符可配（`TER-011`）：把 `:` 也算分隔符之后，
+  // `user@host:/var/log` 只选到冒号前；清空后恢复「整串一次选中」。
+  await openSettings();
+  await cdp.eval(`(() => {
+    const el = document.getElementById("look-word-sep");
+    el.value = ":";
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return el.value;
+  })()`);
+  await closeAllDialogs();
+  // 先确认「设置真的进了 xterm 的 options」——只看最终选区，分不清是设置没生效还是
+  // xterm 不认这个选项。
+  const sepApplied = await cdp.eval(`window.__wt.look.wordSeparator`);
+  check(
+    "额外分隔符真的写进 xterm 的 wordSeparator（TER-011）",
+    typeof sepApplied === "string" && sepApplied.endsWith(":") ,
+    `${JSON.stringify(sepApplied)}`,
+  );
+  // 点位要**当场现算**：这一段前面粘了几条命令，终端滚过屏，之前算好的 `wordPoint`
+  // 已经指到别的行上（上一轮因此选中了 `windtermok`）。取 `user@host` 而不是整串——
+  // 整串的中心正好落在 `:` 上，双击一个分隔符字符选到哪一边是不确定的。
+  const sepPoint = await cdp.eval(`window.__wt.textPoint("user@host")`);
+  if (!sepPoint) throw new Error("屏幕上找不到 user@host，无法验分隔符");
+  await doubleClickAt(sepPoint);
+  const sepSel = await waitFor(
+    async () => {
+      const s = await cdp.eval(`window.__wt.selection()`);
+      return s === "user@host" ? s : null;
+    },
+    { timeout: 5000, label: "自定义分隔符选词" },
+  ).catch(() => null);
+  const sepActual = await cdp.eval(`window.__wt.selection()`);
+  check(
+    "把「:」也当分隔符后，双击只选到冒号前（TER-011）",
+    sepSel === "user@host",
+    `选区 ${JSON.stringify(sepActual)}`,
+  );
+  await openSettings();
+  await cdp.eval(`(() => {
+    const el = document.getElementById("look-word-sep");
+    el.value = "";
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return el.value;
+  })()`);
+  await closeAllDialogs();
+  // 点位同样现算：上面那次双击也改变了选区，屏幕本身没动，但别依赖旧坐标
+  const sepPointBack = await cdp.eval(`window.__wt.textPoint("user@host")`);
+  if (!sepPointBack) throw new Error("屏幕上找不到 user@host，无法验默认分隔符");
+  await doubleClickAt(sepPointBack);
+  const sepBack = await waitFor(
+    async () => {
+      const s = await cdp.eval(`window.__wt.selection()`);
+      return s && s.includes(":") ? s : null;
+    },
+    { timeout: 5000, label: "清空分隔符后选词" },
+  ).catch(() => null);
+  check(
+    "清空额外分隔符后恢复「整串一次选中」（TER-011）",
+    sepBack === "user@host:/var/log",
+    `${JSON.stringify(sepBack)}`,
+  );
 
   // 10. 尺寸变化 → 重新 fit → 后端收到 resize（TER-012）
   //     CDP 造不出真正的窗口拖拽，这里改侧栏宽度让终端变窄，再派发 resize 事件，

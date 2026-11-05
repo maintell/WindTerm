@@ -822,6 +822,12 @@ struct PrefsDto {
     net_keepalive_secs: u32,
     /// keepalive 连续丢失多少次算断线
     net_keepalive_max_missed: u32,
+    /// 终端里右键干什么（`TER-011`）：`menu` 弹菜单（规格默认）/ `paste` 直接粘贴，
+    /// 后者用 `Ctrl+右键` 或 `Shift+右键` 唤出菜单。
+    right_click_action: String,
+    /// 双击选词时**额外**当分隔符的字符（`TER-011`）。空串表示只用 xterm 默认那一套；
+    /// 想把 `/` 也当分隔符的人填一个 `/` 即可（默认不填，`user@host:/var/log` 才能一次选中）。
+    word_separator_extra: String,
     /// 选中即复制（`TER-011`）：规格要求默认开、可关。有人剪贴板里放着别的东西，
     /// 选区一动就被覆盖很烦。关掉之后 `Ctrl+Shift+C` 仍然可用。
     auto_copy_on_select: bool,
@@ -865,6 +871,8 @@ impl Default for PrefsDto {
             net_connect_timeout_secs: 15,
             net_keepalive_secs: 30,
             net_keepalive_max_missed: 3,
+            right_click_action: "menu".into(),
+            word_separator_extra: String::new(),
             auto_copy_on_select: true,
             auto_copy_delay_ms: 120,
             language: "zh".into(),
