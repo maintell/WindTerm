@@ -143,6 +143,9 @@ const STATUS_EN = {
   "没有可广播的会话": "No sessions to broadcast to",
   "已取消广播": "Broadcast cancelled",
   "还没有广播结果可导出": "No broadcast results to export yet",
+  "实时广播已开启": "Live broadcast on",
+  "危险命令被拦下，实时广播已关闭": "Dangerous command blocked; live broadcast turned off",
+  "实时广播已关闭": "Live broadcast off",
   "已关闭分屏": "Split view closed",
   "分屏需要至少两个已连接的会话": "Split view needs at least two connected sessions",
   "已更换主密码": "Master password changed",
@@ -498,9 +501,12 @@ function createView(label) {
     if (!view.handle) return;
     view.dataEvents += 1;
     if (view.inputLog.length < 64) view.inputLog.push(data);
+    // 实时广播下先把回车扣一下：命中危险模式就整条不发（`SEC-011`）
+    if (holdDangerousEnter(data)) return;
     invoke("term_write", { handle: view.handle, data }).catch((e) =>
       setStatus(`写入失败：${e}`),
     );
+    mirrorInput(view, data);
   });
 
   // 鼠标上报（TER-022）：xterm 在 X10 编码（默认，`\e[M` 后跟三个原始字节）下
@@ -3846,6 +3852,77 @@ function broadcastTargets() {
 /** 最近一次广播的结果（验收读它） */
 let lastBroadcast = null;
 
+/**
+ * 实时逐键广播（`TER-004` 的 `broadcast-live`）。
+ *
+ * 每次按键立刻发到其余目标，所以**没有**「发送前确认」的机会——一行一发那套
+ * 危险命令拦截在这里帮不上忙。三重保险代替确认：开之前弹一次说明、开着时底栏
+ * 按钮与整条广播栏变警示色、关掉广播栏就自动失活。
+ *
+ * 只镜像 `onData`（键盘与粘贴），不镜像 `onBinary`：那里是鼠标上报，把一份鼠标
+ * 坐标发给所有会话只会让每台都以为在被点。
+ */
+// `lastLine` 是刚敲完（回车）的那一行，留作诊断：拦没拦下、拦的是什么，都能从它看出来
+const liveBroadcast = { on: false, chars: 0, sends: 0, failed: 0, blocked: 0, lastLine: null };
+
+/** 实时广播下正在敲的那一行：回车前拿它比对危险命令 */
+let liveLine = "";
+
+/**
+ * 实时广播下的危险命令拦截（`SEC-011` 要求 live 模式也要拦）。
+ *
+ * 逐键广播没有「发送前确认」这个时机，但**回车**这一下可以扣住：把这一行攒起来，
+ * 回车时先比对危险模式。命中就把这次回车吞掉、关掉实时广播并说清原因——已经打出去
+ * 的字符收不回来，但那条命令不会被执行。
+ *
+ * 返回 `true` 表示这次输入被拦下，调用方连本地会话都不要发。
+ */
+function holdDangerousEnter(data) {
+  if (!liveBroadcast.on) return false;
+  if (!data.includes("\r") && !data.includes("\n")) {
+    // 只攒可见输入，别把一整段粘贴无限存进来
+    if (liveLine.length < 512) liveLine += data;
+    return false;
+  }
+  const line = liveLine.trim();
+  liveLine = "";
+  liveBroadcast.lastLine = line;
+  if (!isDangerous(line)) return false;
+  liveBroadcast.blocked += 1;
+  stopLiveBroadcast(false);
+  setStatus("危险命令被拦下，实时广播已关闭");
+  void showAlert(
+    "实时广播拦下了一条危险命令",
+    `${line}\n\n这条命令没有执行（回车被拦住了），实时广播已自动关闭。需要的话再手动打开。`,
+  );
+  return true;
+}
+
+/** 把一次输入镜像到其余已连接会话（实时广播开着时才做） */
+function mirrorInput(view, data) {
+  if (!liveBroadcast.on || !view.handle || !data) return;
+  const targets = broadcastTargets().filter((v) => v !== view);
+  if (!targets.length) return;
+  liveBroadcast.chars += data.length;
+  for (const v of targets) {
+    liveBroadcast.sends += 1;
+    invoke("term_write", { handle: v.handle, data }).catch(() => {
+      liveBroadcast.failed += 1;
+    });
+  }
+}
+
+/** 关掉实时广播：界面标记与状态一起收，别留下「看着像开着其实没发」 */
+function stopLiveBroadcast(announce) {
+  const wasOn = liveBroadcast.on;
+  liveBroadcast.on = false;
+  liveLine = "";
+  bcLive.checked = false;
+  bcBar.classList.remove("live");
+  bcToggle.classList.remove("live");
+  if (wasOn && announce) setStatus("实时广播已关闭");
+}
+
 function askConfirm(title, body, okLabel = "确认发送") {
   askTitle.textContent = title;
   askBody.textContent = body;
@@ -3860,6 +3937,18 @@ function askConfirm(title, body, okLabel = "确认发送") {
       { once: true },
     );
   });
+}
+
+/** 只报告、不询问：把「取消」藏起来，只留一个确认键 */
+async function showAlert(title, body) {
+  const cancel = document.getElementById("ask-cancel");
+  const wasHidden = cancel.hidden;
+  cancel.hidden = true;
+  try {
+    await askConfirm(title, body, "知道了");
+  } finally {
+    cancel.hidden = wasHidden;
+  }
 }
 
 /**
@@ -3973,7 +4062,32 @@ function initBroadcast() {
   bcToggle.addEventListener("click", () => {
     bcBar.hidden = !bcBar.hidden;
     bcToggle.classList.toggle("on", !bcBar.hidden);
-    if (!bcBar.hidden) bcInput.focus();
+    // 关掉广播栏就等于关掉实时广播：栏都收起来了还继续往各会话发按键，
+    // 用户看不到任何提示，这是最危险的一种「静默还在生效」
+    if (bcBar.hidden) stopLiveBroadcast(true);
+    else bcInput.focus();
+  });
+
+  bcLive.addEventListener("change", async () => {
+    if (!bcLive.checked) {
+      stopLiveBroadcast(true);
+      return;
+    }
+    const targets = broadcastTargets().length;
+    const ok = await askConfirm(
+      "开启实时逐键广播？",
+      `你在当前终端的每一次按键都会同时发到其余 ${Math.max(0, targets - 1)} 个已连接会话。\n\n这一行一行发的危险命令拦截在这里不生效——每次按键都直接发走，没有确认的机会。切走前记得关掉。`,
+      "开启实时广播",
+    );
+    if (!ok) {
+      bcLive.checked = false;
+      return;
+    }
+    liveLine = "";
+    liveBroadcast.on = true;
+    bcBar.classList.add("live");
+    bcToggle.classList.add("live");
+    setStatus("实时广播已开启");
   });
 
   bcSend.addEventListener("click", () => void runBroadcast());
@@ -3993,6 +4107,7 @@ const bcMode = document.getElementById("bc-mode");
 const bcInput = document.getElementById("bc-input");
 const bcSend = document.getElementById("bc-send");
 const bcDiff = document.getElementById("bc-diff");
+const bcLive = document.getElementById("bc-live");
 const bcResult = document.getElementById("bc-result");
 
 // 广播结果导出 CSV（`TER-004`）：按「分组 × 主机」铺成行，Excel 直接能看。
@@ -5749,6 +5864,17 @@ async function savePasswordIfAsked() {
 // 自动化验收接口（`scripts/e2e-desktop.mjs` 用 CDP 读它）。
 // 只读、无副作用：靠 DOM 文本反推会话句柄会变成脆弱实现，
 // 而「界面可被脚本驱动」本身也是 AI Agent 体验的一部分。
+/** 读某个会话的屏幕文本（含回滚区）；会话还没建好时给空串 */
+function screenText(view) {
+  const buf = view?.term?.buffer?.active;
+  if (!buf) return "";
+  const lines = [];
+  for (let i = 0; i < buf.length; i++) {
+    lines.push(buf.getLine(i)?.translateToString(true) ?? "");
+  }
+  return lines.join("\n");
+}
+
 window.__wt = {
   /**
    * 前端脚本版本标记。
@@ -6057,6 +6183,9 @@ window.__wt = {
       targets: broadcastTargets().length,
       last: lastBroadcast,
       result: bcResult.textContent,
+      // 实时逐键（`broadcast-live`）：验收靠 chars/sends 判断「真的发了几份」，
+      // 只看开关状态证明不了按键有没有被镜像出去
+      live: { ...liveBroadcast },
     };
   },
   /**
@@ -6084,13 +6213,17 @@ window.__wt = {
   },
   /** 当前屏幕文本（含回滚区），供验收断言用 */
   screen() {
-    if (!active) return "";
-    const buf = active.term.buffer.active;
-    const lines = [];
-    for (let i = 0; i < buf.length; i++) {
-      lines.push(buf.getLine(i)?.translateToString(true) ?? "");
-    }
-    return lines.join("\n");
+    return screenText(active);
+  },
+  /**
+   * 每个会话各一份屏幕文本。
+   *
+   * 实时广播（`TER-004`）必须证明「**别的**会话也收到了这些按键」——只看发送
+   * 计数证明不了字节有没有到远端；而两台会话的标签可能一模一样，按标签取会取错，
+   * 所以整批给出去，让它自己数有几台含标记。
+   */
+  screens() {
+    return [...sessions.values()].map((v) => ({ label: v.label, text: screenText(v) }));
   },
   /** 标签页：每个会话一行，标出哪个是激活的 */
   tabs() {

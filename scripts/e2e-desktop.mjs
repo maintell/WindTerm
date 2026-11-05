@@ -5280,6 +5280,144 @@ try {
     `数据行 ${csvText.split(/\r?\n/).filter((l) => l.includes("echo hi")).length} 条`,
   );
 
+  // 实时逐键广播（`TER-004` 的 `broadcast-live`）：开了之后按键要真的到别的会话
+  await clickElement("#bc-live");
+  const askLive = await waitFor(
+    async () => {
+      const open = await cdp.eval(`document.getElementById("ask-dialog").open`);
+      if (!open) return null;
+      return cdp.eval(`document.getElementById("ask-body").textContent`);
+    },
+    { timeout: 8000, label: "实时广播确认框" },
+  );
+  check(
+    "开实时广播前先说明「没有确认机会」（TER-004）",
+    askLive.includes("每一次按键") && askLive.includes("没有确认的机会"),
+    askLive.split("\n").filter(Boolean).pop(),
+  );
+  await clickDialogButton("ask-ok", "yes");
+  const liveOn = await waitFor(
+    async () => {
+      const b = await cdp.eval(`window.__wt.broadcast`);
+      return b.live.on ? b : null;
+    },
+    { timeout: 8000, label: "实时广播已开启" },
+  ).catch(() => null);
+  check(
+    "实时广播开关真的生效（TER-004）",
+    liveOn?.live?.on === true,
+    liveOn ? `${liveOn.targets} 个目标` : "开关点不开",
+  );
+
+  // 焦点挪回终端：广播栏的输入框（或刚关掉的对话框）占着焦点时，一个键也进不到终端。
+  // 这一步做成显式前提 —— 不查焦点直接打字，失败会伪装成「镜像没生效」，白查半天。
+  const focusLiveTerm = async () => {
+    await cdp.send("Page.bringToFront");
+    // 必须挑**可见**的那个终端：非激活标签的 `.xterm-screen` 也在 DOM 里，
+    // 尺寸是 0，按它算出来的坐标是 (0,0) —— 点下去什么也没发生，
+    // 现象却像是「实时广播没生效」
+    const p = await cdp.eval(`(() => {
+      const rects = [...document.querySelectorAll(".xterm-screen")]
+        .map((el) => el.getBoundingClientRect())
+        .filter((r) => r.width > 0 && r.height > 0)
+        .sort((a, b) => b.width * b.height - a.width * a.height);
+      const r = rects[0];
+      return r ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null;
+    })()`);
+    if (p) await clickAt(p);
+    await waitPageResponsive("实时广播聚焦终端");
+    return cdp.eval(`document.activeElement?.className?.includes("xterm-helper-textarea") === true`);
+  };
+  // 判据用「新出现的 echo:q」而不是整串标记：mock 服务器对**每个字节**回一句
+  // `echo:<原文>`，逐键输入会让标记碎成 `echo:lecho:i...`，整串永远不会出现在屏幕上。
+  const screensBefore = await cdp.eval(`window.__wt.screens()`);
+  const liveFocus = await focusLiveTerm();
+  check("打字前焦点确实在终端上（前提）", liveFocus === true, String(liveFocus));
+  await typeText("qjv");
+
+  const mirrored = await waitFor(
+    async () => {
+      const s = await cdp.eval(`window.__wt.screens()`);
+      const hit = s.filter(
+        (x, i) => x.text.includes("echo:q") && !(screensBefore[i]?.text ?? "").includes("echo:q"),
+      );
+      return hit.length >= 2 ? hit : null;
+    },
+    { timeout: 20000, label: "按键被镜像到另一台" },
+  ).catch(() => null);
+  check(
+    "实时广播把按键送到了其余会话（TER-004）",
+    mirrored !== null,
+    mirrored ? `${mirrored.length} 台新出现 echo:q` : "没有第二台收到这些字节",
+  );
+  const liveCount = await cdp.eval(`window.__wt.broadcast.live`);
+  check(
+    "镜像次数按目标数累加，不是只发一份（TER-004）",
+    liveOn !== null && liveCount.chars > 0 && liveCount.sends >= liveCount.chars * (liveOn.targets - 1),
+    `发 ${liveCount.sends} 份 / 键入 ${liveCount.chars} 字符 / ${liveOn?.targets ?? "?"} 个目标`,
+  );
+
+  // 关掉广播栏必须连带关掉实时广播——栏收起来了按键还在往外发是最危险的静默失效
+  await clickElement("#bc-toggle");
+  const liveOff = await waitFor(
+    async () => {
+      const b = await cdp.eval(`window.__wt.broadcast`);
+      return !b.live.on ? b : null;
+    },
+    { timeout: 8000, label: "关栏后实时广播失活" },
+  ).catch(() => null);
+  check("关掉广播栏后实时广播自动关闭（TER-004）", liveOff !== null, liveOff ? "已失活" : "栏关了但还在发");
+  await clickElement("#bc-toggle"); // 后面的危险命令用例还要用这条栏
+
+  // 实时模式下也要拦危险命令（`SEC-011`）：回车被扣住、整条不发、实时广播自关。
+  // 注意这里能断言的是「回车没发出去」，不是「远端没看到这串字」——逐键广播把每个
+  // 字符都实时发出去了，收不回来；被拦下的正是那一下回车，所以命令不会执行。
+  await clickElement("#bc-live");
+  await waitFor(
+    async () => {
+      const open = await cdp.eval(`document.getElementById("ask-dialog").open`);
+      if (!open) return null;
+      return cdp.eval(`document.getElementById("ask-body").textContent`);
+    },
+    { timeout: 8000, label: "再开实时广播" },
+  );
+  await clickDialogButton("ask-ok", "yes");
+  // 必须等开关真的置真再打字：`on` 是在对话框关闭后的微任务里才设上的，
+  // 不等就打，头几个键既不会进「当前行」缓冲也不会被镜像——危险模式匹配不上，
+  // 症状看起来像「拦截逻辑没实现」
+  await waitFor(
+    async () => {
+      const b = await cdp.eval(`window.__wt.broadcast`);
+      return b.live.on ? true : null;
+    },
+    { timeout: 8000, label: "实时广播再次开启" },
+  ).catch(() => null);
+  check("打字前焦点确实在终端上（前提 2）", (await focusLiveTerm()) === true, "已聚焦");
+  await typeText("rm -rf /");
+  const afterTyping = await cdp.eval(`window.__wt.broadcast`);
+  const blockDlg = await waitFor(
+    async () => {
+      const open = await cdp.eval(`document.getElementById("ask-dialog").open`);
+      if (!open) return null;
+      return cdp.eval(`document.getElementById("ask-body").textContent`);
+    },
+    { timeout: 8000, label: "实时广播危险命令拦截" },
+  ).catch(() => null);
+  check(
+    "实时广播下危险命令被拦下（SEC-011）",
+    blockDlg !== null && blockDlg.includes("没有执行"),
+    blockDlg
+      ? blockDlg.split("\n").filter(Boolean).pop()
+      : `没弹提示（最后一行=${JSON.stringify(afterTyping.live.lastLine)}，on=${afterTyping.live.on}）`,
+  );
+  const afterBlock = await cdp.eval(`window.__wt.broadcast`);
+  check(
+    "拦下后实时广播自动关闭（SEC-011）",
+    afterBlock.live.on === false && afterBlock.live.blocked === 1,
+    `on=${afterBlock.live.on} blocked=${afterBlock.live.blocked}`
+  );
+  await clickDialogButton("ask-ok", "yes");
+
   // 危险命令：必须拦下来先确认，取消后一个字节都不发
   await fillInput("#bc-input", "rm -rf /");
   await clickElement("#bc-send");

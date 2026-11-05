@@ -461,6 +461,19 @@
         flex: none;
       }
       #bc-bar[hidden] { display: none; }
+      /* 实时逐键广播（TER-004）：这条模式下按键没有二次确认的机会，整条栏换成警示色 */
+      #bc-bar.live {
+        background: #3a2026;
+        border-top-color: #7a2b33;
+      }
+      #bc-bar.live #bc-live-row {
+        color: #ff9a9a;
+      }
+      #bc-toggle.live {
+        background: #4a2026;
+        border-color: #8b3a44;
+        color: #ff9a9a;
+      }
       #bc-bar input#bc-input {
         flex: 1;
         min-width: 0;
@@ -1149,6 +1162,7 @@
           <input id="bc-input" placeholder="广播到所有已连接会话" spellcheck="false" />
           <button id="bc-send">发送</button>
           <label id="bc-diff-row" title="只展开输出不一致的会话"><input type="checkbox" id="bc-diff" />只看差异</label>
+          <label id="bc-live-row" title="实时逐键：你在当前终端的每一次按键都同步到其余已连接会话"><input type="checkbox" id="bc-live" />实时逐键</label>
           <button id="bc-export" title="把上次广播的结果导出成 CSV（Excel 可直接打开）">导出 CSV</button>
           <span id="bc-result"></span>
         </div>
