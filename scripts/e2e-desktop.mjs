@@ -5845,6 +5845,37 @@ try {
   );
   check("取消后没有发出任何命令", cancelled.last.sent === 0, cancelled.result || "未发送");
 
+  // 自定义危险规则（`TER-004` 规格「规则集可配置（JSON）」）：写进去的规则要真的生效
+  await cdp.eval(`(() => {
+    const el = document.getElementById("bc-extra-rules");
+    el.value = JSON.stringify(["customdanger"]);
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return el.value;
+  })()`);
+  await fillInput("#bc-input", "customdanger now");
+  await clickElement("#bc-send");
+  const customAsk = await waitFor(
+    async () => {
+      const open = await cdp.eval(`document.getElementById("ask-dialog").open`);
+      if (!open) return null;
+      return cdp.eval(`document.getElementById("ask-body").textContent`);
+    },
+    { timeout: 8000, label: "自定义规则命中" },
+  ).catch(() => null);
+  check(
+    "自定义危险规则也会拦下来（TER-004）",
+    customAsk !== null && customAsk.includes("customdanger"),
+    customAsk ? customAsk.split("\n").filter(Boolean)[0] : "没弹确认",
+  );
+  await clickDialogButton("ask-cancel", "no");
+  // 复位：别把自定义规则留给后面的用例
+  await cdp.eval(`(() => {
+    const el = document.getElementById("bc-extra-rules");
+    el.value = "[]";
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return el.value;
+  })()`);
+
   // 目标选择（`TER-004` 规格「多选标签」）：取消勾选一个标签，命令只发给剩下那个
   const tgt = await cdp.eval(`(() => {
     document.getElementById("bc-target-open").click();

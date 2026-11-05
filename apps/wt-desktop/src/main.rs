@@ -907,6 +907,11 @@ struct PrefsDto {
     /// 拖选会连续触发 `selectionchange`，不防抖就每挪一格写一次剪贴板；但 0
     /// （立即）是合法的——有人就是要在拖完立刻粘贴。0..=2000，默认 120。
     auto_copy_delay_ms: u32,
+    /// 广播的**自定义危险命令规则**（`TER-004` 规格「规则集可配置（JSON）」）：
+    /// 每条是一个正则，和内置那十来条一起参与判定。内置规则不可关闭——
+    /// 「把危险命令拦截整个关掉」不是配置项，是拆安全阀。
+    #[serde(default)]
+    broadcast_extra_rules: Vec<String>,
     /// 界面语言（`SET-012`）：`zh` / `en`。只覆盖标了 `data-i18n` 的元素，
     /// 其余文案仍是中文硬编码——如实写在 README 里。
     language: String,
@@ -959,6 +964,7 @@ impl Default for PrefsDto {
             auto_copy_delay_ms: 120,
             language: "zh".into(),
             remember_default: "persist".into(),
+            broadcast_extra_rules: Vec::new(),
         }
     }
 }

@@ -295,6 +295,17 @@ async function loadPrefs() {
     if (["persist", "session", "no"].includes(p.rememberDefault)) {
       rememberDefault = p.rememberDefault;
     }
+    if (Array.isArray(p.broadcastExtraRules)) {
+      // 存的规则可能被手改成非法正则：跳过那一条并继续，别让界面起不来
+      extraDangerRules = p.broadcastExtraRules.flatMap((src) => {
+        if (typeof src !== "string") return [];
+        try {
+          return [new RegExp(src)];
+        } catch {
+          return [];
+        }
+      });
+    }
     if (typeof p.showSizeCol === "boolean") showSizeCol = p.showSizeCol;
     if (typeof p.showModeCol === "boolean") showModeCol = p.showModeCol;
     if (typeof p.showMtimeCol === "boolean") showMtimeCol = p.showMtimeCol;
@@ -350,6 +361,7 @@ async function savePrefs() {
         filesAutoOpen,
         filesShowHidden,
         rememberDefault,
+        broadcastExtraRules: extraDangerRules.map((re) => re.source),
         showSizeCol,
         showModeCol,
         showMtimeCol,
@@ -4142,8 +4154,16 @@ const DANGEROUS = [
   /systemctl\s+(stop|disable)\s+.*(sshd|network)/i,
 ];
 
+/**
+ * 用户加的危险规则（`TER-004` 规格「规则集可配置」）。
+ *
+ * 存在 `config.toml` 的 `broadcastExtraRules`（JSON 字符串数组）。**内置规则不可关**：
+ * 那等于把安全阀拆了，不是配置项。
+ */
+let extraDangerRules = [];
+
 function isDangerous(cmd) {
-  return DANGEROUS.some((re) => re.test(cmd));
+  return DANGEROUS.some((re) => re.test(cmd)) || extraDangerRules.some((re) => re.test(cmd));
 }
 
 /**
@@ -4543,6 +4563,7 @@ const lookThemeSelect = document.getElementById("look-theme");
 const lookAutoCopySelect = document.getElementById("look-autocopy");
 const lookAutoCopyOnBox = document.getElementById("look-autocopy-on");
 const termRightClickSelect = document.getElementById("term-right-click");
+const bcExtraRulesBox = document.getElementById("bc-extra-rules");
 const lookWordSepInput = document.getElementById("look-word-sep");
 const lookPasteTrimBox = document.getElementById("look-paste-trim");
 const lookFontSelect = document.getElementById("look-font");
@@ -5196,9 +5217,39 @@ function initLookControls() {
   lookAutoCopySelect.value = String(autoCopyDelay);
   lookAutoCopyOnBox.checked = autoCopy;
   termRightClickSelect.value = rightClickAction;
+  bcExtraRulesBox.value = JSON.stringify(extraDangerRules.map((re) => re.source));
   lookWordSepInput.value = wordSeparatorExtra;
   lookPasteTrimBox.checked = pasteTrimTrailing;
 }
+
+/**
+ * 自定义危险规则（`TER-004` 规格「规则集可配置（JSON）」）。
+ *
+ * 写成 JSON 字符串数组而不是「一行一条」：JSON 自带转义规则，正则里的 `\s`、`\.`
+ * 不会被换行/反斜杠的歧义吃掉；而且解析失败能给出确切位置。
+ * 写坏的正则**当场报错、不保存**——静默吞掉等于规则没生效却看着像生效了。
+ */
+bcExtraRulesBox.addEventListener("change", () => {
+  const raw = bcExtraRulesBox.value.trim();
+  let sources = [];
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed) || parsed.some((x) => typeof x !== "string")) {
+        throw new Error("要一个字符串数组，例如 [\"rm -rf /opt\"]");
+      }
+      // 先全部编译一遍再落地：一半合法一半非法时不能只存前一半
+      for (const p of parsed) new RegExp(p);
+      sources = parsed;
+    } catch (e) {
+      setStatus(`规则集没保存：${e.message}`);
+      return;
+    }
+  }
+  extraDangerRules = sources.map((p) => new RegExp(p));
+  void savePrefs();
+  setStatus(`自定义危险规则：${extraDangerRules.length} 条`);
+});
 
 lookThemeSelect.addEventListener("change", () => {
   look.theme = lookThemeSelect.value;
@@ -5734,7 +5785,7 @@ const setEmpty = document.getElementById("set-empty");
 const SET_GROUPS = [
   ["常规", ["ui-lang", "local-shell", "local-shell-path"]],
   ["外观", ["look-size", "look-height", "tabs-position"]],
-  ["终端", ["encoding", "look-theme", "theme-import-open", "look-font", "look-scrollback", "term-right-click", "look-word-sep", "look-paste-trim", "look-autocopy-on", "look-autocopy"]],
+  ["终端", ["encoding", "look-theme", "theme-import-open", "look-font", "look-scrollback", "term-right-click", "bc-extra-rules", "look-word-sep", "look-paste-trim", "look-autocopy-on", "look-autocopy"]],
   ["文件", ["files-auto-open", "files-show-hidden", "files-col-size", "files-col-mode", "files-auto-refresh"]],
   ["安全", ["master-open", "remember-default", "vault-rotate", "known-open"]],
   // 按「行里第一个带 id 的元素」认领：配置文件那行首个 id 是路径 span，不是按钮
@@ -5769,6 +5820,7 @@ const SET_META = {
   "net-keepalive": ["30 秒", false],
   "net-max-missed": ["3 次", false],
   "term-right-click": ["弹菜单", false],
+  "bc-extra-rules": ["（空）", false],
   "look-word-sep": ["（空）", false],
   "look-paste-trim": ["关", false],
   "look-autocopy-on": ["开", false],
@@ -6001,6 +6053,7 @@ const I18N = {
     "set.lineHeight": "行高",
     "set.scrollback": "回滚行数",
     "set.rightClick": "右键行为",
+    "set.dangerRules": "自定义危险命令规则",
     "set.autoRefresh": "自动刷新间隔",
     "set.fileCols": "显示列",
     "set.tabsPosition": "标签栏位置",
@@ -6075,6 +6128,7 @@ const I18N = {
     "set.lineHeight": "Line height",
     "set.scrollback": "Scrollback lines",
     "set.rightClick": "Right-click action",
+    "set.dangerRules": "Custom dangerous-command rules",
     "set.autoRefresh": "Auto-refresh interval",
     "set.fileCols": "Visible columns",
     "set.tabsPosition": "Tab bar position",
