@@ -41,6 +41,9 @@
 实现按 [`docs/spec/14-roadmap-acceptance.md`](docs/spec/14-roadmap-acceptance.md) 的里程碑推进。
 
 ```bash
+pwsh ./scripts/check-all.ps1          # 一键验收：单测 + clippy + 文档对账
+pwsh ./scripts/check-all.ps1 -WithE2e # 再加端到端验收（约 8 分钟）
+
 cargo test --workspace      # 311 个测试
 cargo clippy --workspace --all-targets   # 零告警
 
