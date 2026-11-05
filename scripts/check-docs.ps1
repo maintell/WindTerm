@@ -241,6 +241,56 @@ foreach ($f in ((Get-DocFiles 'spec') + (Get-DocFiles 'design') + (Get-DocFiles 
 }
 
 # ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# 9. README 里的手工数字与代码/状态表对账
+#     加设置项、动作、i18n 键时最容易忘了改 README，手工数字 100% 会漂移。
+#     真值一律从源文件算，README 里写死的数对不上就 Fail（第 6 项统计自洽的延伸）。
+#     正则一律用 [0-9] / [ \t] 字符类，不用转义序列，避免脚本文本被二次转义吞掉。
+# ─────────────────────────────────────────────────────────────
+$readmePath = Join-Path $repoRoot "README.md"
+$readmeText = Get-Content -Raw -Encoding UTF8 $readmePath
+$htmlText = Get-Content -Raw -Encoding UTF8 (Join-Path $repoRoot "apps/wt-desktop/ui/index.html")
+$mainText = Get-Content -Raw -Encoding UTF8 (Join-Path $repoRoot "apps/wt-desktop/ui/main.js")
+$statusText2 = Get-Content -Raw -Encoding UTF8 (Join-Path $docsRoot "status/p0-coverage.md")
+
+function Assert-ReadmeNumber([string]$pattern, [int]$expected, [string]$label) {
+    $m = [regex]::Match($readmeText, $pattern)
+    if (-not $m.Success) { Fail ("README 里找不到「{0}」的数字" -f $label); return }
+    $got = [int]$m.Groups[1].Value
+    if ($got -ne $expected) { Fail ("README 的「{0}」写 {1}，实际应为 {2}" -f $label, $got, $expected) }
+}
+
+# 9a. i18n：index.html 的 data-i18n 元素数 / 唯一键数
+$dq = [char]34
+$i18nPat = "data-i18n=" + $dq + "([^" + $dq + "]+)" + $dq
+$i18nEls = [regex]::Matches($htmlText, $i18nPat)
+$i18nKeys = @($i18nEls | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+$i18nElCount = $i18nEls.Count
+$i18nKeyCount = $i18nKeys.Count
+Assert-ReadmeNumber "覆盖[ \t]*([0-9]+)[ \t]*键" $i18nKeyCount "SET-012 键数"
+$mEls = [regex]::Match($readmeText, "覆盖[ \t]*[0-9]+[ \t]*键[ \t]*/[ \t]*([0-9]+)[ \t]*处")
+if ($mEls.Success -and ([int]$mEls.Groups[1].Value -ne $i18nElCount)) {
+    Fail ("README 的 SET-012 处数写 {0}，实际应为 {1}" -f $mEls.Groups[1].Value, $i18nElCount)
+}
+
+# 9b. P0 状态数：从 p0-coverage 表算 ✅/🟡/⬜
+$p0Rows = @($statusText2 -split [char]10 | Where-Object { $_ -match '^[|].*`[A-Z][A-Z]+-[0-9]+`' })
+$p0Ok = @($p0Rows | Where-Object { $_ -match "✅" }).Count
+$p0Wip = @($p0Rows | Where-Object { $_ -match "🟡" }).Count
+$p0None = @($p0Rows | Where-Object { $_ -match "⬜" }).Count
+$mState = [regex]::Match($readmeText, "([0-9]+)[ \t]*条完成[ \t]*/[ \t]*([0-9]+)[ \t]*条部分[ \t]*/[ \t]*([0-9]+)[ \t]*条未做")
+if (-not $mState.Success) { Fail "README 里找不到 P0 状态数（完成/部分/未做）" }
+else {
+    if ([int]$mState.Groups[1].Value -ne $p0Ok) { Fail ("README P0 完成数写 {0}，实际 {1}" -f $mState.Groups[1].Value, $p0Ok) }
+    if ([int]$mState.Groups[2].Value -ne $p0Wip) { Fail ("README P0 部分数写 {0}，实际 {1}" -f $mState.Groups[2].Value, $p0Wip) }
+    if ([int]$mState.Groups[3].Value -ne $p0None) { Fail ("README P0 未做数写 {0}，实际 {1}" -f $mState.Groups[3].Value, $p0None) }
+}
+
+# 9c. 可重绑动作数：KEYMAP_DEFAULT 的键数
+$kmMatch = [regex]::Match($mainText, "const KEYMAP_DEFAULT = [{].*?[}];", [System.Text.RegularExpressions.RegexOptions]::Singleline)
+$kmKeys = [regex]::Matches($kmMatch.Value, "[ \t]{2}([A-Za-z][A-Za-z0-9]*):[ \t]*[{][ \t]*label:").Count
+Assert-ReadmeNumber "可用（([0-9]+)[ \t]*个动作可重绑）" $kmKeys "TER-020 动作数"
+Write-Host ("README 对账：i18n {0} 键/{1} 处、P0 {2}/{3}/{4}、动作 {5} 项" -f $i18nKeyCount, $i18nElCount, $p0Ok, $p0Wip, $p0None, $kmKeys)
 # 输出
 # ─────────────────────────────────────────────────────────────
 # 12b. P0 覆盖表完整（docs/status/p0-coverage.md）
