@@ -3664,6 +3664,52 @@ async function removeEntryConfirmed(target) {
   }
 }
 
+/**
+ * 新建空文件（`FIL-001` 规格第 9 条）：走「上传零字节」这条路，不新增后端命令。
+ * 没有内容就不发分块，`end` 一落盘文件名就出现了。
+ */
+async function createEmptyFile() {
+  const name = await askName("新建文件（在当前位置）", "");
+  if (!name) return;
+  const path = joinPath(sftpPath, name);
+  setFilesMsg("新建中…");
+  let id = null;
+  try {
+    id = await withDeadline(
+      invoke("sftp_upload_begin", { req: filesReq(), path, jump: jumpReq() }),
+      20000,
+      "新建文件",
+    );
+    await withDeadline(invoke("sftp_upload_end", { id }), 20000, "新建文件");
+    id = null;
+    setFilesMsg(`已创建 ${name}`);
+    await loadDir(sftpPath);
+  } catch (e) {
+    if (id) await invoke("sftp_upload_abort", { id }).catch(() => {});
+    setFilesMsg(`新建文件失败：${e}`);
+  }
+}
+
+/**
+ * 在当前终端里 `cd` 到这个目录（`FIL-001` 规格第 9 条）。
+ *
+ * 只在路径「干净」时发：路径里有空格或引号时 shell 会拆错，发出去反而在终端里
+ * 留下半截命令。宁可让用户手打，也不做半吊子转义。
+ */
+function cdHere(path) {
+  const v = active;
+  if (!v?.handle || !v.running) {
+    setFilesMsg("没有已连接的终端可以切目录");
+    return;
+  }
+  if (!/^[A-Za-z0-9_@%+=:,./-]+$/.test(path)) {
+    setFilesMsg(`这个路径里有空格或特殊字符，先手动 cd：${path}`);
+    return;
+  }
+  void invoke("term_write", { handle: v.handle, data: `cd ${path}\r` });
+  setStatus(`已在当前终端切到 ${path}`);
+}
+
 async function copyEntryPath(entry) {
   const full = joinPath(sftpPath, entry.name);
   try {
@@ -3688,14 +3734,27 @@ function fileMenuItems() {
     });
     if (!e.is_dir) {
       items.push({ label: t("ctx.download"), run: () => downloadFile(joinPath(sftpPath, e.name)) });
+    } else {
+      // 「上传到此处」：记下目标目录再打开选择框，省掉「先双击进去」那一步
+      items.push({
+        label: t("ctx.uploadHere"),
+        run: () => {
+          uploadTargetDir = joinPath(sftpPath, e.name);
+          filesUpload.click();
+        },
+      });
     }
   }
   items.push({ label: t("ctx.newFolder"), run: () => makeDir() });
+  items.push({ label: t("ctx.newFile"), run: () => createEmptyFile() });
   if (e) {
     items.push({ label: t("ctx.rename"), run: () => renameEntry(e) });
     items.push({ label: t("ctx.remove"), run: () => removeEntryConfirmed(e) });
     items.push({ label: t("ctx.perms"), run: () => chmodEntry(e) });
     items.push({ label: t("ctx.copyPath"), run: () => copyEntryPath(e) });
+    if (e.is_dir) {
+      items.push({ label: t("ctx.cdHere"), run: () => cdHere(joinPath(sftpPath, e.name)) });
+    }
   }
   return items;
 }
@@ -3933,7 +3992,13 @@ const UPLOAD_CHUNK = 64 * 1024;
  * **按块读、按块发**：整文件不再进内存——这是与「一次性 base64」的关键区别，
  * 也是将来做断点续传的前提（续传只需要知道已经写到哪个 offset）。
  */
-async function uploadFiles(picked) {
+/**
+ * 上传一组本地文件到远端目录。
+ *
+ * `targetDir` 默认是当前目录；右键目录选「上传到此处」时会传那个目录——
+ * 不然用户得先双击进去再点上传，多一步且容易传错地方。
+ */
+async function uploadFiles(picked, targetDir = sftpPath) {
   if (!picked.length) return;
   let done = 0;
   for (const file of picked) {
@@ -3941,7 +4006,7 @@ async function uploadFiles(picked) {
     lastUpload = { name: file.name, total: file.size, last: 0, events: 0 };
     let id = null;
     try {
-      const path = joinPath(sftpPath, file.name);
+      const path = joinPath(targetDir, file.name);
       id = await withDeadline(
         invoke("sftp_upload_begin", { req: filesReq(), path, jump: jumpReq() }),
         20000,
@@ -3972,15 +4037,24 @@ async function uploadFiles(picked) {
     }
   }
   setFilesMsg(`已上传 ${done} 个文件`);
+  // 传完回当前目录（不是目标目录）：用户看的是自己所在那层，切走反而迷路
   await loadDir(sftpPath);
 }
 
-filesUploadBtn.addEventListener("click", () => filesUpload.click());
+/** 「上传到此处」的临时目标目录；普通上传时为 `null` */
+let uploadTargetDir = null;
+
+filesUploadBtn.addEventListener("click", () => {
+  uploadTargetDir = null;
+  filesUpload.click();
+});
 filesUpload.addEventListener("change", () => {
   const picked = [...filesUpload.files];
+  const target = uploadTargetDir;
   // 清空，否则同一个文件第二次选不会触发 change
   filesUpload.value = "";
-  void uploadFiles(picked);
+  uploadTargetDir = null;
+  void uploadFiles(picked, target ?? sftpPath);
 });
 
 // 面板开关。每次操作独立建连，所以「关掉」只是收起 UI。
@@ -5981,6 +6055,9 @@ const I18N = {
     "ctx.remove": "删除",
     "ctx.perms": "权限…",
     "ctx.copyPath": "复制路径",
+    "ctx.uploadHere": "上传到此处",
+    "ctx.newFile": "新建文件",
+    "ctx.cdHere": "在终端中 cd 到此",
     "dlg.keysTitle": "键位",
   },
   en: {
@@ -6052,6 +6129,9 @@ const I18N = {
     "ctx.remove": "Delete",
     "ctx.perms": "Permissions…",
     "ctx.copyPath": "Copy path",
+    "ctx.uploadHere": "Upload here",
+    "ctx.newFile": "New file",
+    "ctx.cdHere": "cd here in terminal",
     "dlg.keysTitle": "Keybindings",
   },
 };

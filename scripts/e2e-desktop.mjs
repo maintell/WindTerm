@@ -3114,7 +3114,7 @@ try {
     },
     { timeout: 8000, label: "文件右键菜单" },
   ).catch(() => null);
-  const need = ["用编辑器打开", "下载", "新建文件夹", "重命名", "删除", "权限…", "复制路径"];
+  const need = ["用编辑器打开", "下载", "新建文件夹", "新建文件", "重命名", "删除", "权限…", "复制路径"];
   check(
     "文件行右键给出该对象能做的动作（FIL-001）",
     fileMenu !== null && need.every((x) => fileMenu.items.includes(x)),
@@ -3137,7 +3137,71 @@ try {
     permDlg ? permDlg.title : "没弹框",
   );
   await closeAllDialogs();
-  // 空区右键只给「新建文件夹」：把「打开/下载」这类需要目标的项也列出来就是骗人。
+
+  // 「新建文件」要真的建出文件，不能只弹个框（`FIL-001` 规格第 9 条）
+  const rcAgain = { ...rowBox, button: "right", clickCount: 1 };
+  await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...rcAgain });
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...rcAgain });
+  await waitFor(
+    async () => {
+      const m = await cdp.eval(`(() => {
+        const el = document.getElementById("ctx-menu");
+        return { hidden: el.hidden, kind: el.dataset.kind ?? null };
+      })()`);
+      return !m.hidden && m.kind === "files" ? true : null;
+    },
+    { timeout: 5000, label: "再开一次文件菜单" },
+  ).catch(() => null);
+  await clickCtxItem("新建文件");
+  // 先等对话框真的打开再填：点了菜单就立刻 `fillInput` 会赶在 `showModal()` 之前，
+  // 填进去的字与点击都被忽略——表现成「点了没反应」，msg 还是空的。
+  const newFileDlg = await waitFor(
+    async () => ((await cdp.eval(`document.getElementById("name-dialog").open`)) ? true : null),
+    { timeout: 5000, label: "新建文件的命名框" },
+  ).catch(() => null);
+  check("点「新建文件」会弹命名框（FIL-001）", newFileDlg === true, newFileDlg === true ? "已弹出" : "没弹");
+  if (newFileDlg) await confirmName("made-by-menu.txt");
+  const madeFile = await waitFor(
+    async () => {
+      const rows = await cdp.eval(`window.__wt.files.rows`);
+      return rows.some((r) => r.startsWith("made-by-menu.txt")) ? rows : null;
+    },
+    { timeout: 20000, label: "新建文件出现在列表" },
+  ).catch(() => null);
+  check(
+    "右键「新建文件」真的建出空文件（FIL-001）",
+    madeFile !== null,
+    madeFile ? "已出现在列表" : `列表里没有；msg=${await cdp.eval("window.__wt.files.msg")}`,
+  );
+
+  // 用完把它删掉：根目录多出来的条目会把后面用例要点的行挤出可视窗口（真踩过）。
+  // 走键盘删除，顺带把「选中 + Delete 删除」这条路径也验一遍。
+  if (madeFile !== null) {
+    await clickFileRow("made-by-menu.txt");
+    await pressChord(0, "Delete", "Delete", 46);
+  }
+  const delOk = await waitFor(
+    async () => ((await cdp.eval(`document.getElementById("ask-dialog").open`)) ? true : null),
+    { timeout: 5000, label: "删除临时文件确认框" },
+  ).catch(() => null);
+  if (delOk) {
+    await clickDialogButton("ask-ok", "yes");
+  }
+  if (madeFile === null) await cdp.eval(`document.getElementById("name-dialog").open && document.getElementById("name-dialog").close()`);
+  const cleanedUp = await waitFor(
+    async () => {
+      const rows = await cdp.eval(`window.__wt.files.rows`);
+      return rows.some((r) => r.startsWith("made-by-menu.txt")) ? null : true;
+    },
+    { timeout: 15000, label: "临时文件已删除" },
+  ).catch(() => null);
+  check("新建的临时文件能再删掉（不留垃圾给后面的用例）", cleanedUp === true, cleanedUp === true ? "已删除" : "还在");
+
+  // 目录专属的项（`上传到此处` / `在终端中 cd 到此`）放到后面用 `icondir/` 验——
+  // 这里不再往根目录种新目录，免得又挤走别人的行。
+  await cdp.eval(`document.getElementById("ctx-menu").hidden = true`);
+
+  // 空区右键只给「不需要目标」的那几项：把「打开/下载」这类也列出来就是骗人。
   //
   // 这里在容器上派发事件而不是真的右键：列表行会铺满可视区，按坐标找不到「空区」；
   // 而「有没有命中某一行」这条分支上一条断言已经用真右键验过了，这条只测另一半。
@@ -3152,10 +3216,12 @@ try {
     return { hidden: el.hidden, items: [...el.querySelectorAll("button")].map((b) => b.textContent) };
   })()`);
   check(
-    "空区右键只剩「新建文件夹」（FIL-001）",
+    "空区右键只给不需要目标的两项（FIL-001）",
+    // 空区能给的是「不需要目标」的那几个动作：新建文件夹、新建文件
     blankMenu.hidden === false &&
-      blankMenu.items.length === 1 &&
-      blankMenu.items[0] === "新建文件夹",
+      blankMenu.items.length === 2 &&
+      blankMenu.items[0] === "新建文件夹" &&
+      blankMenu.items[1] === "新建文件",
     blankMenu ? blankMenu.items.join("、") : "菜单没出来",
   );
   await cdp.eval(`document.getElementById("ctx-menu").hidden = true`);
@@ -3277,6 +3343,40 @@ try {
       icons.fileText === "notes.txt",
     `${JSON.stringify(icons.dirText)} / ${JSON.stringify(icons.fileText)}`,
   );
+
+  // 目录专属的右键项（`FIL-001` 规格第 9 条）：拿现成的 `icondir/` 验，不另种目录
+  const iconDirBox = await cdp.eval(`(() => {
+    const row = [...document.querySelectorAll("#files-list .row")].find(
+      (r) => (r.querySelector("span")?.textContent ?? "").startsWith("icondir"),
+    );
+    if (!row) return null;
+    const r = row.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  })()`);
+  let iconDirItems = null;
+  if (iconDirBox) {
+    const rcId = { ...iconDirBox, button: "right", clickCount: 1 };
+    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...rcId });
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...rcId });
+    iconDirItems = await waitFor(
+      async () => {
+        const m = await cdp.eval(`(() => {
+          const el = document.getElementById("ctx-menu");
+          return { hidden: el.hidden, items: [...el.querySelectorAll("button")].map((b) => b.textContent) };
+        })()`);
+        return !m.hidden ? m.items : null;
+      },
+      { timeout: 5000, label: "目录右键菜单" },
+    ).catch(() => null);
+  }
+  check(
+    "目录右键多出「上传到此处」「在终端中 cd 到此」（FIL-001）",
+    iconDirItems !== null &&
+      iconDirItems.includes("上传到此处") &&
+      iconDirItems.includes("在终端中 cd 到此"),
+    iconDirItems ? iconDirItems.join("、") : "菜单没出来",
+  );
+  await cdp.eval(`document.getElementById("ctx-menu").hidden = true`);
 
   // 自动刷新（`FIL-001` 规格 §6）：窗口获得焦点时按「可配间隔」节流刷新。
   // 默认关；设为 5 秒后写进 config.toml；节流：距上次列目录不足间隔时不刷，
