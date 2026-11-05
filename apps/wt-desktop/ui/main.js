@@ -318,6 +318,19 @@ function decodeOutput(bytes) {
   }
 }
 
+/**
+ * 远端标题的清洗（`TER-001`）。
+ *
+ * `OSC 2` 的内容来自远端，可能是任意字节：控制字符会把标签栏撑坏，过长标题会把
+ * 右侧按钮挤出去，所以先去掉控制字符再截断。**不清洗就是让远端能改我们的界面**。
+ */
+function cleanRemoteTitle(raw) {
+  return String(raw ?? "")
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, "")
+    .trim()
+    .slice(0, 40);
+}
+
 function createView(label) {
   const el = document.createElement("div");
   el.className = "term-view";
@@ -354,6 +367,8 @@ function createView(label) {
     status: "",
     dataEvents: 0,
     inputLog: [],
+    /** 用户手动改过标签名（`TER-001`）：改过之后就不再跟着远端 `OSC 2` 变 */
+    renamedByUser: false,
     /** 粘贴次数（验收用：确认「取消后零字节」时对比它没变） */
     pasteCount: 0,
     /** 自动复制成功次数（验收用：静默能力也要有可观测的成功信号） */
@@ -363,6 +378,15 @@ function createView(label) {
   search.onDidChangeResults(({ resultIndex, resultCount }) => {
     if (view !== active) return;
     updateFindCount(resultIndex, resultCount);
+  });
+
+  // 远端 `OSC 2` 标题（`TER-001`）：ssh 里跑 vim/top 时标签能显示「在跑什么」。
+  // 用户手动改过名字就不再跟着变——用户的意图比远端的更该保留。
+  term.onTitleChange((title) => {
+    const clean = cleanRemoteTitle(title);
+    if (!clean || view.renamedByUser || clean === view.label) return;
+    view.label = clean;
+    renderTabs();
   });
 
   term.onData((data) => {
@@ -548,6 +572,8 @@ async function renameTab(view) {
   const name = await askName("标签名", view.label);
   if (!name || name === view.label) return;
   view.label = name;
+  // 用户改过名之后，远端的 `OSC 2` 不再改写它
+  view.renamedByUser = true;
   renderTabs();
   setStatus(`标签已改名为：${name}`);
 }
@@ -5060,7 +5086,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-95",
+  ui: "wt-ui-96",
   /**
    * 验收用：刷新会话树并等它**画完**。
    *

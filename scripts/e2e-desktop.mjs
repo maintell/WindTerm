@@ -3832,6 +3832,72 @@ try {
     afterShift === beforeShift,
     `${beforeShift} → ${afterShift}`,
   );
+
+  // SGR 编码（`?1006h`）+ 按键事件跟踪（`?1002h`）：X10 编码把坐标压进单个字节，
+  // 坐标 ≥224 就溢出——1920 宽的终端点到右边就在这个范围里。所以这两种模式要能开、
+  // 而且发出来的必须是 `\e[<b;x;yM`（不是 X10 的 `\e[M` + 三个原始字节）。
+  await cdp.eval(`window.__TAURI__.core.invoke("term_write", {
+    handle: ${JSON.stringify(mouseHandle)}, data: "__mousesgr__",
+  })`);
+  let sgrSeq = null;
+  for (let i = 0; i < 3 && sgrSeq === null; i += 1) {
+    await clickTerm(0);
+    sgrSeq = await waitFor(
+      async () => {
+        const log = await cdp.eval(`window.__wt.inputLog`);
+        return log.find((d) => d.startsWith("\u001b[<")) ?? null;
+      },
+      { timeout: 3000, label: "SGR 鼠标序列" },
+    ).catch(() => null);
+  }
+  check(
+    "开 1006 后点击发的是 SGR 编码（坐标不再压进单字节，TER-022）",
+    sgrSeq !== null && /^\u001b\[<\d+;\d+;\d+[Mm]$/.test(sgrSeq),
+    `${sgrSeq ?? "没发 SGR 序列"}`,
+  );
+  const sgrArrived = await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.screen()`);
+      return t.includes("MOUSE") ? true : null;
+    },
+    { timeout: 6000, label: "SGR 字节到达服务端" },
+  ).catch(() => null);
+  check("SGR 鼠标序列也真的到了服务端（TER-022）", sgrArrived === true, sgrArrived === true);
+
+  // 远端 `OSC 2` 标题（`TER-001`）：ssh 里跑 vim/top 时标签能显示「在跑什么」。
+  // 两处都要变：`__wt.tabs()` 里的 label 与标签栏的实际文字——只改字段不重画，
+  // 用户什么也看不到。
+  await cdp.eval(`window.__TAURI__.core.invoke("term_write", {
+    handle: ${JSON.stringify(mouseHandle)}, data: "__title__",
+  })`);
+  const titleState = await waitFor(
+    async () => {
+      const t = await cdp.eval(`({ tabs: window.__wt.tabs(), bar: document.getElementById("tabs").textContent })`);
+      return t.tabs.some((x) => x.label === "远端标题-vim") && t.bar.includes("远端标题-vim")
+        ? t
+        : null;
+    },
+    { timeout: 6000, label: "远端标题显示成标签名" },
+  ).catch(() => null);
+  check(
+    "远端 OSC 2 标题会显示成标签名（TER-001）",
+    titleState !== null,
+    titleState ? JSON.stringify(titleState.tabs.map((x) => x.label)) : "标签名没变",
+  );
+  await cdp.eval(`window.__TAURI__.core.invoke("term_write", { handle: ${JSON.stringify(mouseHandle)}, data: "__titlelong__" })`);
+  const longTitle = await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.tabs()`);
+      const hit = t.find((x) => x.label.startsWith("xxx"));
+      return hit ? hit.label : null;
+    },
+    { timeout: 6000, label: "超长标题" },
+  ).catch(() => null);
+  check(
+    "超长远端标题会被截断（不撑坏标签栏，TER-001）",
+    longTitle !== null && longTitle.length <= 40,
+    longTitle === null ? "没变" : `${longTitle.length} 个字符`
+  );
   await closeAllTabs();
 
   // 19j. 已知主机（`SEC-005`）：能列出指纹，也能忘掉某条记录

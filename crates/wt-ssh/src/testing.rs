@@ -633,6 +633,12 @@ impl russh::server::Handler for MockHandler {
             session.data(channel, b"MOUSE\r\n".to_vec())?;
             return Ok(());
         }
+        // SGR 编码（`?1006h`）的报文是 `\e[<b;x;yM`：全可打印，但同样只回一行标记，
+        // 让验收能确认「字节到了服务端」而不是只在前端记了一笔。
+        if data.starts_with(b"\x1b[<") {
+            session.data(channel, b"MOUSE\r\n".to_vec())?;
+            return Ok(());
+        }
         // 验收要验「编码切换」（`TER-006`）：输入里带 `__gbk__` 时回一段 **GBK 字节**
         // 的中文。只有按 GBK 解码才看得见「中文」，按 UTF-8 解是一串替换符——
         // 这比断言「下拉框变了」有意义得多。
@@ -655,6 +661,24 @@ impl russh::server::Handler for MockHandler {
         // 鼠标上报（`TER-022`）：让客户端开启 1000 模式，之后的点击会变成鼠标序列
         if String::from_utf8_lossy(data).contains("__mouseon__") {
             session.data(channel, b"\x1b[?1000h".to_vec())?;
+            return Ok(());
+        }
+        // 1002（按键事件跟踪）+ 1006（SGR 编码）：X10 编码把坐标压进单个字节，
+        // ≥224 就溢出——点终端右下角必然踩到。所以这两种模式也要能开、能发对。
+        if String::from_utf8_lossy(data).contains("__mousesgr__") {
+            session.data(channel, b"\x1b[?1002h\x1b[?1006h".to_vec())?;
+            return Ok(());
+        }
+        // 远端标题（`TER-001` 的 `OSC 2`）：真实 shell 里是 vim/top 之类在设，
+        // 客户端应当把它显示成标签名
+        if String::from_utf8_lossy(data).contains("__title__") {
+            session.data(channel, "\u{1b}]2;远端标题-vim\u{7}".as_bytes().to_vec())?;
+            return Ok(());
+        }
+        // 超长标题：客户端必须截断，否则标签栏会被一个远端撑坏
+        if String::from_utf8_lossy(data).contains("__titlelong__") {
+            let long: String = "x".repeat(60);
+            session.data(channel, format!("\u{1b}]2;{long}\u{7}").into_bytes())?;
             return Ok(());
         }
         let echo = format!("echo:{}", String::from_utf8_lossy(data)).into_bytes();
