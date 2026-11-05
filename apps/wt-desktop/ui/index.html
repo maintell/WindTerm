@@ -1243,6 +1243,21 @@
           <span class="set-scope">全局</span>
           <input id="look-scrollback" type="number" min="1000" max="1000000" step="1000" />
         </div>
+        <div class="set-row" data-kw="选中 复制 自动 autoselect copy 剪贴板 关闭 关掉">
+          <span class="set-name" data-i18n="set.autoCopy">选中即复制</span>
+          <span class="set-scope">全局</span>
+          <input type="checkbox" id="look-autocopy-on" />
+        </div>
+        <div class="set-row" data-kw="选中 复制 剪贴板 selection copy 延迟 防抖 debounce 毫秒">
+          <span class="set-name" data-i18n="set.autoCopyDelay">选中即复制延迟</span>
+          <span class="set-scope">全局</span>
+          <select id="look-autocopy">
+            <option value="0">立即（不等待）</option>
+            <option value="120">120 毫秒</option>
+            <option value="300">300 毫秒</option>
+            <option value="600">600 毫秒</option>
+          </select>
+        </div>
         <div class="set-row" data-kw="配置文件 config toml 路径 位置 备份 在哪">
           <span class="set-name" data-i18n="set.configFile">配置文件</span>
           <span class="set-scope">全局</span>

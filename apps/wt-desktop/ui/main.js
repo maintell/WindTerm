@@ -233,6 +233,8 @@ async function loadPrefs() {
     if (Number.isFinite(p.netConnectTimeoutSecs)) netTimeout = p.netConnectTimeoutSecs;
     if (Number.isFinite(p.netKeepaliveSecs)) netKeepalive = p.netKeepaliveSecs;
     if (Number.isFinite(p.netKeepaliveMaxMissed)) netMaxMissed = p.netKeepaliveMaxMissed;
+    if (Number.isFinite(p.autoCopyDelayMs)) autoCopyDelay = clampNum(p.autoCopyDelayMs, 0, 2000);
+    if (typeof p.autoCopyOnSelect === "boolean") autoCopy = p.autoCopyOnSelect;
     if (p.language === "en" || p.language === "zh") uiLang = p.language;
     // 导入的配色要在建会话之前就进表，否则第一个终端会先闪一下默认配色
     for (const t of p.customThemes ?? []) {
@@ -271,6 +273,8 @@ async function savePrefs() {
         netConnectTimeoutSecs: netTimeout,
         netKeepaliveSecs: netKeepalive,
         netKeepaliveMaxMissed: netMaxMissed,
+        autoCopyOnSelect: autoCopy,
+        autoCopyDelayMs: autoCopyDelay,
         language: uiLang,
       },
     });
@@ -459,7 +463,7 @@ function createView(label) {
           autoCopyWarned = true;
           setStatus(`自动复制失败：${e}（Ctrl+Shift+C 仍可用）`);
         });
-    }, 120);
+    }, autoCopyDelay);
   });
 
   term.onResize(({ cols, rows }) => {
@@ -758,19 +762,44 @@ function afterOpen(view, statusText) {
   void pump(view);
 }
 
+/**
+ * 带死线的 `invoke`。
+ *
+ * 后端命令卡住时 `await` 永远不返回：界面上表现为「点了没反应」，既不报错也不亮
+ * 灯（验收里则是一次莫名其妙的 20 秒超时）。给它一条死线，超时就明确说出来。
+ * 注意：超时之后后台**可能**已经把会话建起来了，所以提示里要写清怎么收拾。
+ */
+function invokeWithTimeout(cmd, args, ms, what) {
+  let timer = null;
+  return Promise.race([
+    invoke(cmd, args).finally(() => clearTimeout(timer)),
+    new Promise((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`${what}超时（${Math.round(ms / 1000)} 秒没有响应）`)),
+        ms,
+      );
+    }),
+  ]);
+}
+
 async function openLocal() {
   const view = createView("本地终端");
   // 复制标签要知道这是一条本地会话（`TER-001`）
   view.isLocalTerminal = true;
   view.fit.fit();
   try {
-    view.handle = await invoke("local_open", {
-      cols: view.term.cols,
-      rows: view.term.rows,
-    });
+    view.handle = await invokeWithTimeout(
+      "local_open",
+      { cols: view.term.cols, rows: view.term.rows },
+      20000,
+      "打开本地终端",
+    );
   } catch (e) {
     view.status = `打开失败：${e}`;
     view.term.write(`\r\n\x1b[31m打开失败：${e}\x1b[0m\r\n`);
+    // 超时的时候后台可能已经把 shell 起来了，只是回不来：告诉用户怎么收场，
+    // 别让人以为「什么都没发生」又连点几次。
+    view.term.write("\x1b[2m如果反复失败，关掉这个标签重开一次即可\x1b[0m\r\n");
     setActive(view);
     setStatus("打开失败");
     return;
@@ -1807,6 +1836,8 @@ function applyLook() {
 
 /** 选中即复制（Unix 终端习惯，TER-011）。验收脚本可关掉。 */
 let autoCopy = true;
+/** 防抖延迟（毫秒，`TER-011`）：拖选会连续触发，不防抖就每挪一格写一次剪贴板 */
+let autoCopyDelay = 120;
 /** 自动复制失败只提示一次，避免每拖一次选就刷一条状态 */
 let autoCopyWarned = false;
 
@@ -3591,6 +3622,8 @@ const askTitle = document.getElementById("ask-title");
 const askBody = document.getElementById("ask-body");
 const encodingSelect = document.getElementById("encoding");
 const lookThemeSelect = document.getElementById("look-theme");
+const lookAutoCopySelect = document.getElementById("look-autocopy");
+const lookAutoCopyOnBox = document.getElementById("look-autocopy-on");
 const lookFontSelect = document.getElementById("look-font");
 const lookFontWarn = document.getElementById("look-font-warn");
 const lookMonoWarn = document.getElementById("look-mono-warn");
@@ -4239,6 +4272,8 @@ function initLookControls() {
   lookSizeInput.value = String(look.fontSize);
   lookHeightInput.value = String(look.lineHeight);
   lookScrollbackInput.value = String(look.scrollback);
+  lookAutoCopySelect.value = String(autoCopyDelay);
+  lookAutoCopyOnBox.checked = autoCopy;
 }
 
 lookThemeSelect.addEventListener("change", () => {
@@ -4249,6 +4284,24 @@ lookThemeSelect.addEventListener("change", () => {
 lookFontSelect.addEventListener("change", () => {
   look.fontFamily = lookFontSelect.value;
   applyLook();
+});
+
+// 选中即复制的防抖延迟（`TER-011`）：拖选时每挪一格都写一次剪贴板很浪费，
+// 但「立即」也是合法选择——有人就是要在拖完立刻粘贴。
+// 规格要求「选择时自动复制」可关闭（`TER-011`）：有人用剪贴板放别的东西，
+// 选区一动就被覆盖很烦。关掉之后 `Ctrl+Shift+C` 仍然可用。
+lookAutoCopyOnBox.addEventListener("change", () => {
+  autoCopy = lookAutoCopyOnBox.checked;
+  void savePrefs();
+  setStatus(autoCopy ? "选中即复制：开" : "选中即复制：关（Ctrl+Shift+C 仍可用）");
+});
+
+lookAutoCopySelect.addEventListener("change", () => {
+  autoCopyDelay = clampNum(Number(lookAutoCopySelect.value) || 0, 0, 2000);
+  void savePrefs();
+  setStatus(
+    autoCopyDelay === 0 ? "选中即复制：立即" : `选中即复制延迟：${autoCopyDelay} 毫秒`,
+  );
 });
 
 lookSizeInput.addEventListener("change", () => setFontSize(Number(lookSizeInput.value)));
@@ -4622,7 +4675,7 @@ const setEmpty = document.getElementById("set-empty");
 const SET_GROUPS = [
   ["常规", ["ui-lang", "local-shell", "local-shell-path"]],
   ["外观", ["look-size", "look-height"]],
-  ["终端", ["encoding", "look-theme", "theme-import-open", "look-font", "look-scrollback"]],
+  ["终端", ["encoding", "look-theme", "theme-import-open", "look-font", "look-scrollback", "look-autocopy-on", "look-autocopy"]],
   ["文件", ["files-auto-open"]],
   ["安全", ["master-open", "known-open"]],
   // 按「行里第一个带 id 的元素」认领：配置文件那行首个 id 是路径 span，不是按钮
@@ -4651,6 +4704,8 @@ const SET_META = {
   "net-timeout": ["15 秒", false],
   "net-keepalive": ["30 秒", false],
   "net-max-missed": ["3 次", false],
+  "look-autocopy-on": ["开", false],
+  "look-autocopy": ["120 毫秒", false],
 };
 
 function applySetMeta() {
@@ -4878,6 +4933,8 @@ const I18N = {
     "set.fontSize": "字号",
     "set.lineHeight": "行高",
     "set.scrollback": "回滚行数",
+    "set.autoCopy": "选中即复制",
+    "set.autoCopyDelay": "选中即复制延迟",
     "set.encoding": "终端编码",
     "set.theme": "配色",
     "set.themeImport": "导入配色方案",
@@ -4913,6 +4970,8 @@ const I18N = {
     "set.fontSize": "Font size",
     "set.lineHeight": "Line height",
     "set.scrollback": "Scrollback lines",
+    "set.autoCopy": "Copy on select",
+    "set.autoCopyDelay": "Copy-on-select delay",
     "set.encoding": "Terminal encoding",
     "set.theme": "Color scheme",
     "set.themeImport": "Import color scheme",
@@ -5165,7 +5224,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-100",
+  ui: "wt-ui-103",
   /**
    * 验收用：刷新会话树并等它**画完**。
    *

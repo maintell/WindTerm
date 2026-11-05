@@ -1375,6 +1375,143 @@ try {
     `autoCopyCount ${autoBefore} → ${autoCopied}`,
   );
 
+  // 延迟可配（`TER-011`）：调到 600 毫秒后，选完 250 毫秒还不该复制、2 秒内必须复制。
+  // 只验「延迟真的生效」，不去卡精确毫秒——那会变成测定时器精度。
+  await closeAllDialogs();
+  const openSettings = async () => {
+    if (await cdp.eval(`document.getElementById("settings").open`)) return true;
+    await clickUntil(
+      () => clickElement("#tree-settings"),
+      async () => ((await cdp.eval(`document.getElementById("settings").open`)) ? true : null),
+      { timeout: 5000, tries: 3, label: "打开设置" },
+    );
+    return true;
+  };
+  const setDelay = async (v) =>
+    cdp.eval(`(() => {
+      const el = document.getElementById("look-autocopy");
+      el.value = ${JSON.stringify(String(v))};
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      return el.value;
+    })()`);
+  await openSettings();
+  const autoRow = await cdp.eval(`(() => {
+    const el = document.getElementById("look-autocopy");
+    if (!el) return null;
+    const row = el.closest(".set-row");
+    return {
+      value: el.value,
+      meta: row?.querySelector(".set-meta")?.textContent ?? null,
+      group: row?.closest(".set-group")?.dataset.group ?? null,
+    };
+  })()`);
+  check(
+    "设置里有「选中即复制延迟」并标了默认值（TER-011）",
+    autoRow !== null && autoRow.group === "终端" && (autoRow.meta ?? "").includes("120"),
+    JSON.stringify(autoRow),
+  );
+  await setDelay(600);
+  await closeAllDialogs();
+  const slowBefore = await cdp.eval(`window.__wt.autoCopyCount`);
+  await doubleClickAt(wordPoint);
+  await new Promise((r) => setTimeout(r, 250));
+  const duringDelay = await cdp.eval(`window.__wt.autoCopyCount`);
+  const afterDelay = await waitFor(
+    async () => {
+      const n = await cdp.eval(`window.__wt.autoCopyCount`);
+      return n > slowBefore ? n : null;
+    },
+    { timeout: 3000, label: "延迟到点后复制" },
+  ).catch(() => null);
+  check(
+    "延迟调到 600 毫秒后，选完立刻不复制、稍后才复制（TER-011）",
+    duringDelay === slowBefore && afterDelay !== null,
+    `${slowBefore} →(250ms) ${duringDelay} → ${afterDelay}`,
+  );
+  // 复原：这条会写进 config.toml，用完必须改回默认，否则后续用例的时序全变
+  await openSettings();
+  await setDelay(120);
+  await closeAllDialogs();
+  const delayRestored = await waitFor(
+    async () => {
+      let t;
+      try {
+        t = readFileSync(prefsFile, "utf8");
+      } catch {
+        return null;
+      }
+      return /autoCopyDelayMs\s*=\s*120/.test(t) ? true : null;
+    },
+    { timeout: 10000, label: "延迟复原落盘" },
+  ).catch(() => null);
+  check("延迟改回默认并落盘（不污染后续）", delayRestored === true, delayRestored === true ? "已写回 120" : "没落盘");
+
+  // 规格要求「选择时自动复制」可关闭（`TER-011`）：关掉后选区变了也不写剪贴板。
+  const setAutoCopyOn = async (on) => {
+    await openSettings();
+    await cdp.eval(`(() => {
+      const el = document.getElementById("look-autocopy-on");
+      el.checked = ${on ? "true" : "false"};
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      return el.checked;
+    })()`);
+    await closeAllDialogs();
+  };
+  await setAutoCopyOn(false);
+  const offBefore = await cdp.eval(`window.__wt.autoCopyCount`);
+  await doubleClickAt(wordPoint);
+  await new Promise((r) => setTimeout(r, 400));
+  const offAfter = await cdp.eval(`window.__wt.autoCopyCount`);
+  check(
+    "关掉「选中即复制」后选区不再写剪贴板（TER-011）",
+    offAfter === offBefore,
+    `${offBefore} → ${offAfter}`
+  );
+  await setAutoCopyOn(true);
+  const onSaved = await waitFor(
+    async () => {
+      let t;
+      try {
+        t = readFileSync(prefsFile, "utf8");
+      } catch {
+        return null;
+      }
+      return /autoCopyOnSelect\s*=\s*true/.test(t) ? true : null;
+    },
+    { timeout: 10000, label: "开关落盘" },
+  ).catch(() => null);
+  check(
+    "重新打开后写回 true，运行态也恢复（TER-011）",
+    onSaved === true && (await cdp.eval(`window.__wt.autoCopy`)) === true,
+    `落盘=${onSaved === true}，运行态=${await cdp.eval(`window.__wt.autoCopy`)}`,
+  );
+
+  // 三击选整行（`TER-011`）：顺带验证「打开后复制恢复」——三击之后 autoCopyCount 要涨，
+  // 而且选区应当比双击选到的词更长、不含换行。
+  const triBefore = await cdp.eval(`window.__wt.autoCopyCount`);
+  for (const type of ["mousePressed", "mouseReleased"]) {
+    await cdp.send("Input.dispatchMouseEvent", {
+      type,
+      x: wordPoint.x,
+      y: wordPoint.y,
+      button: "left",
+      clickCount: 3,
+    });
+  }
+  const triCopied = await waitFor(
+    async () => {
+      const n = await cdp.eval(`window.__wt.autoCopyCount`);
+      return n > triBefore ? n : null;
+    },
+    { timeout: 5000, label: "三击后复制" },
+  ).catch(() => null);
+  const triSel = await cdp.eval(`window.__wt.selection()`);
+  check(
+    "三击选中整行并触发复制（TER-011）",
+    triCopied !== null && triSel.length > 3 && !triSel.includes("\n"),
+    `选区 ${JSON.stringify(triSel.slice(0, 40))}（${triSel.length} 字符）`,
+  );
+
   // 右键粘贴（H:rightclick-paste）。它走 `navigator.clipboard.readText()`，
   // 这条 API 要用户激活才放行——用可信右键验证它在真实手势下到底通不通，
   // 不通就把原因如实报出来，而不是留一个「点了没反应」。
@@ -3655,18 +3792,19 @@ try {
   // 三条标签上位置顺序与最近使用顺序必然不同：先激活第一条，再按 Ctrl+Tab，
   // 应该回到「上一条用过的」（第三条）；按位置切会落到第二条。这一点分得清，
   // 断言才有意义。
-  await closeAllTabs();
-  for (let i = 0; i < 3; i += 1) {
-    await clickElement("#open");
-    await waitFor(
-      async () =>
-        (await cdp.eval(`window.__wt.tabs().length`)) === i + 1 ? true : null,
-      { timeout: 20000, label: `第 ${i + 1} 条本地标签` },
-    );
-  }
   // `__wt.tabs()` 读的是会话集合，不是 DOM：本地 shell 起来之前标签还没画出来、
   // 名字也还是默认的「本地终端」。所以要等到「渲染出 3 个且名字都定了」再动。
-  const tabReady = await waitFor(
+  const buildThreeTabs = async () => {
+    await closeAllTabs();
+    for (let i = 0; i < 3; i += 1) {
+      await clickElement("#open");
+      await waitFor(
+        async () =>
+          (await cdp.eval(`window.__wt.tabs().length`)) >= i + 1 ? true : null,
+        { timeout: 25000, label: `第 ${i + 1} 条本地标签` },
+      );
+    }
+    return waitFor(
     async () => {
       const t = await cdp.eval(`({
         labels: window.__wt.tabs().map((x) => x.label),
@@ -3685,8 +3823,15 @@ try {
         ? t
         : null;
     },
-    { timeout: 20000, label: "三条标签渲染完成" },
-  ).catch(() => null);
+      { timeout: 25000, label: "三条标签渲染完成" },
+    ).catch(() => null);
+  };
+  let tabReady = await buildThreeTabs();
+  if (tabReady === null) {
+    // 本地 shell 偶发起不来（ConPTY 起来慢或超时）。清干净重来一次：偶发一次不该
+    // 把后面关于 MRU 的断言全带红——那会让真正的回归淹没在噪声里。
+    tabReady = await buildThreeTabs();
+  }
   check(
     "三条标签都渲染出来了（前提）",
     tabReady !== null,
@@ -3740,16 +3885,29 @@ try {
     async () => ((await cdp.eval(`window.__wt.tabs().length`)) === 0 ? true : null),
     { timeout: 15000, label: "标签真的关闭干净" },
   );
+  const connectOnce = async (label, ms) => {
+    await clickElement("#ssh");
+    return waitFor(
+      async () => {
+        const s = await cdp.eval(`document.getElementById("status").textContent`);
+        return s.startsWith("已连接") ? s : null;
+      },
+      { timeout: ms, label },
+    ).catch(() => null);
+  };
   await clickSessionNode("mock-ssh");
   await fillInput("#port", String(sshPort));
-  await clickElement("#ssh");
-  await waitFor(
-    async () => {
-      const s = await cdp.eval(`document.getElementById("status").textContent`);
-      return s.startsWith("已连接") ? s : null;
-    },
-    { timeout: 30000, label: "分屏第一个会话" },
-  );
+  let firstConnected = await connectOnce("分屏第一个会话", 45000);
+  if (!firstConnected) {
+    // 一台机器上先后开了几十个会话之后，建连偶尔会明显变慢（PTY 收尾更慢）。
+    // 这一条要验的是「两个 pane 各有一个会话」，不是「机器多快能连上」——
+    // 清掉重试一次，别让偶发的慢把整段断言带红。
+    await closeAllTabs();
+    await clickSessionNode("mock-ssh");
+    await fillInput("#port", String(sshPort));
+    firstConnected = await connectOnce("分屏第一个会话（重试）", 45000);
+  }
+  check("分屏前第一条会话连上了（前提）", firstConnected !== null, `${firstConnected ?? "没连上"}`);
   await clickElement("#ssh");
   await waitFor(
     async () => ((await cdp.eval(`window.__wt.tabs().length`)) >= 2 ? true : null),

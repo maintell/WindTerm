@@ -822,6 +822,14 @@ struct PrefsDto {
     net_keepalive_secs: u32,
     /// keepalive 连续丢失多少次算断线
     net_keepalive_max_missed: u32,
+    /// 选中即复制（`TER-011`）：规格要求默认开、可关。有人剪贴板里放着别的东西，
+    /// 选区一动就被覆盖很烦。关掉之后 `Ctrl+Shift+C` 仍然可用。
+    auto_copy_on_select: bool,
+    /// 选中即复制的防抖延迟（毫秒，`TER-011`）。
+    ///
+    /// 拖选会连续触发 `selectionchange`，不防抖就每挪一格写一次剪贴板；但 0
+    /// （立即）是合法的——有人就是要在拖完立刻粘贴。0..=2000，默认 120。
+    auto_copy_delay_ms: u32,
     /// 界面语言（`SET-012`）：`zh` / `en`。只覆盖标了 `data-i18n` 的元素，
     /// 其余文案仍是中文硬编码——如实写在 README 里。
     language: String,
@@ -857,6 +865,8 @@ impl Default for PrefsDto {
             net_connect_timeout_secs: 15,
             net_keepalive_secs: 30,
             net_keepalive_max_missed: 3,
+            auto_copy_on_select: true,
+            auto_copy_delay_ms: 120,
             language: "zh".into(),
         }
     }
