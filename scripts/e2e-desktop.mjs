@@ -2284,6 +2284,29 @@ try {
   const khAfterJump = readFileSync(khPath, "utf8").split("\n").filter(Boolean).length;
   check("跳板机与目标的主机密钥都被记录", khAfterJump >= 2, `${khAfterJump} 条`);
 
+  // 连接复用（`SES-024` AC-3）：同一条跳板机上再开一个会话，不该在它上面多登一次。
+  // 判据读**跳板机 mock 自己的会话计数**——这是「B 上 SSH 连接数」的直接对应物，
+  // 比读我们自己的池子计数更硬：池子计数只能证明我们以为复用了。
+  const jumpSessions1 = await cdp.eval(`window.__TAURI__.core.invoke("mock_jump_sessions")`);
+  const tabsBeforeReuse = await cdp.eval(`window.__wt.tabs().length`);
+  await clickElement("#ssh");
+  await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.tabs().length`);
+      return t > tabsBeforeReuse ? t : null;
+    },
+    { timeout: 30000, label: "第二条经跳板机的连接" },
+  ).catch(() => null);
+  const jumpSessions2 = await cdp.eval(`window.__TAURI__.core.invoke("mock_jump_sessions")`);
+  const jumpStats = await cdp.eval(`window.__TAURI__.core.invoke("jump_pool_stats")`);
+  check(
+    "第二条经同一跳板机的连接不再新建 SSH 会话（SES-024 AC-3）",
+    jumpSessions2 === jumpSessions1 && jumpStats.reuses >= 1,
+    `跳板机会话 ${jumpSessions1}→${jumpSessions2}，池 ${JSON.stringify(jumpStats)}`,
+  );
+  // 收掉多开的那个标签：后面的用例按「一条会话」的假设走
+  await pressChord(3, "q", "KeyQ", 81);
+
   // 收起跳板机：后面的用例仍走直连
   await cdp.eval(`(() => {
     const box = document.getElementById("use-jump");

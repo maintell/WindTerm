@@ -387,11 +387,15 @@ struct MockServer {
     fs: MockFs,
     links: MockLinks,
     modes: MockModes,
+    /// 已经接受过多少个客户端连接。`SES-024` AC-3 的直接证据：
+    /// 「第二条经同一跳板机的连接不该让它的会话数再涨」只能靠这个数说话。
+    sessions: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl russh::server::Server for MockServer {
     type Handler = MockHandler;
     fn new_client(&mut self, _peer: Option<std::net::SocketAddr>) -> MockHandler {
+        self.sessions.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         MockHandler {
             channels: Arc::new(AsyncMutex::new(HashMap::new())),
             subsystems: Arc::new(AsyncMutex::new(std::collections::HashSet::new())),
@@ -825,6 +829,8 @@ pub struct MockSshServer {
     pub fs: MockFs,
     /// 符号链接表：链接路径 → 目标（`FIL-002`）。目标不存在就是断链
     pub links: MockLinks,
+    /// 累计接受过多少个 SSH 客户端连接（`SES-024` AC-3 的判据）
+    pub sessions: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl MockSshServer {
@@ -852,10 +858,12 @@ impl MockSshServer {
             fs: Arc::new(AsyncMutex::new(HashMap::new())),
             links: Arc::new(AsyncMutex::new(HashMap::new())),
             modes: Arc::new(AsyncMutex::new(HashMap::new())),
+            sessions: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }));
         let fs = server.fs.clone();
         let links = server.links.clone();
         let modes = server.modes.clone();
+        let sessions = server.sessions.clone();
         tokio::spawn(server.run_on_socket(config, listener));
 
         // 给监听循环一点时间就绪，减少首连抖动
@@ -866,6 +874,7 @@ impl MockSshServer {
             fs,
             links,
             modes,
+            sessions,
         }
     }
 

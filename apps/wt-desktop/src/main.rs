@@ -63,6 +63,10 @@ struct AppState {
     /// 没有这两个数，「连接复用了」只能靠感觉——验收要能说清「这一轮 N 次操作只开了 1 条连接」。
     sftp_opens: std::sync::atomic::AtomicU64,
     sftp_reuses: std::sync::atomic::AtomicU64,
+    /// 复用的跳板机连接（`SES-024` AC-3），键见 `jump_key`。
+    jump_pool: std::sync::Mutex<HashMap<String, JumpEntry>>,
+    jump_opens: std::sync::atomic::AtomicU64,
+    jump_reuses: std::sync::atomic::AtomicU64,
 }
 
 /// 一条运行中的隧道。`-L`/`-D` 在本地监听、`-R` 在服务端监听——
@@ -1833,6 +1837,7 @@ struct SshOpenDto {
 /// 出现，而且没人能解释为什么。返回的 `bool` 表示本次是否新增了主机密钥
 /// （界面据此提示用户已经记录指纹）。
 async fn connect_accept_new(
+    state: &AppState,
     cfg: &wt_ssh::SshConfig,
     auth: &AuthInput,
     jumps: &[JumpReq],
@@ -1840,6 +1845,10 @@ async fn connect_accept_new(
     let Some(first) = jumps.first() else {
         return connect_direct_accept_new(cfg, auth).await;
     };
+    // 单跳是最常见的形态，走缓存（`SES-024` AC-3）；多跳先不缓存，见下面的注释
+    if jumps.len() == 1 {
+        return connect_via_cached_jump(state, cfg, auth, first).await;
+    }
 
     // 第 1 跳由本机直连（它自己的主机密钥也走 accept-new）
     let first_cfg = hop_cfg(first)?;
@@ -1861,6 +1870,70 @@ async fn connect_accept_new(
     // 最后一跳连目标：它**没法 probe**（`probe_host_key` 是直连的，目标只有跳板机能到），
     // 所以密钥未知时就地接受并记录——这就是 `trust_observed_key` 存在的理由。
     let (conn, a) = connect_over_accept_new(&conn, jumps.len(), &link, cfg, auth).await?;
+    Ok((conn, added || a))
+}
+
+/// 经**单台**跳板机连接，并复用这台跳板机的 SSH 会话（`SES-024` AC-3）。
+///
+/// 复用失败（跳板机重启、连接被回收）就摘掉缓存重建一次——不能让一条坏连接把
+/// 后续所有连接都卡死。
+///
+/// 多跳暂时不缓存：那要把整条链的每一段都存下来，失效与凭据匹配的复杂度高一个量级，
+/// 先把最常见的一半做对并如实标注。
+async fn connect_via_cached_jump(
+    state: &AppState,
+    cfg: &wt_ssh::SshConfig,
+    auth: &AuthInput,
+    hop: &JumpReq,
+) -> Result<(wt_ssh::SshConnection, bool), String> {
+    let hop_cfg = hop_cfg(hop)?;
+    let link = format!("{}:{}", hop_cfg.host, hop_cfg.port);
+    let key = jump_key(hop);
+
+    // 命中就先试。必须把 `Arc` 拿出来再放锁：`connect_over_accept_new` 里有 await，
+    // 持着 `std::sync::MutexGuard` 跨 await 会直接编译不过（也确实会卡住别的连接）。
+    let cached = state.jump_pool.lock().ok().and_then(|mut m| {
+        m.get_mut(&key).map(|e| {
+            e.last_used = std::time::Instant::now();
+            e.conn.clone()
+        })
+    });
+    if let Some(conn) = cached {
+        state
+            .jump_reuses
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        match connect_over_accept_new(&conn, 1, &link, cfg, auth).await {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                trace(&format!("[jump] 缓存连接不可用，摘掉重建：{e}"));
+                if let Ok(mut m) = state.jump_pool.lock() {
+                    m.remove(&key);
+                }
+            }
+        }
+    }
+
+    let hop_auth = AuthInput::Password(hop.password.clone());
+    let (conn, added) = connect_direct_accept_new(&hop_cfg, &hop_auth).await?;
+    state
+        .jump_opens
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let shared = std::sync::Arc::new(conn);
+    if let Ok(mut m) = state.jump_pool.lock() {
+        if m.len() >= JUMP_POOL_MAX {
+            if let Some(victim) = m.iter().min_by_key(|(_, e)| e.last_used).map(|(k, _)| k.clone()) {
+                m.remove(&victim);
+            }
+        }
+        m.insert(
+            key,
+            JumpEntry {
+                conn: shared.clone(),
+                last_used: std::time::Instant::now(),
+            },
+        );
+    }
+    let (conn, a) = connect_over_accept_new(&shared, 1, &link, cfg, auth).await?;
     Ok((conn, added || a))
 }
 
@@ -2058,6 +2131,28 @@ fn ssh_auth(input: &AuthInput) -> wt_ssh::Auth<'_> {
     }
 }
 
+/// 池里的一条跳板机连接（`SES-024` AC-3）。
+///
+/// 为什么值得缓存：不缓存的话，每开一个标签就在跳板机上重新登一次，`ss` 上越堆越多；
+/// 缓存之后第二条连接只在**已有的那条 SSH 会话**上新开一条 `direct-tcpip`。
+struct JumpEntry {
+    conn: std::sync::Arc<wt_ssh::SshConnection>,
+    last_used: std::time::Instant,
+}
+
+const JUMP_POOL_MAX: usize = 8;
+
+/// 缓存的键：主机 + 端口 + 用户名 + 口令指纹。
+///
+/// 口令进指纹是为了「换了凭据就是另一条会话」——拿旧连接顶替新凭据，出问题时
+/// 会查不出是认证还是复用的问题。
+fn jump_key(hop: &JumpReq) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    hop.password.hash(&mut h);
+    format!("{}:{}:{}|{:x}", hop.host.trim(), hop.port, hop.user.trim(), h.finish())
+}
+
 /// 跳板机参数（`SES-024`）。
 ///
 /// 目前是连接表单里的临时选项，**还不是会话属性**：`jump.sessionId` 没进数据模型，
@@ -2167,7 +2262,7 @@ async fn ssh_open(
     }
 
     let jumps = resolve_jumps(&state, jump.as_ref())?;
-    let (conn, host_key_added) = connect_accept_new(&cfg, &auth, &jumps).await?;
+    let (conn, host_key_added) = connect_accept_new(&state, &cfg, &auth, &jumps).await?;
 
     let fingerprint = conn.server_fingerprint().unwrap_or_default();
     // 空闲连接会被 NAT/防火墙静默断开，按会话配置发心跳（默认 30 秒）；
@@ -2204,6 +2299,10 @@ static MOCK_FS: std::sync::OnceLock<wt_ssh::testing::MockFs> = std::sync::OnceLo
 static MOCK_LINKS: std::sync::OnceLock<wt_ssh::testing::MockLinks> = std::sync::OnceLock::new();
 #[cfg(feature = "e2e-mock")]
 static MOCK_PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+/// 跳板机 mock 的会话计数（`SES-024` AC-3 的证据：第二条连接不该让它再涨）
+#[cfg(feature = "e2e-mock")]
+static MOCK_JUMP_SESSIONS: std::sync::OnceLock<std::sync::Arc<std::sync::atomic::AtomicUsize>> =
+    std::sync::OnceLock::new();
 
 /// 诊断用：mock 服务端的端口（前端拿不到 stdout，用一个命令问）
 #[tauri::command]
@@ -2369,7 +2468,7 @@ async fn open_sftp(
 
     // 主机密钥与 `ssh_open` 走完全相同的 accept-new 路径（见 `connect_accept_new`）
     let jumps = resolve_jumps(state, jump.as_ref())?;
-    let (conn, _added) = connect_accept_new(&cfg, &auth, &jumps).await?;
+    let (conn, _added) = connect_accept_new(state, &cfg, &auth, &jumps).await?;
     trace("[open_sftp] ← 连接就绪");
 
     let client = wt_ssh::SftpClient::open(conn)
@@ -2939,7 +3038,7 @@ async fn tunnel_start(
 
     let auth = auth_of(&arg.req);
     let jumps = resolve_jumps(&state, arg.jump.as_ref())?;
-    let (conn, _added) = connect_accept_new(&cfg, &auth, &jumps).await?;
+    let (conn, _added) = connect_accept_new(&state, &cfg, &auth, &jumps).await?;
     trace("[tunnel_start] 承载连接就绪");
 
     let via = format!("{}@{}", cfg.user, cfg.host);
@@ -3225,7 +3324,7 @@ async fn start_spec(state: &AppState, spec: &wt_core::TunnelSpec) -> Result<Tunn
     };
     apply_net_prefs(&mut cfg);
     let auth = AuthInput::Password(password);
-    let (conn, _added) = connect_accept_new(&cfg, &auth, &[]).await?;
+    let (conn, _added) = connect_accept_new(state, &cfg, &auth, &[]).await?;
     let conn = std::sync::Arc::new(conn);
     let (fwd, bound) = match spec.kind {
         wt_core::TunnelKind::Dynamic => {
@@ -3530,6 +3629,41 @@ match out {
 }
 }
 
+/// 跳板机连接池的可观测状态（`SES-024` AC-3）。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JumpPoolDto {
+    pooled: usize,
+    opens: u64,
+    reuses: u64,
+}
+
+#[tauri::command]
+fn jump_pool_stats(state: State<'_, AppState>) -> JumpPoolDto {
+    let pooled = state.jump_pool.lock().map(|m| m.len()).unwrap_or(0);
+    JumpPoolDto {
+        pooled,
+        opens: state.jump_opens.load(std::sync::atomic::Ordering::Relaxed),
+        reuses: state.jump_reuses.load(std::sync::atomic::Ordering::Relaxed),
+    }
+}
+
+/// mock 跳板机上累计接受过多少个 SSH 连接（`SES-024` AC-3 的判据）。
+#[tauri::command]
+fn mock_jump_sessions() -> u64 {
+    #[cfg(feature = "e2e-mock")]
+    {
+        MOCK_JUMP_SESSIONS
+            .get()
+            .map(|a| a.load(std::sync::atomic::Ordering::Relaxed) as u64)
+            .unwrap_or(0)
+    }
+    #[cfg(not(feature = "e2e-mock"))]
+    {
+        0
+    }
+}
+
 /// SFTP 连接池的可观测状态（`SEC-002` AC-2）。
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -3635,6 +3769,9 @@ fn main() {
         sftp_pool: std::sync::Mutex::new(HashMap::new()),
         sftp_opens: std::sync::atomic::AtomicU64::new(0),
         sftp_reuses: std::sync::atomic::AtomicU64::new(0),
+        jump_pool: std::sync::Mutex::new(HashMap::new()),
+        jump_opens: std::sync::atomic::AtomicU64::new(0),
+        jump_reuses: std::sync::atomic::AtomicU64::new(0),
         })
         .setup(|app| {
             create_main_window(app)?;
@@ -3670,6 +3807,8 @@ fn main() {
             sftp_remove,
             sftp_chmod,
         sftp_pool_stats,
+        jump_pool_stats,
+        mock_jump_sessions,
             tunnel_start,
             tunnel_start_saved,
             tunnel_autostart,
@@ -3776,6 +3915,7 @@ fn start_mock_ssh_if_requested() {
         // 所以「经跳板连上第一台」是一条真的两跳链路，不是模拟的。
         if std::env::var("WT_MOCK_SSH_JUMP").is_ok() {
             let jump = wt_ssh::testing::MockSshServer::start().await;
+            let _ = MOCK_JUMP_SESSIONS.set(jump.sessions.clone());
             println!("WT_MOCK_SSH_JUMP_PORT={}", jump.port);
         }
 
