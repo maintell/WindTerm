@@ -4947,7 +4947,13 @@ try {
 
   // 19x. 设置分组（`SET-001`）
   await closeAllDialogs();
-  await clickElement("#settings-open");
+  // 用树头那个入口并等面板真的打开：底栏的「设置」在没有会话时是不可见的，
+  // 以前这里只读 DOM 所以看不出来，一涉及「点面板里的东西」就全错
+  await clickUntil(
+    () => clickElement("#tree-settings"),
+    async () => (await cdp.eval(`document.getElementById("settings").open`)) ? true : null,
+    { timeout: 5000, tries: 3, label: "打开设置看分组" },
+  );
   const setGroups = await cdp.eval(`(() => {
     const gs = [...document.querySelectorAll("#set-body .set-group")];
     return gs.map((g) => ({
@@ -4998,6 +5004,45 @@ try {
     { timeout: 5000, label: "清空后恢复" },
   ).catch(() => null);
   check("清空搜索后分组全部回来（SET-001）", groupsBack !== null, `${groupsBack ?? 0} 组`);
+
+  // 回车跳转（`SET-002`）：搜完还得自己滚下去找，等于搜索只做了一半
+  await cdp.eval(`(() => {
+    const el = document.getElementById("set-search");
+    el.value = "字体";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    // 回车由搜索框自己处理：不聚焦的话按键落在别处，等于没按
+    el.focus();
+    return el.value;
+  })()`);
+  await waitFor(
+    async () => {
+      const n = await cdp.eval(`
+        [...document.querySelectorAll("#set-body .set-row")].filter((r) => !r.hidden).length
+      `);
+      return n >= 1 ? n : null;
+    },
+    { timeout: 5000, label: "搜到字体项" },
+  );
+  await pressChord(0, "Enter", "Enter", 13);
+  const jumped = await waitFor(
+    async () => {
+      const id = await cdp.eval(`document.activeElement?.id ?? null`);
+      return id === "look-font" ? id : null;
+    },
+    { timeout: 5000, label: "回车跳转" },
+  ).catch(() => null);
+  check(
+    "搜索框回车跳到第一个命中项并把焦点给它（SET-002）",
+    jumped === "look-font",
+    `${jumped ?? "焦点没跳过去"}`,
+  );
+  await cdp.eval(`(() => {
+    const el = document.getElementById("set-search");
+    el.value = "";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.focus();
+    return true;
+  })()`);
   await closeAllDialogs();
 
   // 19y. 设置搜索：命中高亮 + 分组路径（`SET-002`）

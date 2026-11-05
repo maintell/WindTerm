@@ -4818,6 +4818,21 @@ document.getElementById("tree-settings").addEventListener("click", openSettings)
 document.getElementById("set-close").addEventListener("click", () => settingsDialog.close());
 setSearch.addEventListener("input", () => filterSettings(setSearch.value));
 
+// 「跳转到该项」（`SET-002` / `SET-001`）：回车跳到第一个命中项并把焦点给它。
+// 搜完还得自己滚下去找，等于搜索只做了一半。
+setSearch.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Enter") return;
+  const row = [...document.querySelectorAll("#set-body .set-row")].find(
+    (r) => !r.hidden && r.querySelector("select, input, button"),
+  );
+  const ctl = row?.querySelector("select, input, button");
+  if (!ctl) return;
+  ev.preventDefault();
+  ctl.focus();
+  ctl.scrollIntoView({ block: "nearest" });
+  setStatus(`已跳到「${row.querySelector(".set-name")?.textContent ?? "该项"}」`);
+});
+
 encodingSelect.addEventListener("change", () => {
   encoding = encodingSelect.value;
   // 换编码时丢掉旧的流式状态：上一个编码留下的半截字符不该混进新口径
@@ -4956,7 +4971,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-90",
+  ui: "wt-ui-91",
   /** 界面语言与词表（验收用：查「有没有漏翻的键」） */
   i18n() {
     return {
