@@ -149,6 +149,8 @@ const STATUS_EN = {
   "实时广播已开启": "Live broadcast on",
   "危险命令被拦下，实时广播已关闭": "Dangerous command blocked; live broadcast turned off",
   "密码保存默认值已更新": "Saved password default updated",
+  "显示修改时间列：开": "Modified time column on",
+  "显示修改时间列：关": "Modified time column off",
   "实时广播已关闭": "Live broadcast off",
   "已关闭分屏": "Split view closed",
   "分屏需要至少两个已连接的会话": "Split view needs at least two connected sessions",
@@ -295,6 +297,7 @@ async function loadPrefs() {
     }
     if (typeof p.showSizeCol === "boolean") showSizeCol = p.showSizeCol;
     if (typeof p.showModeCol === "boolean") showModeCol = p.showModeCol;
+    if (typeof p.showMtimeCol === "boolean") showMtimeCol = p.showMtimeCol;
     if (Number.isFinite(p.autoRefreshSecs)) autoRefreshSecs = clampNum(p.autoRefreshSecs, 0, 3600);
     if (Number.isFinite(p.netConnectTimeoutSecs)) netTimeout = p.netConnectTimeoutSecs;
     if (Number.isFinite(p.netKeepaliveSecs)) netKeepalive = p.netKeepaliveSecs;
@@ -349,6 +352,7 @@ async function savePrefs() {
         rememberDefault,
         showSizeCol,
         showModeCol,
+        showMtimeCol,
         autoRefreshSecs,
         netConnectTimeoutSecs: netTimeout,
         netKeepaliveSecs: netKeepalive,
@@ -3063,6 +3067,16 @@ function modeString(mode) {
   return out;
 }
 
+/**
+ * 修改时间（`FIL-001` §1）：侧栏那一列只有 104px，塞不下完整日期，
+ * 所以只显示「月-日 时:分」，完整时间放 tooltip。服务端没给就留空。
+ */
+function formatMtime(sec) {
+  if (!sec) return "";
+  const d = new Date(sec * 1000);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
 function joinPath(dir, name) {
   return dir.endsWith("/") ? `${dir}${name}` : `${dir}/${name}`;
 }
@@ -3302,6 +3316,8 @@ let filesShowHidden = true;
  *  DTO 只有 name/size/mode 三列，没有 mtime/owner，不编造没有数据的列 */
 let showSizeCol = true;
 let showModeCol = true;
+/** 显示「修改时间」列（`FIL-001` §1）：侧栏窄，默认关，用户自己开 */
+let showMtimeCol = false;
 /** 自动刷新间隔（秒，`FIL-001` §6）：0=关（默认），窗口重新获得焦点时按间隔节流刷新 */
 let autoRefreshSecs = 0;
 /** 最近一次成功列目录的时刻；焦点刷新用它判断「距上次够不够久」 */
@@ -3334,6 +3350,12 @@ function sortedFiles() {
       d = a.size - b.size;
     } else if (filesSortKey === "mode") {
       d = (a.mode ?? 0) - (b.mode ?? 0);
+    } else if (filesSortKey === "mtime") {
+      // 服务端不给时间的排在最后：拿 0 顶上去会把它们全推到最前面，
+      // 看起来像「这些文件是 1970 年建的」
+      const am = a.mtime ?? Number.POSITIVE_INFINITY;
+      const bm = b.mtime ?? Number.POSITIVE_INFINITY;
+      d = am - bm;
     }
     return d !== 0 ? d * dir : a.name.localeCompare(b.name, "zh", { numeric: true });
   });
@@ -3384,6 +3406,14 @@ function buildFileRow(e, index) {
   row.append(label);
   if (showSizeCol) row.appendChild(size);
   if (showModeCol) row.appendChild(perms);
+  if (showMtimeCol) {
+    const mt = document.createElement("span");
+    mt.className = "mtime";
+    // 服务端没给就留空：写个「—」会让人以为那是真实值
+    mt.textContent = formatMtime(e.mtime);
+    mt.title = e.mtime ? new Date(e.mtime * 1000).toLocaleString() : "服务端没有提供修改时间";
+    row.appendChild(mt);
+  }
   // 单击只选中，双击才动作：与文件管理器一致，也让「改名/删除」有明确的操作对象
   row.addEventListener("click", () => selectEntry(e, row));
   row.addEventListener("dblclick", () => {
@@ -3405,6 +3435,7 @@ function renderSortHeader() {
   // 关掉的列，表头也一起藏：否则表头还占一格、内容却少了，视觉上会错位
   filesCols.classList.toggle("hide-size", !showSizeCol);
   filesCols.classList.toggle("hide-mode", !showModeCol);
+  filesCols.classList.toggle("hide-mtime", !showMtimeCol);
   for (const btn of filesCols.querySelectorAll(".filecol")) {
     const key = btn.dataset.sort;
     const active = filesSortKey === key;
@@ -5364,9 +5395,25 @@ tabsPositionSelect.addEventListener("change", () => {
 // 可配显示列（`FIL-001` 规格 §1）：大小 / 权限可单独关，名称恒显示。
 // 只改怎么画，不重新连服务端；关掉某列时若正在按它排序，退回默认排序（别按一列看不见的东西排）。
 const filesColSizeBox = document.getElementById("files-col-size");
+const filesColMtimeBox = document.getElementById("files-col-mtime");
+filesColMtimeBox.addEventListener("change", () => {
+  showMtimeCol = filesColMtimeBox.checked;
+  // 必须走 applyFileCols 而不是自己调 render*：它会在列被关掉时把排序退回默认，
+  // 否则「按时间排着序、列却没了」——排序键指向一个看不见的列
+  applyFileCols();
+  void savePrefs();
+  // 两条独立调用而不是三元：词表门禁只认「纯字面量 setStatus」
+  if (showMtimeCol) setStatus("显示修改时间列：开");
+  else setStatus("显示修改时间列：关");
+});
+
 const filesColModeBox = document.getElementById("files-col-mode");
 const applyFileCols = () => {
-  if ((!showSizeCol && filesSortKey === "size") || (!showModeCol && filesSortKey === "mode")) {
+  if (
+    (!showSizeCol && filesSortKey === "size") ||
+    (!showModeCol && filesSortKey === "mode") ||
+    (!showMtimeCol && filesSortKey === "mtime")
+  ) {
     filesSortKey = "default";
     filesSortDir = 1;
   }
@@ -6178,6 +6225,7 @@ window.__wt = {
       tabsPosition,
       showSizeCol,
       showModeCol,
+      showMtimeCol,
       autoRefreshSecs,
       autoRefreshCount,
       /** 成功列目录的累计次数（`SEC-002` AC-2 的验收靠它对齐操作与连接数） */
@@ -6393,6 +6441,7 @@ window.__wt = {
   rememberBox.value = rememberDefault;
   filesColSizeBox.checked = showSizeCol;
   filesColModeBox.checked = showModeCol;
+  filesColMtimeBox.checked = showMtimeCol;
   filesAutoRefreshSelect.value = String(autoRefreshSecs);
   tabsPositionSelect.value = tabsPosition;
   applyTabsPosition();

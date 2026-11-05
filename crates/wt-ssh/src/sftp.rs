@@ -32,6 +32,11 @@ pub struct RemoteEntry {
     pub broken: bool,
     /// 权限位（原始 `st_mode`，含 `S_IFMT` 类型位）。服务端不给就是 `None`
     pub mode: Option<u32>,
+    /// 修改时间（Unix 秒）。SFTP v3 的 `mtime` 就是 `u32`，服务端不给就是 `None`。
+    ///
+    /// 用 `u32` 而不是 `SystemTime`：这层只做协议搬运，格式化交给界面——
+    /// 时区与本地化在 Rust 侧做反而要多带一个库。2038 之后的年份这一版不管。
+    pub mtime: Option<u32>,
 }
 
 /// 一条 SFTP 会话。
@@ -84,23 +89,34 @@ impl SftpClient {
 
     /// 列出目录内容，按「目录在前、然后按名字」排序。
     pub async fn list_dir(&self, path: &str) -> Result<Vec<RemoteEntry>, WtError> {
-        let raw: Vec<(String, bool, bool, u64, Option<u32>)> = self
+        // 用结构体而不是元组：加上 mtime 之后是六元组，位置参数既难读、clippy 也会报
+        // `type_complexity`；字段名还能说明每个值是什么。
+        struct RawEntry {
+            name: String,
+            is_dir: bool,
+            is_symlink: bool,
+            size: u64,
+            mode: Option<u32>,
+            mtime: Option<u32>,
+        }
+        let raw: Vec<RawEntry> = self
             .inner
             .read_dir(path)
             .await
             .map_err(|e| sftp_error(&format!("无法列出目录 {path}"), e.to_string()))?
             .map(|f| {
                 let meta = f.metadata();
-                (
-                    f.file_name(),
-                    meta.is_dir(),
-                    meta.is_symlink(),
-                    meta.len(),
-                    meta.permissions,
-                )
+                RawEntry {
+                    name: f.file_name(),
+                    is_dir: meta.is_dir(),
+                    is_symlink: meta.is_symlink(),
+                    size: meta.len(),
+                    mode: meta.permissions,
+                    mtime: meta.mtime,
+                }
             })
             // 有的服务端会把 . 和 .. 也返回；界面上不需要
-            .filter(|(name, ..)| name != "." && name != "..")
+            .filter(|e| e.name != "." && e.name != "..")
             .collect();
 
         let dir = if path.ends_with('/') {
@@ -109,7 +125,15 @@ impl SftpClient {
             format!("{path}/")
         };
         let mut entries = Vec::with_capacity(raw.len());
-        for (name, is_dir, is_symlink, size, mode) in raw {
+        for RawEntry {
+            name,
+            is_dir,
+            is_symlink,
+            size,
+            mode,
+            mtime,
+        } in raw
+        {
             let mut entry = RemoteEntry {
                 name,
                 is_dir,
@@ -118,6 +142,7 @@ impl SftpClient {
                 link_target: None,
                 broken: false,
                 mode,
+                mtime,
             };
             if is_symlink {
                 // 链接目标要单独问一次服务端（`read_dir` 只给属性，不给目标）。
@@ -654,6 +679,7 @@ mod tests {
             link_target: None,
             broken: false,
             mode: None,
+            mtime: None,
         }
     }
 

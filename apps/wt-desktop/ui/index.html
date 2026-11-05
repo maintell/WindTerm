@@ -212,12 +212,17 @@
         color: var(--muted); user-select: none; }
       #files-cols .filecol { flex: 1; text-align: left; background: none; border: 0;
         border-radius: 0; padding: 2px 8px; font: inherit; color: var(--muted); cursor: pointer; }
-      #files-cols .filecol:nth-child(2), #files-cols .filecol:nth-child(3) { flex: 0 0 68px; }
+      /* 按 `data-sort` 定宽而不是 nth-child：加一列就得回头改序号的写法太脆 */
+      #files-cols .filecol[data-sort="size"],
+      #files-cols .filecol[data-sort="mode"] { flex: 0 0 68px; }
+      #files-cols .filecol[data-sort="mtime"] { flex: 0 0 104px; }
       #files-cols .filecol:hover, #files-cols .filecol.active { color: var(--fg); }
       #files-cols .arrow { font-size: 10px; }
       #files-cols.hide-size .filecol[data-sort="size"],
-      #files-cols.hide-mode .filecol[data-sort="mode"] { display: none; }
+      #files-cols.hide-mode .filecol[data-sort="mode"],
+      #files-cols.hide-mtime .filecol[data-sort="mtime"] { display: none; }
       #files-list .row .mode, #files-list .row .size { flex: 0 0 68px; }
+      #files-list .row .mtime { flex: 0 0 104px; color: #8a8a92; font-size: 10px; }
       #files-list .row .size { color: #8a8a92; }
       #files-list { flex: 1; overflow: auto; position: relative; }
       /* 虚拟滚动（FIL-001 AC-1）：行绝对定位，外层撑出总高度 */
@@ -1148,6 +1153,7 @@
             <button type="button" class="filecol" data-sort="name">名称 <span class="arrow"></span></button>
             <button type="button" class="filecol" data-sort="size">大小 <span class="arrow"></span></button>
             <button type="button" class="filecol" data-sort="mode">权限 <span class="arrow"></span></button>
+          <button type="button" class="filecol" data-sort="mtime">修改时间 <span class="arrow"></span></button>
           </div>
           <div id="files-list"></div>
           <div id="files-foot"><span id="files-msg"></span></div>
@@ -1438,6 +1444,7 @@
           <span class="set-scope">全局</span>
           <label title="显示文件大小"><input type="checkbox" id="files-col-size" />大小</label>
           <label title="显示权限位"><input type="checkbox" id="files-col-mode" />权限</label>
+          <label title="显示修改时间列（侧栏窄，默认不显示）"><input type="checkbox" id="files-col-mtime" />时间</label>
         </div>
         <div class="set-row" data-kw="自动刷新 刷新 焦点 focus 间隔 interval 秒 后台">
           <span class="set-name" data-i18n="set.autoRefresh">自动刷新间隔</span>

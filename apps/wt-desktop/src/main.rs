@@ -854,6 +854,9 @@ struct PrefsDto {
     /// DTO 只有 name/size/mode 三列，没有 mtime/owner，不编造没有数据的列。
     show_size_col: bool,
     show_mode_col: bool,
+    /// 显示「修改时间」列（`FIL-001` §1）。默认**关**：文件面板是侧栏，
+    /// 名称 + 大小 + 权限已经占满一行，再加一列时间会把文件名挤到几乎看不见。
+    show_mtime_col: bool,
     /// 自动刷新间隔（秒，`FIL-001` 规格 §6「窗口获得焦点时刷新，可配间隔」）。
     /// 0 = 关闭（默认）：焦点事件很频繁，不做节流会反复重连 SFTP。
     /// 正数 = 距上次列目录至少过这么多秒，才在窗口重新获得焦点时自动刷新一次。
@@ -933,6 +936,7 @@ impl Default for PrefsDto {
             tabs_position: "top".into(),
             show_size_col: true,
             show_mode_col: true,
+            show_mtime_col: false,
             auto_refresh_secs: 0,
             keymap: std::collections::BTreeMap::new(),
             custom_themes: Vec::new(),
@@ -2317,6 +2321,8 @@ struct RemoteEntryDto {
     broken: bool,
     /// 权限位（原始 `st_mode`，含类型位）；服务端不给就是 `None`
     mode: Option<u32>,
+    /// 修改时间（Unix 秒）；服务端不给就是 `None`。界面上按本地时区格式化
+    mtime: Option<u32>,
 }
 
 #[derive(serde::Serialize)]
@@ -2524,6 +2530,7 @@ async fn sftp_list(
                 link_target: e.link_target,
                 broken: e.broken,
                 mode: e.mode,
+                mtime: e.mtime,
             })
             .collect(),
     };

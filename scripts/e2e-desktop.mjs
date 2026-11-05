@@ -2988,6 +2988,75 @@ try {
   ).catch(() => null);
   check("显示列复原（不污染后续）", colRestored === true, `${colRestored}`);
 
+  // 修改时间列（`FIL-001` §1）：默认关（侧栏窄），开了要有值、能按时间排序。
+  // mock 用「内容长度」当 mtime 偏移：内容长的更晚，所以升序时短内容在前——
+  // 而按名字升序是 aaa 在前，两种顺序不同，能真的验出「排序换成了时间这个键」。
+  // 注意 `content` 是 **base64**：mock_seed_file 在 Rust 侧按 B64 解码，传原文会直接失败
+  await cdp.eval(`window.__TAURI__.core.invoke("mock_seed_file", { path: "/aaa.txt", content: ${JSON.stringify(Buffer.from("x".repeat(200)).toString("base64"))} })`);
+  await cdp.eval(`window.__TAURI__.core.invoke("mock_seed_file", { path: "/zzz.txt", content: ${JSON.stringify(Buffer.from("abc").toString("base64"))} })`);
+  await filesGoRoot();
+  const listBefore = await cdp.eval(`window.__wt.files.listCount`);
+  await cdp.eval(`(() => {
+    const sel = document.getElementById("files-session");
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    return sel.value;
+  })()`);
+  await waitFor(
+    async () => ((await cdp.eval(`window.__wt.files.listCount`)) > listBefore ? true : null),
+    { timeout: 15000, label: "重新列根目录" },
+  ).catch(() => null);
+  await setFileCol("files-col-mtime", true);
+  const mtimeState = await cdp.eval(`(() => {
+    const rows = [...document.querySelectorAll("#files-list .vrow")];
+    const cell = (name) => {
+      const row = rows.find((r) => r.textContent.startsWith(name));
+      return row?.querySelector(".mtime")?.textContent ?? null;
+    };
+    return {
+      show: window.__wt.files.showMtimeCol,
+      perRow: rows[0] ? rows[0].querySelectorAll(".mtime").length : 0,
+      aaa: cell("aaa.txt"),
+      colHidden: getComputedStyle(document.querySelector('#files-cols [data-sort="mtime"]')).display === "none",
+    };
+  })()`);
+  check(
+    "打开「时间」后每行多出修改时间列且格式正确（FIL-001）",
+    mtimeState.show === true &&
+      mtimeState.perRow === 1 &&
+      mtimeState.colHidden === false &&
+      /^[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}$/.test(mtimeState.aaa ?? ""),
+    JSON.stringify(mtimeState),
+  );
+  await cdp.eval(`document.querySelector('#files-cols [data-sort="mtime"]').click()`);
+  const byTime = await waitFor(
+    async () => {
+      const r = await cdp.eval(`(() => ({
+        key: window.__wt.files.sortKey,
+        names: [...document.querySelectorAll("#files-list .vrow")]
+          .map((x) => x.textContent)
+          .filter((t) => t.startsWith("aaa.txt") || t.startsWith("zzz.txt")),
+      }))()`);
+      return r.key === "mtime" && r.names.length === 2 ? r : null;
+    },
+    { timeout: 8000, label: "按时间排序" },
+  ).catch(() => null);
+  check(
+    "点表头能按修改时间排序（FIL-001）",
+    byTime !== null && byTime.names[0].startsWith("zzz.txt"),
+    byTime ? byTime.names.join(" → ") : "没排上",
+  );
+  await setFileCol("files-col-mtime", false);
+  const mtimeOff = await cdp.eval(`(() => ({
+    show: window.__wt.files.showMtimeCol,
+    key: window.__wt.files.sortKey,
+    gone: [...document.querySelectorAll("#files-list .vrow")].every((r) => !r.querySelector(".mtime")),
+  }))()`);
+  check(
+    "关掉「时间」后列消失且排序退回默认（FIL-001）",
+    mtimeOff.show === false && mtimeOff.gone === true && mtimeOff.key === "default",
+    JSON.stringify(mtimeOff),
+  );
+
   // 自动刷新（`FIL-001` 规格 §6）：窗口获得焦点时按「可配间隔」节流刷新。
   // 默认关；设为 5 秒后写进 config.toml；节流：距上次列目录不足间隔时不刷，
   // 用 _ageDirLoad 模拟「已过去足够久」再模拟一次焦点，应刷新一次且计数 +1。

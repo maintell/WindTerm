@@ -127,6 +127,17 @@ impl russh_sftp::server::Handler for MemSftp {
                 };
                 let mut attrs = FileAttributes::empty();
                 attrs.permissions = Some(modes.get(&full).copied().unwrap_or(default_mode));
+                // 修改时间用「内容长度」做偏移：mock 没有真实时钟，但又要让「按时间排序」
+                // 有确定顺序可断言——内容越长时间越晚，两个已知大小的文件就能验出排序。
+                // 目录没有内容，固定给基准时间。
+                attrs.mtime = Some(
+                    1_700_000_000
+                        + if is_dir {
+                            0
+                        } else {
+                            fs.get(&full).map(|v| v.len() as u32).unwrap_or(0)
+                        },
+                );
                 attrs.size = Some(if is_dir {
                     0
                 } else {
