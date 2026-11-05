@@ -2357,34 +2357,52 @@ keysReset.addEventListener("click", () => {
   setStatus("键位已恢复默认");
 });
 
+// 导出成**文件**（`TER-020`）：以前只复制到剪贴板，用户还得自己找地方存；
+// 导入以前用 prompt()——在 WebView 里是阻塞的，也没法校验来源。
 keysExport.addEventListener("click", async () => {
-  const text = JSON.stringify(
-    Object.fromEntries(Object.entries(keymap).map(([a, v]) => [a, v.chords])),
-    null,
-    2,
-  );
+  const payload = {
+    format: "windterm-keymap",
+    version: 1,
+    keymap: Object.fromEntries(Object.entries(keymap).map(([a, v]) => [a, v.chords])),
+  };
   try {
-    await navigator.clipboard.writeText(text);
-    setStatus("键位方案已复制到剪贴板");
-  } catch {
-    setStatus("复制失败：读剪贴板被拒绝");
+    const path = await invoke("keymap_export", {
+      json: JSON.stringify(payload, null, 2),
+    });
+    setStatus(`键位方案已导出：${path}`);
+  } catch (e) {
+    setStatus(`导出失败：${e}`);
   }
 });
 
-keysImport.addEventListener("click", () => {
-  const text = prompt("粘贴键位方案 JSON");
-  if (!text) return;
+const keysFileInput = document.getElementById("keys-file");
+keysImport.addEventListener("click", () => keysFileInput.click());
+keysFileInput.addEventListener("change", async () => {
+  const file = keysFileInput.files?.[0];
+  keysFileInput.value = "";
+  if (!file) return;
   try {
-    const parsed = JSON.parse(text);
+    const parsed = JSON.parse(await file.text());
+    // 兼容裸映射（老版本复制到剪贴板的就是它）
+    const source = parsed?.keymap ?? parsed;
     let applied = 0;
-    for (const [action, chords] of Object.entries(parsed)) {
-      if (!keymap[action] || !Array.isArray(chords)) continue;
+    const unknown = [];
+    for (const [action, chords] of Object.entries(source)) {
+      if (!keymap[action] || !Array.isArray(chords)) {
+        unknown.push(action);
+        continue;
+      }
       keymap[action].chords = chords.filter((c) => typeof c === "string");
       applied += 1;
     }
     saveKeymap();
     renderKeys();
-    setStatus(`已导入 ${applied} 项键位`);
+    // 不认识的动作用「跳过 N 项」说出来，而不是悄悄丢掉
+    setStatus(
+      unknown.length
+        ? `已导入 ${applied} 项键位，跳过 ${unknown.length} 项不认识的：${unknown.join("、")}`
+        : `已导入 ${applied} 项键位`,
+    );
   } catch (e) {
     setStatus(`导入失败：${e}`);
   }
@@ -4774,7 +4792,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-83",
+  ui: "wt-ui-84",
   /** 「本次记住」存了几条（验收用：只回数量，不回口令） */
   sessionPasswords() {
     return sessionPasswords.size;

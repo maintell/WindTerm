@@ -3433,6 +3433,37 @@ try {
   const zoomKept = (await cdp.eval(`window.__wt.keymap`)).zoomIn.chords.includes("Ctrl+=");
   check("重复键位被拒且原绑定不变", zoomKept === true, conflict);
 
+  // 键位方案的**文件级**导出/导入（`TER-020`）：以前只复制到剪贴板、导入靠 prompt()
+  await clickElement("#keys-export");
+  const keymapPath = await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      const m = /键位方案已导出：(.+)$/.exec(s);
+      return m ? m[1].trim() : null;
+    },
+    { timeout: 10000, label: "导出键位" },
+  ).catch(() => null);
+  const keymapText = keymapPath ? readFileSync(keymapPath, "utf8") : "";
+  check(
+    "键位方案能导出成文件（TER-020）",
+    keymapText.includes('"format": "windterm-keymap"') && keymapText.includes("Ctrl+Shift+K"),
+    keymapPath ? `${keymapPath}` : "没导出",
+  );
+
+  await setFileInput("#keys-file", [keymapPath]);
+  const keymapImported = await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      return /已导入 \d+ 项键位/.test(s) ? s : null;
+    },
+    { timeout: 10000, label: "导入键位" },
+  ).catch(() => null);
+  check(
+    "导入键位文件能生效（TER-020）",
+    keymapImported !== null,
+    `${keymapImported ?? "没导入"}`,
+  );
+
   await clickElement("#keys-close");
   const prePress = await cdp.eval(`({
     tabs: window.__wt.tabs().length,

@@ -1255,6 +1255,21 @@ fn prefs_reset() -> Result<Option<String>, String> {
     Ok(Some(backup.display().to_string()))
 }
 
+/// 把键位方案导出成 JSON 文件（`TER-020`）。
+///
+/// 落点与其它导出一致（下载目录 + 时间戳 + 冲突加序号）。内容由界面给：只有它知道
+/// 当前有哪些动作，后端不该复制一份动作表——两份清单迟早对不上。
+#[tauri::command]
+fn keymap_export(json: String) -> Result<String, String> {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let path = unique_path(&download_dir(), &format!("windterm-keymap-{secs}.json"));
+    std::fs::write(&path, json).map_err(|e| format!("写入 {} 失败：{e}", path.display()))?;
+    Ok(path.display().to_string())
+}
+
 /// 把广播结果导出成 CSV（`TER-004`）。
 ///
 /// 落点与会话/隧道导出一致（下载目录 + 时间戳 + 冲突加序号），路径回给界面。
@@ -3272,6 +3287,7 @@ fn main() {
             session_export,
             app_paths,
             broadcast_export_csv,
+            keymap_export,
             prefs_reset,
             tunnels_export,
             tunnels_import,
