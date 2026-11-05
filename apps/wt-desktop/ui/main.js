@@ -757,10 +757,23 @@ async function runSshOpen(req, jump, label) {
     // 不该让终端等它；失败了面板自己会显示原因。
     void autoOpenFiles();
   } catch (e) {
+    const why = String(e);
     // 失败原因写进这个标签页：状态栏放不下 hints，而且用户需要能复制下来
-    view.term.write(`\r\n\x1b[31m${String(e)}\x1b[0m\r\n`);
-    view.status = `连接失败：${label}`;
-    setStatus("连接失败");
+    view.term.write(`\r\n\x1b[31m${why}\x1b[0m\r\n`);
+    // 主机密钥变了不是「连不上」，是安全事件：状态栏必须自己说出来，
+    // 否则用户会当成网络问题一直重试。指纹与出路在错误详情里（上面那行就是）
+    const hostKeyChanged = why.includes("SSH_HOSTKEY_CHANGED");
+    const hostKeyRevoked = why.includes("SSH_HOSTKEY_REVOKED");
+    view.status = hostKeyChanged
+      ? `主机密钥变了：${label}`
+      : `连接失败：${label}`;
+    setStatus(
+      hostKeyChanged
+        ? "主机密钥变了：先核对指纹，可能有人在中间"
+        : hostKeyRevoked
+          ? "主机密钥已被标为不可信：换一条可信通道确认"
+          : "连接失败",
+    );
     renderTabs();
     // 自动填进去的口令被拒：多半是过期了（`SEC-002`）。直接给「重新输入」的出路，
     // 连上之后 `savePasswordIfAsked` 会把新口令覆盖保存。

@@ -367,7 +367,20 @@ async fn host_key_change_is_detected() {
         Ok(_) => panic!("密钥变更不该被放行"),
         Err(e) => e,
     };
-    assert_eq!(err.code, "SSH_HOSTKEY_UNKNOWN", "实际: {err:?}");
+    // 变了就是变了：**不能**报成「未知主机」。报成未知，界面那条 accept-new 就会
+    // 把已信任的指纹换成对方给的指纹再连一次——中间人换一次密钥就拿到信任。
+    assert_eq!(err.code, "SSH_HOSTKEY_CHANGED", "实际: {err:?}");
+    let detail = err.detail.as_deref().unwrap_or_default();
+    assert!(
+        detail.contains(&observed.fingerprint),
+        "这次看到的指纹要摆出来：{detail}"
+    );
+    assert!(detail.contains("SHA256:"), "已知指纹也要摆出来：{detail}");
+    assert!(
+        !err.hints.iter().any(|h| h.label.contains("接受并保存")),
+        "密钥变了不能提供「接受并保存」这条出路：{:?}",
+        err.hints
+    );
 }
 
 // ─────────────────────────────────────────────────────────────

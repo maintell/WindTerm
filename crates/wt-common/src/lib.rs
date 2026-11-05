@@ -254,7 +254,10 @@ pub mod codes {
     pub const SSH_AUTH_INTERACTIVE: &str = "SSH_AUTH_INTERACTIVE";
     /// ssh-agent 不可用（没在跑、没设 SSH_AUTH_SOCK、管道连不上）
     pub const SSH_AGENT_UNAVAILABLE: &str = "SSH_AGENT_UNAVAILABLE";
+    /// 主机密钥与已记录的不一致（可能被中间人劫持）——**必须阻断**，不能自动接受
     pub const SSH_HOSTKEY_CHANGED: &str = "SSH_HOSTKEY_CHANGED";
+    /// 命中 `known_hosts` 里的 `@revoked`
+    pub const SSH_HOSTKEY_REVOKED: &str = "SSH_HOSTKEY_REVOKED";
     pub const SSH_HOSTKEY_UNKNOWN: &str = "SSH_HOSTKEY_UNKNOWN";
     pub const SSH_NO_COMMON_KEX: &str = "SSH_NO_COMMON_KEX";
     pub const SSH_FORWARD_DENIED: &str = "SSH_FORWARD_DENIED";
@@ -334,6 +337,7 @@ mod tests {
             codes::CFG_INVALID_TOML,
             codes::CRY_BAD_PASSWORD,
             codes::SSH_HOSTKEY_CHANGED,
+            codes::SSH_HOSTKEY_REVOKED,
         ] {
             assert!(c.chars().all(|ch| ch.is_ascii_uppercase() || ch == '_'));
             assert!(c.contains('_'));

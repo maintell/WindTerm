@@ -78,6 +78,12 @@ struct ClientHandler {
     host_id: HostKeyId,
     policy: Arc<Mutex<HostKeyPolicy>>,
     observed: Arc<Mutex<Option<ObservedHostKey>>>,
+    /// 主机密钥的判定结论。
+    ///
+    /// 握手被拒之后必须能分清「这台机器第一次见」和「密钥变了」：前者可以记下来
+    /// 再连，后者要停下来——分不清的话，把「密钥变了」当成「第一次见」就等于
+    /// 用对方给的指纹替换掉已信任的指纹，中间人只要换一次密钥就拿到信任。
+    verdict: Arc<Mutex<Option<CheckOutcome>>>,
     /// 远程转发表：`(远端 host, 端口) → 本地目标`。
     ///
     /// 必须挂在 handler 上：`forwarded-tcpip` 通道是由 handler 回调收到的，
@@ -113,15 +119,16 @@ impl client::Handler for ClientHandler {
         });
 
         let policy = self.policy.lock().unwrap();
-        let ok = match &*policy {
-            HostKeyPolicy::AcceptAll => true,
+        let (ok, outcome) = match &*policy {
+            HostKeyPolicy::AcceptAll => (true, CheckOutcome::Match),
             HostKeyPolicy::Known(kh) => {
-                matches!(
-                    kh.check(&self.host_id, &key_type, &blob),
-                    CheckOutcome::Match
-                )
+                // 判定结论要留下来：上层据此决定是「记下来再连」（未知）还是
+                // 「停下来别连」（变了/被撤销）
+                let outcome = kh.check(&self.host_id, &key_type, &blob);
+                (matches!(outcome, CheckOutcome::Match), outcome)
             }
         };
+        *self.verdict.lock().unwrap() = Some(outcome);
         Ok(ok)
     }
 
@@ -232,12 +239,14 @@ impl SshConnection {
     > {
         let host_id = cfg.endpoint();
         let observed = Arc::new(Mutex::new(None));
+        let verdict = Arc::new(Mutex::new(None));
         let forwards: Forwards = Arc::new(Mutex::new(std::collections::HashMap::new()));
 
         let handler = ClientHandler {
             host_id: host_id.clone(),
             policy: Arc::new(Mutex::new(policy)),
             observed: observed.clone(),
+            verdict: verdict.clone(),
             forwards: forwards.clone(),
         };
 
@@ -257,7 +266,8 @@ impl SshConnection {
         })
         .await;
 
-        let handle = resolve_established(connect_result, &host_id, &observed, &addr, timeout)?;
+        let handle =
+            resolve_established(connect_result, &host_id, &observed, &verdict, &addr, timeout)?;
 
         Ok((handle, host_id, observed, forwards))
     }
@@ -284,12 +294,14 @@ impl SshConnection {
     {
         let host_id = cfg.endpoint();
         let observed = Arc::new(Mutex::new(None));
+        let verdict = Arc::new(Mutex::new(None));
         let forwards: Forwards = Arc::new(Mutex::new(std::collections::HashMap::new()));
 
         let handler = ClientHandler {
             host_id: host_id.clone(),
             policy: Arc::new(Mutex::new(policy)),
             observed: observed.clone(),
+            verdict: verdict.clone(),
             forwards: forwards.clone(),
         };
         let config = Arc::new(client::Config::default());
@@ -301,7 +313,8 @@ impl SshConnection {
         })
         .await;
 
-        let handle = resolve_established(connect_result, &host_id, &observed, &addr, timeout)?;
+        let handle =
+            resolve_established(connect_result, &host_id, &observed, &verdict, &addr, timeout)?;
         Ok((handle, host_id, observed, forwards))
     }
 
@@ -653,10 +666,13 @@ impl SshConnection {
     pub async fn probe_host_key(cfg: &SshConfig) -> Result<ObservedHostKey, WtError> {
         let host_id = cfg.endpoint();
         let observed = Arc::new(Mutex::new(None));
+        // 这里用 AcceptAll，判定结论恒为 Match，槽是给结构体用的，不参与判断
+        let verdict = Arc::new(Mutex::new(None));
         let handler = ClientHandler {
             host_id: host_id.clone(),
             policy: Arc::new(Mutex::new(HostKeyPolicy::AcceptAll)),
             observed: observed.clone(),
+            verdict: verdict.clone(),
             // 只做密钥交换，不收转发
             forwards: Arc::new(Mutex::new(std::collections::HashMap::new())),
         };
@@ -680,7 +696,7 @@ impl SshConnection {
                         .detail(format!("{addr} 的密钥交换未返回公钥"))
                 })
             }
-            Ok(Err(e)) => Err(map_connect_error(e, &host_id, &observed)),
+            Ok(Err(e)) => Err(map_connect_error(e, &host_id, &observed, &verdict)),
             Err(_) => Err(WtError::new("SSH_CONNECT_TIMEOUT")
                 .message(format!("探测 {addr} 的主机密钥超时"))
                 .hint("检查网络与防火墙", HintAction::None)),
@@ -934,12 +950,13 @@ fn resolve_established(
     result: Result<Result<client::Handle<ClientHandler>, russh::Error>, tokio::time::error::Elapsed>,
     host_id: &HostKeyId,
     observed: &Arc<Mutex<Option<ObservedHostKey>>>,
+    verdict: &Arc<Mutex<Option<CheckOutcome>>>,
     addr: &str,
     timeout: Duration,
 ) -> Result<client::Handle<ClientHandler>, WtError> {
     match result {
         Ok(Ok(h)) => Ok(h),
-        Ok(Err(e)) => Err(map_connect_error(e, host_id, observed)),
+        Ok(Err(e)) => Err(map_connect_error(e, host_id, observed, verdict)),
         Err(_) => Err(WtError::new("SSH_CONNECT_TIMEOUT")
             .message(format!("连接 {} 超时（{} 秒）", addr, timeout.as_secs()))
             .detail("TCP 连接或密钥交换未在超时内完成")
@@ -957,11 +974,47 @@ fn map_connect_error(
     e: russh::Error,
     host_id: &HostKeyId,
     observed: &Arc<Mutex<Option<ObservedHostKey>>>,
+    verdict: &Arc<Mutex<Option<CheckOutcome>>>,
 ) -> WtError {
     let detail = e.to_string();
+    let seen = observed.lock().unwrap().clone();
+    let outcome = verdict.lock().unwrap().clone();
+
+    // 密钥变了：**必须停下**，而且绝不能走「未知主机」那条「记下来再连」。
+    // 走那条等于用对方给的指纹替换掉已信任的指纹——中间人换一次密钥就拿到信任，
+    // 用户看到的还只是「主机密钥未受信任」这种无关痛痒的话。
+    if let (Some(key), Some(CheckOutcome::Changed { known_fingerprints })) = (&seen, &outcome) {
+        return WtError::new(codes::SSH_HOSTKEY_CHANGED)
+            .message(format!("{} 的主机密钥变了", host_id.host))
+            .detail(format!(
+                "已知指纹 {}；这次是 {}（类型 {}）",
+                known_fingerprints.join("、"),
+                key.fingerprint,
+                key.key_type
+            ))
+            .hint(
+                "先核对指纹：可能是服务端换过密钥，也可能是有人在中间",
+                HintAction::None,
+            )
+            .hint(
+                "确认是服务端换过密钥后，到「设置 → 安全 → 已知主机」忘记这台再连",
+                HintAction::None,
+            );
+    }
+
+    // `@revoked` 的密钥无论匹不匹配都不能用
+    if let (Some(key), Some(CheckOutcome::Revoked)) = (&seen, &outcome) {
+        return WtError::new(codes::SSH_HOSTKEY_REVOKED)
+            .message(format!("{} 的主机密钥已被标为不可信", host_id.host))
+            .detail(format!("类型 {}，指纹 {}", key.key_type, key.fingerprint))
+            .hint(
+                "known_hosts 里 `@revoked` 的密钥不能再信任：换一条可信的通道确认服务端密钥",
+                HintAction::None,
+            );
+    }
 
     // 连接被拒通常发生在主机密钥校验之后：看 observed 有没有值来判断是哪一步
-    if let Some(key) = observed.lock().unwrap().clone() {
+    if let Some(key) = seen {
         return WtError::new(codes::SSH_HOSTKEY_UNKNOWN)
             .message(format!("{} 的主机密钥未受信任", host_id.host))
             .detail(format!(
@@ -1020,13 +1073,21 @@ mod tests {
         assert_eq!(o.exit_code, Some(2));
     }
 
+    fn observed() -> Arc<Mutex<Option<ObservedHostKey>>> {
+        Arc::new(Mutex::new(Some(ObservedHostKey {
+            key_type: "ssh-ed25519".into(),
+            blob: b"blob".to_vec(),
+            fingerprint: "SHA256:abc".into(),
+        })))
+    }
+
     #[test]
     fn connect_error_without_observed_key_is_plain_failure() {
-        let observed = Arc::new(Mutex::new(None));
         let err = map_connect_error(
             russh::Error::NotAuthenticated,
             &HostKeyId::new("10.0.1.11", 22),
-            &observed,
+            &Arc::new(Mutex::new(None)),
+            &Arc::new(Mutex::new(None)),
         );
         assert_eq!(err.code, "SSH_CONNECT_FAILED");
         assert!(err.message.contains("10.0.1.11:22"));
@@ -1034,19 +1095,49 @@ mod tests {
 
     #[test]
     fn connect_error_after_key_exchange_points_at_host_key() {
-        let observed = Arc::new(Mutex::new(Some(ObservedHostKey {
-            key_type: "ssh-ed25519".into(),
-            blob: b"blob".to_vec(),
-            fingerprint: "SHA256:abc".into(),
-        })));
+        // 未知主机：可以「记下来再连」，所以提示里给「接受并保存」这条出路
         let err = map_connect_error(
             russh::Error::NotAuthenticated,
             &HostKeyId::new("10.0.1.11", 22),
-            &observed,
+            &observed(),
+            &Arc::new(Mutex::new(Some(CheckOutcome::Unknown))),
         );
         assert_eq!(err.code, "SSH_HOSTKEY_UNKNOWN");
         assert!(err.detail.as_ref().unwrap().contains("SHA256:abc"));
         assert!(err.hints.iter().any(|h| h.label.contains("接受并保存")));
+    }
+
+    #[test]
+    fn changed_host_key_is_blocked_with_both_fingerprints() {
+        // 密钥变了：不能给「接受并保存」这条出路，也要把新旧指纹都摆出来
+        let err = map_connect_error(
+            russh::Error::NotAuthenticated,
+            &HostKeyId::new("10.0.1.11", 22),
+            &observed(),
+            &Arc::new(Mutex::new(Some(CheckOutcome::Changed {
+                known_fingerprints: vec!["SHA256:old".into()],
+            }))),
+        );
+        assert_eq!(err.code, "SSH_HOSTKEY_CHANGED");
+        let detail = err.detail.as_deref().unwrap_or_default();
+        assert!(detail.contains("SHA256:old"), "旧指纹要在 detail 里：{detail}");
+        assert!(detail.contains("SHA256:abc"), "新指纹也要在：{detail}");
+        assert!(
+            !err.hints.iter().any(|h| h.label.contains("接受并保存")),
+            "密钥变了不能提供「接受并保存」：{:?}",
+            err.hints
+        );
+    }
+
+    #[test]
+    fn revoked_host_key_is_blocked() {
+        let err = map_connect_error(
+            russh::Error::NotAuthenticated,
+            &HostKeyId::new("10.0.1.11", 22),
+            &observed(),
+            &Arc::new(Mutex::new(Some(CheckOutcome::Revoked))),
+        );
+        assert_eq!(err.code, "SSH_HOSTKEY_REVOKED");
     }
 
     #[test]

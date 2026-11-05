@@ -711,6 +711,52 @@ async function confirmName(text) {
   await clickElement("#name-ok");
 }
 
+/**
+ * 点 `<dialog>` 里的按钮，并等到它真的关掉、核对 `returnValue`。
+ *
+ * 不能只按一次坐标：`<dialog>` 是居中的，正文一换行高度就变，按钮跟着上下移动——
+ * 量到的是旧位置，点下去就落到旁边那个按钮上。「重置偏好」就是这么点成「取消」的：
+ * 界面上看不出任何异常，只表现为「点了没反应」（`returnValue` 不是 `yes`，处理函数提前返回）。
+ */
+async function clickDialogButton(id, expectValue) {
+  const at = await waitFor(
+    async () => {
+      const h = await cdp.eval(`(() => {
+        const el = document.getElementById(${JSON.stringify(id)});
+        if (!el) return { why: "元素不存在" };
+        el.scrollIntoView({ block: "nearest" });
+        const r = el.getBoundingClientRect();
+        const cx = Math.round(r.x + r.width / 2);
+        const cy = Math.round(r.y + r.height / 2);
+        const top = document.elementFromPoint(cx, cy);
+        return { ok: top === el, cx, cy, top: top ? top.id || top.tagName : "null" };
+      })()`);
+      return h.ok ? h : null;
+    },
+    { timeout: 3000, label: `对话框按钮 ${id} 可点` },
+  ).catch(async () => {
+    const top = await cdp.eval(
+      `(() => { const el = document.getElementById(${JSON.stringify(id)}); if (!el) return "元素不存在"; const r = el.getBoundingClientRect(); const t = document.elementFromPoint(Math.round(r.x + r.width / 2), Math.round(r.y + r.height / 2)); return t ? (t.id || t.tagName) : "null"; })()`
+    );
+    throw new Error(`对话框按钮 ${id} 点不到：那个位置上是 ${top}`);
+  });
+  await clickAt({ x: at.cx, y: at.cy });
+  const rv = await waitFor(
+    async () => {
+      const s = await cdp.eval(`({
+        open: document.getElementById("ask-dialog").open,
+        rv: document.getElementById("ask-dialog").returnValue,
+      })`);
+      return s.open ? null : s.rv;
+    },
+    { timeout: 5000, label: `${id} 关闭对话框` },
+  );
+  if (rv !== expectValue) {
+    throw new Error(`点 ${id} 后对话框返回 ${JSON.stringify(rv)}，期望 ${expectValue}`);
+  }
+  return rv;
+}
+
 /** 关掉所有还开着的 <dialog>：模态框会挡住后续点击，而 e2e 里很容易漏关一个 */
 async function closeAllDialogs() {
   await cdp.eval(`(() => {
@@ -3959,7 +4005,7 @@ try {
     askBody.includes("rm -rf /") && /目标：\d+ 个已连接会话/.test(askBody),
     askBody.split("\n").filter(Boolean).pop(),
   );
-  await clickElement("#ask-cancel");
+  await clickDialogButton("ask-cancel", "no");
   const cancelled = await waitFor(
     async () => {
       const b = await cdp.eval(`window.__wt.broadcast`);
@@ -4053,7 +4099,7 @@ try {
     delBody.includes("mock-ssh 副本") && delBody.includes("不可撤销"),
     delBody.split("\n").filter(Boolean)[0],
   );
-  await clickElement("#ask-ok");
+  await clickDialogButton("ask-ok", "yes");
   const goneAll = await waitFor(
     async () => {
       const snap = await cdp.eval(`window.__TAURI__.core.invoke("sessions_load")`);
@@ -5460,7 +5506,7 @@ try {
       (await cdp.eval(`document.getElementById("ask-dialog").open`)) ? true : null,
     { timeout: 5000, label: "重置确认框" },
   );
-  await clickElement("#ask-ok");
+  await clickDialogButton("ask-ok", "yes");
   const resetOk = await waitFor(
     async () => {
       const s = await cdp.eval(`({
@@ -5538,6 +5584,22 @@ try {
       el.dispatchEvent(new Event("change", { bubbles: true }));
       return el.value;
     })()`);
+  // 失败时把现场摆出来：值到底写没写进去、控件在不在、面板是不是开着
+  const netDiag = async () => {
+    let keep = null;
+    try {
+      keep = /netKeepaliveSecs\s*=\s*(\d+)/.exec(readFileSync(prefsFile, "utf8"))?.[1] ?? null;
+    } catch {
+      keep = "读不到 config.toml";
+    }
+    const ui = await cdp.eval(`({
+      hasInput: !!document.getElementById("net-keepalive"),
+      inputVal: document.getElementById("net-keepalive")?.value ?? null,
+      settingsOpen: document.getElementById("settings").open,
+      status: document.getElementById("status").textContent,
+    })`);
+    return { keep, ...ui };
+  };
   await setNet("net-keepalive", "0");
   const netOff = await waitFor(
     async () => {
@@ -5555,7 +5617,7 @@ try {
   check(
     "改 keepalive 会写进 config.toml（SET-001）",
     netOff === true,
-    netOff === true,
+    netOff === true ? "已写进 0" : JSON.stringify(await netDiag()),
   );
 
   await setNet("net-keepalive", "30");
@@ -5571,7 +5633,11 @@ try {
     },
     { timeout: 10000, label: "keepalive 复原" },
   ).catch(() => null);
-  check("改回 keepalive 也落盘（不污染后续）", netBack === true, netBack === true);
+  check(
+    "改回 keepalive 也落盘（不污染后续）",
+    netBack === true,
+    netBack === true ? "已写回 30" : JSON.stringify(await netDiag()),
+  );
   await closeAllDialogs();
 
   // 19zf. 每项设置都标出默认值与是否需要重启（`SET-001`）
@@ -5765,7 +5831,7 @@ try {
     expiredPrompt === "保存的密码可能已过期",
     `${expiredPrompt ?? "没提示"}`,
   );
-  await clickElement("#ask-ok");
+  await clickDialogButton("ask-ok", "yes");
   const clearedPw = await waitFor(
     async () => {
       const s = await cdp.eval(`({
@@ -5794,6 +5860,41 @@ try {
     "重新输入正确口令后能连上（SEC-002 AC-3）",
     reconnected !== null,
     `${reconnected ?? "没连上"}`,
+  );
+  await closeAllTabs();
+
+  // 19zj. 主机密钥变了必须**阻断**，不能当成「未知主机」自动信任（`SEC-005`）
+  //
+  // 这一条是安全底线：把「变了」判成「第一次见」，界面就会把已信任的指纹换成
+  // 对方给的指纹再连一次——中间人换一次密钥就拿到信任。所以断言两件事：
+  // 连接被拒且状态栏点名「主机密钥变了」，以及 known_hosts 里那条记录没被改写。
+  await closeAllDialogs();
+  await closeAllTabs();
+  const knownHostsFile = join(DATA_DIR, "known_hosts");
+  const bogusLine = `[127.0.0.1]:${sshPort} ssh-ed25519 AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n`;
+  writeFileSync(knownHostsFile, bogusLine);
+  await fillInput("#host", "127.0.0.1");
+  await fillInput("#port", String(sshPort));
+  await fillInput("#user", "tester");
+  await fillInput("#password", "secret");
+  await clickElement("#ssh");
+  const keyChanged = await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      return s.includes("主机密钥变了") ? s : null;
+    },
+    { timeout: 20000, label: "主机密钥变更被拒" },
+  ).catch(() => null);
+  check(
+    "主机密钥变了会阻断连接并点名（SEC-005）",
+    keyChanged !== null,
+    `${keyChanged ?? await cdp.eval(`document.getElementById("status").textContent`)}`,
+  );
+  const khKept = readFileSync(knownHostsFile, "utf8");
+  check(
+    "密钥变了不会把已信任的指纹替换掉（SEC-005）",
+    khKept === bogusLine,
+    khKept === bogusLine ? "记录原样保留" : `文件被改写：${khKept.slice(0, 80)}`,
   );
   await closeAllTabs();
 

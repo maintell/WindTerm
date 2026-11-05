@@ -141,7 +141,7 @@ def test_ssh_connect(server, wt):
 | DTO 没写 `rename_all` 时，字段名是 snake_case | `RemoteEntryDto` 没有 camelCase 重命名，序列化出来是 `is_symlink` / `link_target`；界面按 `e.isSymlink` 去读只会拿到 `undefined`，症状是「后端字段有值、界面就是没反应」，而且不报错。同一个仓库里 `PrefsDto` 是 camelCase、这个是 snake_case，**看 DTO 定义再写前端** |
 | `dataset` 里取出来永远是字符串 | 会话键是数字时，`dataset.id` 拿去 `indexOf` 一个都匹配不上。症状极具迷惑性：拖拽计数全对、`moved` 为真、目标也拿到了，**顺序就是不变**。比较前统一 `String()` |
 
-当前覆盖 271 项断言：
+当前覆盖 273 项断言：
 
 - 本地终端：页面加载与 Tauri 桥接、启动自检、点击建会话、句柄可取、首屏输出渲染、
   焦点在终端、键盘输入、命令输出、统计字段非零值、前后端行列一致、ack 回流归零、
@@ -172,6 +172,9 @@ def test_ssh_connect(server, wt):
   新主密码能解开（读 `vault_unlock` 的返回，不看界面文案）；
 - 已知主机（`SEC-005`）：能列出已记录的主机、界面显示出 `SHA256:` 指纹、
   「忘记」后该主机的记录从 `known_hosts` 里消失（读后端接口而不是看界面文字）；
+  **密钥变了必须阻断**：往 `known_hosts` 塞一条「别的密钥」再连，状态栏要点名
+  「主机密钥变了」，且文件里那条记录**原样保留**——被改写成服务端这次的密钥，
+  就等于把已信任的指纹换成了对方给的；
 - keyboard-interactive（`SEC-002`）：mock 里用户 `kbd` 只认这条路（`auth_password` 只接受
   `tester`），客户端在 password 被拒后自己回落；连上之后「本次记住」的条数同样涨 1，
   证明这条路也会保存口令（规格点名的 MobaXterm 缺陷就在这儿）。单测 `wt-ssh/tests/auth.rs`
