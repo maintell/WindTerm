@@ -844,6 +844,10 @@ struct PrefsDto {
     /// DTO 只有 name/size/mode 三列，没有 mtime/owner，不编造没有数据的列。
     show_size_col: bool,
     show_mode_col: bool,
+    /// 自动刷新间隔（秒，`FIL-001` 规格 §6「窗口获得焦点时刷新，可配间隔」）。
+    /// 0 = 关闭（默认）：焦点事件很频繁，不做节流会反复重连 SFTP。
+    /// 正数 = 距上次列目录至少过这么多秒，才在窗口重新获得焦点时自动刷新一次。
+    auto_refresh_secs: u32,
     /// 键位（`TER-020`）：`action → chords[]`
     keymap: std::collections::BTreeMap<String, Vec<String>>,
     /// 导入的配色方案（`TER-005`）：跟内置的放一起，重启后还在
@@ -915,6 +919,7 @@ impl Default for PrefsDto {
             tabs_position: "top".into(),
             show_size_col: true,
             show_mode_col: true,
+            auto_refresh_secs: 0,
             keymap: std::collections::BTreeMap::new(),
             custom_themes: Vec::new(),
             local_shell: "auto".into(),

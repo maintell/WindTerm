@@ -2972,6 +2972,68 @@ try {
   ).catch(() => null);
   check("显示列复原（不污染后续）", colRestored === true, `${colRestored}`);
 
+  // 自动刷新（`FIL-001` 规格 §6）：窗口获得焦点时按「可配间隔」节流刷新。
+  // 默认关；设为 5 秒后写进 config.toml；节流：距上次列目录不足间隔时不刷，
+  // 用 _ageDirLoad 模拟「已过去足够久」再模拟一次焦点，应刷新一次且计数 +1。
+  const arDefault = await cdp.eval(`window.__wt.files.autoRefreshSecs`);
+  check("自动刷新默认关闭（FIL-001）", arDefault === 0, `${arDefault}`);
+  const setAutoRefresh = async (v) => {
+    await openSettings();
+    await cdp.eval(
+      "(() => { const el=document.getElementById('files-auto-refresh');"
+      + " el.value=" + JSON.stringify(v) + ";"
+      + " el.dispatchEvent(new Event('change',{bubbles:true}));"
+      + " return el.value; })()"
+    );
+    await closeAllDialogs();
+  };
+  await setAutoRefresh("15");
+  const arOn = await cdp.eval(`window.__wt.files.autoRefreshSecs`);
+  check("自动刷新间隔可配且即时生效（FIL-001）", arOn === 15, `${arOn}`);
+  const arSaved = await waitFor(
+    async () => {
+      let t;
+      try { t = readFileSync(prefsFile, "utf8"); } catch { return null; }
+      return /autoRefreshSecs[ \t]*=[ \t]*15/.test(t) ? true : null;
+    },
+    { timeout: 10000, label: "自动刷新落盘" },
+  ).catch(() => null);
+  check("自动刷新间隔写进 config.toml（FIL-001）", arSaved === true, arSaved === true ? "已写入" : "没落盘");
+  // 节流：显式把「上次列目录时刻」设为此刻（不靠前面操作的真实耗时），
+  // 这样「刚列过目录」的前提确定成立，测的是节流逻辑而不是时序巧合。
+  await cdp.eval(`window.__wt._resetDirLoadClock()`);
+  const cntBeforeThrottle = await cdp.eval(`window.__wt.files.autoRefreshCount`);
+  await cdp.eval(`window.__wt._simulateFocus()`);
+  await new Promise((r) => setTimeout(r, 300));
+  const cntAfterThrottle = await cdp.eval(`window.__wt.files.autoRefreshCount`);
+  check(
+    "距上次列目录不足间隔时不刷新（节流，FIL-001）",
+    cntAfterThrottle === cntBeforeThrottle,
+    `${cntBeforeThrottle} → ${cntAfterThrottle}`,
+  );
+  // 模拟「距上次已过去足够久」再模拟焦点，应刷新一次（计数 +1 且状态栏说明原因）
+  await cdp.eval(`window.__wt._ageDirLoad(16000)`);
+  await cdp.eval(`window.__wt._simulateFocus()`);
+  const arFired = await waitFor(
+    async () => {
+      const n = await cdp.eval(`window.__wt.files.autoRefreshCount`);
+      return n > cntAfterThrottle ? n : null;
+    },
+    { timeout: 8000, label: "焦点触发自动刷新" },
+  ).catch(() => null);
+  check(
+    "间隔到了之后窗口获得焦点会自动刷新目录（FIL-001）",
+    arFired !== null,
+    `autoRefreshCount ${cntAfterThrottle} → ${arFired}`,
+  );
+  // 复原：关掉自动刷新，别让焦点事件在后续用例里反复触发
+  await setAutoRefresh("0");
+  const arRestored = await waitFor(
+    () => cdp.eval("window.__wt.files.autoRefreshSecs").then((v) => (v === 0 ? true : null)),
+    { timeout: 5000, label: "自动刷新复原关闭" },
+  ).catch(() => null);
+  check("自动刷新复原为关（不污染后续）", arRestored === true, `${arRestored}`);
+
   // 路径记忆：进子目录 → 切回「跟随表单」→ 再切回来，应当还在子目录
   await clickElement("#files-mkdir");
   await typeText("sub");

@@ -234,6 +234,7 @@ async function loadPrefs() {
     if (typeof p.filesShowHidden === "boolean") filesShowHidden = p.filesShowHidden;
     if (typeof p.showSizeCol === "boolean") showSizeCol = p.showSizeCol;
     if (typeof p.showModeCol === "boolean") showModeCol = p.showModeCol;
+    if (Number.isFinite(p.autoRefreshSecs)) autoRefreshSecs = clampNum(p.autoRefreshSecs, 0, 3600);
     if (Number.isFinite(p.netConnectTimeoutSecs)) netTimeout = p.netConnectTimeoutSecs;
     if (Number.isFinite(p.netKeepaliveSecs)) netKeepalive = p.netKeepaliveSecs;
     if (Number.isFinite(p.netKeepaliveMaxMissed)) netMaxMissed = p.netKeepaliveMaxMissed;
@@ -283,6 +284,7 @@ async function savePrefs() {
         filesShowHidden,
         showSizeCol,
         showModeCol,
+        autoRefreshSecs,
         netConnectTimeoutSecs: netTimeout,
         netKeepaliveSecs: netKeepalive,
         netKeepaliveMaxMissed: netMaxMissed,
@@ -3186,6 +3188,34 @@ filesRefresh.addEventListener("click", async () => {
   ftree.clear();
   await initFileTree();
 });
+// 自动刷新（`FIL-001` 规格 §6）：窗口重新获得焦点 / 页面重新可见时，
+// 若距上次列目录已超过 autoRefreshSecs，就刷一次目录与目录树。
+// 默认关（0）——焦点事件很频繁，不节流会反复重连 SFTP。
+// 用「上次列目录时刻」而非定时器：没有活跃窗口时不产生任何请求。
+const filesAutoRefreshSelect = document.getElementById("files-auto-refresh");
+async function refreshFilesAndTree() {
+  await loadDir(sftpPath);
+  ftree.clear();
+  await initFileTree();
+}
+async function maybeAutoRefresh(reason) {
+  if (autoRefreshSecs <= 0) return;
+  if (document.getElementById("files").hidden) return;
+  if (!filesSessionId && !active?.handle) return;
+  if (Date.now() - lastDirLoadAt < autoRefreshSecs * 1000) return;
+  autoRefreshCount += 1;
+  setStatus(`自动刷新目录（${reason}）`);
+  await refreshFilesAndTree();
+}
+window.addEventListener("focus", () => void maybeAutoRefresh("窗口获得焦点"));
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) void maybeAutoRefresh("页面重新可见");
+});
+filesAutoRefreshSelect.addEventListener("change", () => {
+  autoRefreshSecs = clampNum(Number(filesAutoRefreshSelect.value) || 0, 0, 3600);
+  void savePrefs();
+  setStatus(autoRefreshSecs === 0 ? "自动刷新：关" : `自动刷新间隔：${autoRefreshSecs} 秒`);
+});
 
 /** 文件列表的行高（虚拟滚动按它算窗口）。与 CSS 里 `.vrow` 的高度保持一致 */
 const FILES_ROW_H = 20;
@@ -3199,6 +3229,12 @@ let filesShowHidden = true;
  *  DTO 只有 name/size/mode 三列，没有 mtime/owner，不编造没有数据的列 */
 let showSizeCol = true;
 let showModeCol = true;
+/** 自动刷新间隔（秒，`FIL-001` §6）：0=关（默认），窗口重新获得焦点时按间隔节流刷新 */
+let autoRefreshSecs = 0;
+/** 最近一次成功列目录的时刻；焦点刷新用它判断「距上次够不够久」 */
+let lastDirLoadAt = 0;
+/** 焦点自动刷新实际触发了几次（验收可观察，证明不是点了没反应） */
+let autoRefreshCount = 0;
 
 /**
  * 列表排序（`FIL-001` 规格 §1「可排序」）。
@@ -5098,7 +5134,7 @@ const SET_GROUPS = [
   ["常规", ["ui-lang", "local-shell", "local-shell-path"]],
   ["外观", ["look-size", "look-height", "tabs-position"]],
   ["终端", ["encoding", "look-theme", "theme-import-open", "look-font", "look-scrollback", "term-right-click", "look-word-sep", "look-paste-trim", "look-autocopy-on", "look-autocopy"]],
-  ["文件", ["files-auto-open", "files-show-hidden", "files-col-size"]],
+  ["文件", ["files-auto-open", "files-show-hidden", "files-col-size", "files-auto-refresh"]],
   ["安全", ["master-open", "vault-rotate", "known-open"]],
   // 按「行里第一个带 id 的元素」认领：配置文件那行首个 id 是路径 span，不是按钮
   ["网络", ["net-timeout", "net-keepalive", "net-max-missed"]],
@@ -5126,6 +5162,7 @@ const SET_META = {
   "files-auto-open": ["开", false],
   "files-show-hidden": ["开", false],
   "files-col-size": ["全显", false],
+  "files-auto-refresh": ["关", false],
   "net-timeout": ["15 秒", false],
   "net-keepalive": ["30 秒", false],
   "net-max-missed": ["3 次", false],
@@ -5362,6 +5399,7 @@ const I18N = {
     "set.lineHeight": "行高",
     "set.scrollback": "回滚行数",
     "set.rightClick": "右键行为",
+    "set.autoRefresh": "自动刷新间隔",
     "set.fileCols": "显示列",
     "set.tabsPosition": "标签栏位置",
     "set.showHidden": "显示隐藏文件",
@@ -5406,6 +5444,7 @@ const I18N = {
     "set.lineHeight": "Line height",
     "set.scrollback": "Scrollback lines",
     "set.rightClick": "Right-click action",
+    "set.autoRefresh": "Auto-refresh interval",
     "set.fileCols": "Visible columns",
     "set.tabsPosition": "Tab bar position",
     "set.showHidden": "Show hidden files",
@@ -5666,7 +5705,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-114",
+  ui: "wt-ui-115",
   /**
    * 验收用：刷新会话树并等它**画完**。
    *
@@ -5709,6 +5748,23 @@ window.__wt = {
   tabDrag() {
     return { ...tabDrag };
   },
+  /** 验收用：模拟一次「窗口获得焦点」，走与真实 focus 完全相同的 maybeAutoRefresh 路径。
+   *  headless WebView 里 focus 事件未必派发，直接调处理函数才能确定地验节流/触发逻辑。 */
+  _simulateFocus() {
+    void maybeAutoRefresh("模拟焦点");
+    return { autoRefreshSecs, autoRefreshCount };
+  },
+  /** 验收用：把「上次列目录时刻」设为此刻，让「刚列过目录」的前提确定成立 */
+  _resetDirLoadClock() {
+    lastDirLoadAt = Date.now();
+    return lastDirLoadAt;
+  },
+  /** 验收用：把「上次列目录时刻」往回调，模拟距上次已过去足够久 */
+  _ageDirLoad(ms) {
+    lastDirLoadAt -= ms;
+    return lastDirLoadAt;
+  },
+
   /** 验收用：把文件列表排序复位成默认（点列头只能切到三种排序，没有回默认的按钮） */
   _resetFileSort() {
     filesSortKey = "default";
@@ -5812,6 +5868,8 @@ window.__wt = {
       tabsPosition,
       showSizeCol,
       showModeCol,
+      autoRefreshSecs,
+      autoRefreshCount,
       /** 列目录失败的原因（空串表示这次是成功的） */
       error: filesLoadError,
       /** 当前选中项的名字（验收与脚本用） */
@@ -5999,6 +6057,7 @@ window.__wt = {
   filesShowHiddenBox.checked = filesShowHidden;
   filesColSizeBox.checked = showSizeCol;
   filesColModeBox.checked = showModeCol;
+  filesAutoRefreshSelect.value = String(autoRefreshSecs);
   tabsPositionSelect.value = tabsPosition;
   applyTabsPosition();
   renderSortHeader();

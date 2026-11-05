@@ -1384,6 +1384,17 @@
           <label title="显示文件大小"><input type="checkbox" id="files-col-size" />大小</label>
           <label title="显示权限位"><input type="checkbox" id="files-col-mode" />权限</label>
         </div>
+        <div class="set-row" data-kw="自动刷新 刷新 焦点 focus 间隔 interval 秒 后台">
+          <span class="set-name" data-i18n="set.autoRefresh">自动刷新间隔</span>
+          <span class="set-scope">全局</span>
+          <select id="files-auto-refresh">
+            <option value="0">关闭</option>
+            <option value="5">5 秒</option>
+            <option value="15">15 秒</option>
+            <option value="30">30 秒</option>
+            <option value="60">60 秒</option>
+          </select>
+        </div>
         <p id="set-empty" hidden>没有匹配的设置项</p>
       </div>
     </dialog>
