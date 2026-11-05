@@ -5478,6 +5478,37 @@ try {
   );
   await closeAllDialogs();
 
+  // 19zg. 离线优先与无遥测（`SEC-015`）
+  //
+  // 这条不靠「我们没写外发请求」这种口头保证，而是查两条硬事实：
+  // CSP 不允许前端连外网、源码里没有外部地址。放宽任何一条都会红。
+  const tauriConf = JSON.parse(
+    readFileSync(join(root, "apps", "wt-desktop", "tauri.conf.json"), "utf8"),
+  );
+  const csp = tauriConf?.app?.security?.csp ?? "";
+  // 先把允许的那个 ipc 源摘掉再查：它本身就是 http:// 开头，直接用正则扫会误伤
+  const connectSrc = (/connect-src([^;]*)/.exec(csp)?.[1] ?? "").replace(
+    "http://ipc.localhost",
+    "",
+  );
+  check(
+    "CSP 不允许前端连外网（SEC-015）",
+    connectSrc.includes("'self'") &&
+      connectSrc.includes("ipc:") &&
+      !connectSrc.includes("*") &&
+      !/https?:\/\//.test(connectSrc),
+    csp,
+  );
+  const uiSrc = readFileSync(join(root, "apps", "wt-desktop", "ui", "main.js"), "utf8");
+  const external = (uiSrc.match(/https?:\/\/[a-z0-9.-]+/gi) ?? []).filter(
+    (u) => !/localhost|127\.0\.0\.1/i.test(u),
+  );
+  check(
+    "前端源码里没有外部地址（无遥测，SEC-015）",
+    external.length === 0,
+    external.slice(0, 5).join("、") || "0 个",
+  );
+
   // 18. 页面无未捕获异常
   check("页面无未捕获异常", cdp.exceptions.length === 0, cdp.exceptions.join(" | ") || "0 条");
 

@@ -141,7 +141,7 @@ def test_ssh_connect(server, wt):
 | DTO 没写 `rename_all` 时，字段名是 snake_case | `RemoteEntryDto` 没有 camelCase 重命名，序列化出来是 `is_symlink` / `link_target`；界面按 `e.isSymlink` 去读只会拿到 `undefined`，症状是「后端字段有值、界面就是没反应」，而且不报错。同一个仓库里 `PrefsDto` 是 camelCase、这个是 snake_case，**看 DTO 定义再写前端** |
 | `dataset` 里取出来永远是字符串 | 会话键是数字时，`dataset.id` 拿去 `indexOf` 一个都匹配不上。症状极具迷惑性：拖拽计数全对、`moved` 为真、目标也拿到了，**顺序就是不变**。比较前统一 `String()` |
 
-当前覆盖 254 项断言：
+当前覆盖 256 项断言：
 
 - 本地终端：页面加载与 Tauri 桥接、启动自检、点击建会话、句柄可取、首屏输出渲染、
   焦点在终端、键盘输入、命令输出、统计字段非零值、前后端行列一致、ack 回流归零、
@@ -215,6 +215,9 @@ def test_ssh_connect(server, wt):
   分组路径；搜英文 `font` 也能命中中文项；清空后高亮与路径都收起且名称恢复原文；
 - 设置分组（`SET-001`）：面板分成常规/外观/终端/文件/安全五组（读 `.set-group` 的
   `data-group` 与每组行数，空组不渲染）；搜索「乱码」时只剩终端组，清空后五组都回来；
+- 离线优先（`SEC-015`）：两条硬门禁——读 `tauri.conf.json` 断言 `connect-src` 只有 `self` 与
+  ipc（没有 `*`、没有外部 scheme）；再扫 `main.js` 断言里面没有任何外部地址。放宽任何一条都
+  会红，不靠「我们没写外发请求」这种口头保证；
 - 键位动作扩充（`TER-020`）：新加的 `Ctrl+T` 真的开出本地终端、`Ctrl+W` 真的关掉当前标签——
   加动作时必须同时有行为，「表里多几行但按了没反应」比数量不够更糟；
 - 键位方案导入导出（`TER-020`）：点「导出」后读文件——里面有 `format: windterm-keymap` 与刚
