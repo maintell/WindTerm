@@ -1141,12 +1141,18 @@ try {
     if (quick !== null) break;
   }
   const handle = await cdp.eval(`(async () => {
-    const t0 = Date.now();
-    while (Date.now() - t0 < 15000) {
-      const s = document.getElementById("status").textContent;
-      if (s.startsWith("已连接")) return s;
-      if (s.startsWith("打开失败")) throw new Error(s);
-      await new Promise(r => setTimeout(r, 50));
+    // 给两次机会：本机残留 conhost 堆积时首次建连会明显变慢（测试文档踩坑表里记过）。
+    // 第二次由页面里补点一次按钮；只有「超时」才补，「打开失败」立刻抛——
+    // 把真实失败也重试一遍会把错误掩盖成成功。
+    for (let round = 0; round < 2; round += 1) {
+      if (round > 0) document.getElementById("open").click();
+      const t0 = Date.now();
+      while (Date.now() - t0 < 15000) {
+        const s = document.getElementById("status").textContent;
+        if (s.startsWith("已连接")) return s;
+        if (s.startsWith("打开失败")) throw new Error(s);
+        await new Promise(r => setTimeout(r, 50));
+      }
     }
     throw new Error(
     "点击后 15s 内状态未变为已连接，当前：" +
@@ -6441,7 +6447,9 @@ try {
     const c = ts[ts.length - 1].getBoundingClientRect();
     return {
       from: { x: Math.round(a.x + a.width / 2), y: Math.round(a.y + a.height / 2) },
-      to: { x: Math.round(c.x + c.width / 2), y: Math.round(c.y + c.height / 2) },
+      // 落点取最后一个标签的左四分之一：拖动是「插到目标之前」，按正中算会压在中线上，
+      // 逐次运行在「之前/之后」之间来回翻（真出现过一轮红一轮绿）。
+      to: { x: Math.round(c.x + c.width * 0.25), y: Math.round(c.y + c.height / 2) },
     };
   })()`);
   if (dragBoxes) {
