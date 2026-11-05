@@ -3490,6 +3490,26 @@ function formatBytes(n) {
 const tunnelNodes = new Map();
 
 /** 建一行（只在第一次见到这条隧道时调用）。事件里读 `lastTunnels`，避免闭包持有旧状态 */
+/**
+ * 编辑一条已保存的隧道（`NET-004`）：只改名字与分组。
+ *
+ * 类型与端口不在编辑范围：换了它们其实是另一条隧道，让它在原记录上改会把「上次跑的
+ * 是什么」抹掉。要改就重新填表建一条。
+ */
+async function editTunnel(t) {
+  const name = await askName("隧道名称", t.name);
+  if (name === null) return;
+  const group = await askName("分组（留空表示不分组）", t.group ?? "");
+  if (group === null) return;
+  try {
+    const finalName = await invoke("tunnel_update", { id: t.id, name, group });
+    setTunnelMsg(`已更新「${finalName}」`);
+    await refreshTunnels();
+  } catch (e) {
+    setTunnelMsg(`更新失败：${e}`);
+  }
+}
+
 function buildTunnelRow(id) {
   const box = document.createElement("div");
   box.className = "tunnel";
@@ -3510,7 +3530,15 @@ function buildTunnelRow(id) {
   const delBtn = document.createElement("button");
   delBtn.textContent = "删除";
   delBtn.addEventListener("click", () => void deleteTunnel(id));
-  line1.append(dot, route, startBtn, delBtn);
+  // 「编辑」放在最后：`clickTunnelButton` 按索引 1 找删除，插在前面会把它顶掉
+  const editBtn = document.createElement("button");
+  editBtn.textContent = "编辑";
+  editBtn.title = "改名字 / 分组（端口与类型要改就重新建一条）";
+  editBtn.addEventListener("click", () => {
+    const cur = lastTunnels.find((x) => x.id === id);
+    if (cur) void editTunnel(cur);
+  });
+  line1.append(dot, route, startBtn, delBtn, editBtn);
   const line2 = document.createElement("div");
   line2.className = "line2";
   box.append(line1, line2);
@@ -4971,7 +4999,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-91",
+  ui: "wt-ui-92",
   /** 界面语言与词表（验收用：查「有没有漏翻的键」） */
   i18n() {
     return {

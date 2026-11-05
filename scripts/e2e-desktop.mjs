@@ -2585,6 +2585,49 @@ try {
     return true;
   })()`);
 
+  // 列表内编辑（`NET-004`）：改名字与分组，端口/类型不在编辑范围
+  const editBtnText = await cdp.eval(`(() => {
+    const row = [...document.querySelectorAll("#tunnel-list .tunnel")].find((r) =>
+      (r.querySelector(".line1")?.textContent ?? "").startsWith("●L"),
+    );
+    const btn = row?.querySelectorAll("button")[2];
+    if (!btn) return null;
+    btn.click();
+    return btn.textContent;
+  })()`);
+  check("隧道行上有「编辑」入口（NET-004）", editBtnText === "编辑", `${editBtnText}`);
+  await confirmName("生产隧道");
+  // 第一个对话框关掉后立刻弹第二个（分组），要等它真的开
+  await waitFor(
+    async () =>
+      (await cdp.eval(`document.getElementById("name-dialog").open`)) ? true : null,
+    { timeout: 5000, label: "分组对话框" },
+  );
+  await confirmName("数据库");
+  const edited = await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.tunnels[0] ?? null`);
+      return t && t.name === "生产隧道" ? t : null;
+    },
+    { timeout: 10000, label: "隧道改名生效" },
+  ).catch(() => null);
+  check(
+    "列表内能把隧道改名（NET-004）",
+    edited !== null,
+    `${edited?.name ?? "没改"}`,
+  );
+  const regrouped = await cdp.eval(`(() => {
+    const names = [...document.querySelectorAll("#tunnel-list .tun-group")].map(
+      (g) => g.dataset.group,
+    );
+    return names;
+  })()`);
+  check(
+    "改分组后旧组消失、新组出现（NET-004）",
+    regrouped.includes("数据库") && !regrouped.includes("生产"),
+    regrouped.join("、"),
+  );
+
   // 用后端命令删，不走列表按钮：列表每秒重排一次，按钮坐标会过期（这一条踩过）
   const tunList = await cdp.eval(`window.__TAURI__.core.invoke("tunnel_stats")`);
   const tunId = tunList[0].id;

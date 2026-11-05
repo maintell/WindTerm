@@ -1259,6 +1259,54 @@ fn prefs_reset() -> Result<Option<String>, String> {
     Ok(Some(backup.display().to_string()))
 }
 
+/// 改一条已保存隧道的「名字 / 分组 / 自动拉起」（`NET-004` 的「编辑」）。
+///
+/// **只改这三项**：类型与端口换了其实已经是另一条隧道，让它们在原记录上改会把「上次跑
+/// 的是什么」抹掉。要改端口就重新填表建一条。
+#[tauri::command]
+fn tunnel_update(
+    state: State<'_, AppState>,
+    id: String,
+    name: Option<String>,
+    group: Option<String>,
+    auto_start: Option<bool>,
+) -> Result<String, String> {
+    let spec = {
+        let mut specs = state
+            .tunnel_specs
+            .lock()
+            .map_err(|_| "[INTERNAL] 隧道配置状态异常".to_string())?;
+        let Some(slot) = specs.iter_mut().find(|s| s.id == id) else {
+            return Err(
+                "[TUN_BAD_ARGUMENT] 这条隧道不在配置库里（可能是运行时临时建的）".into(),
+            );
+        };
+        if let Some(n) = name.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+            slot.name = n;
+        }
+        // 传空串表示「取消分组」，与建隧道时的约定一致
+        if let Some(g) = group {
+            let g = g.trim().to_string();
+            slot.group = if g.is_empty() { None } else { Some(g) };
+        }
+        if let Some(a) = auto_start {
+            slot.auto_start = a;
+        }
+        slot.validate().map_err(|e| e.to_string())?;
+        slot.clone()
+    };
+    let mut store = wt_store::Store::open(&sessions_db_path()).map_err(|e| e.to_string())?;
+    store.upsert_tunnel(&spec).map_err(|e| e.to_string())?;
+    set_tunnel_spec_cache(&state, spec.clone(), true);
+    // 运行中的实例把名字也换掉，否则列表里同一条会显示两个名字
+    if let Ok(mut running) = state.tunnels.lock() {
+        if let Some((meta, _)) = running.get_mut(&spec.id) {
+            meta.name = spec.name.clone();
+        }
+    }
+    Ok(spec.name)
+}
+
 /// 把键位方案导出成 JSON 文件（`TER-020`）。
 ///
 /// 落点与其它导出一致（下载目录 + 时间戳 + 冲突加序号）。内容由界面给：只有它知道
@@ -3311,6 +3359,7 @@ fn main() {
             app_paths,
             broadcast_export_csv,
             keymap_export,
+            tunnel_update,
             prefs_reset,
             tunnels_export,
             tunnels_import,

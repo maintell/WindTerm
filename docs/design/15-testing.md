@@ -141,7 +141,7 @@ def test_ssh_connect(server, wt):
 | DTO 没写 `rename_all` 时，字段名是 snake_case | `RemoteEntryDto` 没有 camelCase 重命名，序列化出来是 `is_symlink` / `link_target`；界面按 `e.isSymlink` 去读只会拿到 `undefined`，症状是「后端字段有值、界面就是没反应」，而且不报错。同一个仓库里 `PrefsDto` 是 camelCase、这个是 snake_case，**看 DTO 定义再写前端** |
 | `dataset` 里取出来永远是字符串 | 会话键是数字时，`dataset.id` 拿去 `indexOf` 一个都匹配不上。症状极具迷惑性：拖拽计数全对、`moved` 为真、目标也拿到了，**顺序就是不变**。比较前统一 `String()` |
 
-当前覆盖 262 项断言：
+当前覆盖 265 项断言：
 
 - 本地终端：页面加载与 Tauri 桥接、启动自检、点击建会话、句柄可取、首屏输出渲染、
   焦点在终端、键盘输入、命令输出、统计字段非零值、前后端行列一致、ack 回流归零、
@@ -209,6 +209,9 @@ def test_ssh_connect(server, wt):
   1 条）→ 删掉后 `tunnel_stats` 归零 → 用**改了 id 的副本**导入（只导同一份是「更新」，
   证明不了「新建」）→ 列表里出现 `imported-L`；判据读 `tunnel_stats` 而不是 `__wt.tunnels`，
   后者靠面板 1 秒轮询、直接调命令时不会立刻变；
+- 隧道列表内编辑（`NET-004`）：行上有「编辑」，依次填名字与分组后，`__wt.tunnels[0].name`
+  变成新名字、分组标题从「生产」换成「数据库」（旧组消失）。编辑范围只到名字/分组/自动拉起，
+  端口与类型要改就重新建——有意如此；
 - 隧道分组（`NET-004`）：启动一条 `-L` 后，列表里出现 `data-kind="L"` 的组且标题含「本地转发」、
   组内恰好一行；切到动态代理后出现 `data-kind="D"` 的组；
 - 设置搜索（`SET-002`）：搜「字体」时命中的那几个字被 `<mark>` 包住、行首出现「终端 ›」
