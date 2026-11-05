@@ -7659,6 +7659,47 @@ try {
   // 这里走一遍真的 setStatus，读回来的是状态栏实际显示的字。
   const stEn = await cdp.eval(`window.__wt._setStatus("已关闭")`);
   check("英文下状态栏字面量也翻译（SET-012）", stEn.shown === "Closed", `${stEn.raw} → ${stEn.shown}`);
+
+  // 右键菜单也走词表（`SET-012`）：菜单文案是代码里拼的，页面元素那条门禁看不见它。
+  // 必须先把设置对话框关掉——`<dialog>.showModal()` 会让页面其余部分失效，
+  // 不关的话右键根本落不到标签上。
+  await closeAllDialogs();
+  // 这一步自己保证前提：跑到这里可能一个标签都没有，右键就落空了。没有就开一个。
+  const hadTab = await cdp.eval(`document.querySelectorAll("#tabs .tab").length > 0`);
+  if (!hadTab) {
+    await clickElement("#open");
+    await waitFor(
+      async () => ((await cdp.eval(`document.querySelectorAll("#tabs .tab").length`)) > 0 ? true : null),
+      { timeout: 20000, label: "为右键菜单断言开一个标签" },
+    ).catch(() => null);
+  }
+  const tabBox = await cdp.eval(`(() => {
+    const t = document.querySelector("#tabs .tab");
+    if (!t) return null;
+    const r = t.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  })()`);
+  if (tabBox) {
+    const rcTab = { ...tabBox, button: "right", clickCount: 1 };
+    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...rcTab });
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...rcTab });
+  }
+  const enMenu = await waitFor(
+    async () => {
+      const m = await cdp.eval(`(() => {
+        const el = document.getElementById("ctx-menu");
+        return { hidden: el.hidden, items: [...el.querySelectorAll("button")].map((b) => b.textContent) };
+      })()`);
+      return !m.hidden ? m : null;
+    },
+    { timeout: 5000, label: "英文右键菜单" },
+  ).catch(() => null);
+  check(
+    "右键菜单也跟着切英文（SET-012）",
+    enMenu !== null && enMenu.items.includes("Duplicate tab") && enMenu.items.includes("Close all"),
+    enMenu ? enMenu.items.join("、") : `菜单没出来（有标签=${hadTab}／点前现开）`,
+  );
+  await cdp.eval(`document.getElementById("ctx-menu").hidden = true`);
   await setLang("zh");
   const backToChinese = await waitFor(
     async () => {

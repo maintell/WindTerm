@@ -742,11 +742,11 @@ function showTabMenu(view, x, y) {
   const at = order.findIndex((v) => v.id === view.id);
   const right = at < 0 ? 0 : order.length - at - 1;
   showCtxMenu(x, y, [
-    { label: "复制标签", run: () => duplicateTab(view) },
-    { label: "重命名…", run: () => renameTab(view) },
-    { label: `关闭其他（${order.length - 1}）`, run: () => closeTabsExcept(view) },
-    { label: `关闭右侧（${right}）`, run: () => closeTabsRight(view) },
-    { label: "关闭全部", run: () => closeAllTabs() },
+    { label: t("ctx.copyTab"), run: () => duplicateTab(view) },
+    { label: t("ctx.renameTab"), run: () => renameTab(view) },
+    { label: tf("ctx.closeOthers", { n: order.length - 1 }), run: () => closeTabsExcept(view) },
+    { label: tf("ctx.closeRight", { n: right }), run: () => closeTabsRight(view) },
+    { label: t("ctx.closeAll"), run: () => closeAllTabs() },
   ]);
 }
 
@@ -862,14 +862,14 @@ function openTermMenu(x, y, view) {
     y,
     [
       {
-        label: "复制",
+        label: t("ctx.copy"),
         run: () => (hasSel ? copySelection() : setStatus("没有选中内容")),
       },
-      { label: "粘贴", run: () => pasteFromClipboard(view) },
-      { label: "全选", run: () => view.term.selectAll() },
-      { label: "查找…", run: () => openFind() },
-      { label: "清屏", run: () => view.term.clear() },
-      { label: "左右分屏", run: () => runAction("splitToggle") },
+      { label: t("ctx.paste"), run: () => pasteFromClipboard(view) },
+      { label: t("ctx.selectAll"), run: () => view.term.selectAll() },
+      { label: t("ctx.find"), run: () => openFind() },
+      { label: t("ctx.clear"), run: () => view.term.clear() },
+      { label: t("ctx.split"), run: () => runAction("splitToggle") },
     ],
     "terminal",
   );
@@ -1663,20 +1663,20 @@ treeBody.addEventListener("contextmenu", (ev) => {
     showCtxMenu(ev.clientX, ev.clientY, [
       ...(multiSel.size > 1
         ? [
-            { label: `移动 ${multiSel.size} 项到…`, run: () => moveSelectedSessions() },
-            { label: `删除 ${multiSel.size} 项…`, run: () => deleteSelectedSessions() },
+            { label: tf("ctx.moveSelected", { n: multiSel.size }), run: () => moveSelectedSessions() },
+            { label: tf("ctx.deleteSelected", { n: multiSel.size }), run: () => deleteSelectedSessions() },
           ]
-        : [{ label: "移动到…", run: () => moveSession(s) }]),
-      { label: "重命名", run: () => renameSession(s) },
-      { label: "复制", run: () => duplicateSession(s) },
-      { label: "导出", run: () => exportSession(s) },
+        : [{ label: t("ctx.moveTo"), run: () => moveSession(s) }]),
+      { label: t("ctx.rename"), run: () => renameSession(s) },
+      { label: t("ctx.duplicate"), run: () => duplicateSession(s) },
+      { label: t("ctx.export"), run: () => exportSession(s) },
     ]);
   } else if (folderId) {
     const f = (lastTree?.folders ?? []).find((x) => x.id === folderId);
     if (!f) return;
     showCtxMenu(ev.clientX, ev.clientY, [
-      { label: "重命名", run: () => renameFolder(f) },
-      { label: "新建子文件夹", run: () => newSubFolder(f.id) },
+      { label: t("ctx.rename"), run: () => renameFolder(f) },
+      { label: t("ctx.newSubfolder"), run: () => newSubFolder(f.id) },
     ]);
   }
 });
@@ -3680,22 +3680,22 @@ function fileMenuItems() {
   const items = [];
   if (e) {
     items.push({
-      label: e.is_dir ? "打开" : "用编辑器打开",
+      label: e.is_dir ? t("ctx.open") : t("ctx.openInEditor"),
       run: () =>
         e.is_dir
           ? loadDir(joinPath(sftpPath, e.name))
           : openEditor(joinPath(sftpPath, e.name), e.name),
     });
     if (!e.is_dir) {
-      items.push({ label: "下载", run: () => downloadFile(joinPath(sftpPath, e.name)) });
+      items.push({ label: t("ctx.download"), run: () => downloadFile(joinPath(sftpPath, e.name)) });
     }
   }
-  items.push({ label: "新建文件夹", run: () => makeDir() });
+  items.push({ label: t("ctx.newFolder"), run: () => makeDir() });
   if (e) {
-    items.push({ label: "重命名", run: () => renameEntry(e) });
-    items.push({ label: "删除", run: () => removeEntryConfirmed(e) });
-    items.push({ label: "权限…", run: () => chmodEntry(e) });
-    items.push({ label: "复制路径", run: () => copyEntryPath(e) });
+    items.push({ label: t("ctx.rename"), run: () => renameEntry(e) });
+    items.push({ label: t("ctx.remove"), run: () => removeEntryConfirmed(e) });
+    items.push({ label: t("ctx.perms"), run: () => chmodEntry(e) });
+    items.push({ label: t("ctx.copyPath"), run: () => copyEntryPath(e) });
   }
   return items;
 }
@@ -5956,6 +5956,31 @@ const I18N = {
     "dlg.vaultRemove": "移除保险库…",
     "dlg.knownTitle": "已记录的主机密钥",
     "dlg.themeTitle": "导入配色方案",
+    "ctx.copyTab": "复制标签",
+    "ctx.renameTab": "重命名…",
+    "ctx.closeOthers": "关闭其他（{n}）",
+    "ctx.closeRight": "关闭右侧（{n}）",
+    "ctx.closeAll": "关闭全部",
+    "ctx.copy": "复制",
+    "ctx.paste": "粘贴",
+    "ctx.selectAll": "全选",
+    "ctx.find": "查找…",
+    "ctx.clear": "清屏",
+    "ctx.split": "左右分屏",
+    "ctx.moveTo": "移动到…",
+    "ctx.moveSelected": "移动 {n} 项到…",
+    "ctx.deleteSelected": "删除 {n} 项…",
+    "ctx.rename": "重命名",
+    "ctx.duplicate": "复制",
+    "ctx.export": "导出",
+    "ctx.newSubfolder": "新建子文件夹",
+    "ctx.open": "打开",
+    "ctx.openInEditor": "用编辑器打开",
+    "ctx.download": "下载",
+    "ctx.newFolder": "新建文件夹",
+    "ctx.remove": "删除",
+    "ctx.perms": "权限…",
+    "ctx.copyPath": "复制路径",
     "dlg.keysTitle": "键位",
   },
   en: {
@@ -6002,12 +6027,49 @@ const I18N = {
     "dlg.vaultRemove": "Remove vault…",
     "dlg.knownTitle": "Recorded host keys",
     "dlg.themeTitle": "Import color scheme",
+    "ctx.copyTab": "Duplicate tab",
+    "ctx.renameTab": "Rename…",
+    "ctx.closeOthers": "Close others ({n})",
+    "ctx.closeRight": "Close tabs to the right ({n})",
+    "ctx.closeAll": "Close all",
+    "ctx.copy": "Copy",
+    "ctx.paste": "Paste",
+    "ctx.selectAll": "Select all",
+    "ctx.find": "Find…",
+    "ctx.clear": "Clear",
+    "ctx.split": "Split view",
+    "ctx.moveTo": "Move to…",
+    "ctx.moveSelected": "Move {n} items to…",
+    "ctx.deleteSelected": "Delete {n} items…",
+    "ctx.rename": "Rename",
+    "ctx.duplicate": "Duplicate",
+    "ctx.export": "Export",
+    "ctx.newSubfolder": "New subfolder",
+    "ctx.open": "Open",
+    "ctx.openInEditor": "Open in editor",
+    "ctx.download": "Download",
+    "ctx.newFolder": "New folder",
+    "ctx.remove": "Delete",
+    "ctx.perms": "Permissions…",
+    "ctx.copyPath": "Copy path",
     "dlg.keysTitle": "Keybindings",
   },
 };
 
 function t(key) {
   return I18N[uiLang]?.[key] ?? I18N.zh[key] ?? key;
+}
+
+/**
+ * 带占位符的词条：把 `{n}` 之类替换掉。
+ *
+ * 菜单里有「关闭其他（3）」「移动 2 项到…」这种带数字的项。数字本身不用翻译，
+ * 但**括号与语序**中英不同，所以整句进词表、只把数字留成占位符。
+ */
+function tf(key, params) {
+  let s = t(key);
+  for (const [k, v] of Object.entries(params)) s = s.split(`{${k}}`).join(String(v));
+  return s;
 }
 
 /** 把标了 `data-i18n` 的元素刷成当前语言 */

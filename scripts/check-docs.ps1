@@ -398,6 +398,43 @@ foreach ($m in [regex]::Matches($statusText, $refPat)) {
 }
 
 # ─────────────────────────────────────────────────────────────
+# 9e. JS 里 `t("k")` / `tf("k")` 用到的词条必须存在于中英两份词表
+#     页面元素有 `data-i18n` 门禁盯着，但代码里拼的文案（右键菜单等）没人管：
+#     键名写错时 `t()` 会**把键名原样显示给用户**，而且不报错——典型的静默失效。
+# ─────────────────────────────────────────────────────────────
+$i18nBlock = [regex]::Match($mainText, 'const I18N = [{](.*?)\n[}];', [System.Text.RegularExpressions.RegexOptions]::Singleline)
+if (-not $i18nBlock.Success) {
+    Fail 'main.js 里找不到 I18N 词表对象'
+} else {
+    $i18nBody = $i18nBlock.Groups[1].Value
+    $enAt = $i18nBody.IndexOf('en: {')
+    if ($enAt -lt 0) {
+        Fail 'I18N 里找不到 en 段'
+    } else {
+        $zhPart = $i18nBody.Substring(0, $enAt)
+        $enPart = $i18nBody.Substring($enAt)
+        $keyPat = '^[ \t]*"([^"]+)":'
+        $zhSet = [System.Collections.Generic.HashSet[string]]::new()
+        foreach ($ln in ($zhPart -split [char]10)) {
+            $m = [regex]::Match($ln, $keyPat)
+            if ($m.Success) { [void]$zhSet.Add($m.Groups[1].Value) }
+        }
+        $enSet = [System.Collections.Generic.HashSet[string]]::new()
+        foreach ($ln in ($enPart -split [char]10)) {
+            $m = [regex]::Match($ln, $keyPat)
+            if ($m.Success) { [void]$enSet.Add($m.Groups[1].Value) }
+        }
+        $usedPat = '\btf?\("([a-z][A-Za-z0-9]*\.[A-Za-z0-9]+)"'
+        $usedKeys = @([regex]::Matches($mainText, $usedPat) | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+        $missZh = @($usedKeys | Where-Object { -not $zhSet.Contains($_) })
+        $missEn = @($usedKeys | Where-Object { -not $enSet.Contains($_) })
+        if ($missZh.Count -gt 0) { Fail ("JS 里用了词表里没有的键（中文缺）：{0}" -f ($missZh -join ' / ')) }
+        if ($missEn.Count -gt 0) { Fail ("JS 里用了词表里没有的键（英文缺）：{0}" -f ($missEn -join ' / ')) }
+        Write-Host ("JS 文案：t()/tf() 用到 {0} 个键，中文词表 {1} 条 / 英文 {2} 条" -f $usedKeys.Count, $zhSet.Count, $enSet.Count)
+    }
+}
+
+# ─────────────────────────────────────────────────────────────
 # 12. 相对链接可达（NFR-026）
 #     用户手册会随功能增长不断加页，链接断了没人发现。
 #     只查相对路径的 .md 链接；外链不查（离线环境查不了）
