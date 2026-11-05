@@ -1293,6 +1293,40 @@ try {
   ).catch(() => null);
   check("Ctrl+Shift+V 把剪贴板送进终端", executed === true, `pasteCount 涨到 ${pasted}`);
 
+  // 中键粘贴（`TER-011`）：走 `mousedown`——WebView2 的合成鼠标事件不一定产生
+  // `auxclick`，标签中键关闭就是因此改用 mousedown。判据同样是 `pasteCount`，
+  // 再看一眼屏幕上是不是真执行了（只涨计数不发字节也算失败）。
+  await cdp.eval(`navigator.clipboard.writeText("echo mid-paste" + String.fromCharCode(13))`);
+  const midBefore = await cdp.eval(`window.__wt.pasteCount`);
+  const midBox2 = await cdp.eval(`(() => {
+    const r = document.getElementById("term-a").getBoundingClientRect();
+    return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+  })()`);
+  const midBase = { x: midBox2.x, y: midBox2.y, button: "middle" };
+  await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...midBase, clickCount: 1 });
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...midBase, clickCount: 1 });
+  const midPasted = await waitFor(
+    async () => ((await cdp.eval(`window.__wt.pasteCount`)) > midBefore ? true : null),
+    { timeout: 5000, label: "中键粘贴" },
+  ).catch(() => null);
+  check(
+    "中键粘贴生效（TER-011）",
+    midPasted === true,
+    `pasteCount ${midBefore} → ${await cdp.eval(`window.__wt.pasteCount`)}`,
+  );
+  const midRan = await waitFor(
+    async () => {
+      const s = await cdp.eval(`window.__wt.screen()`);
+      return s.split("mid-paste").length > 2 ? true : null;
+    },
+    { timeout: 15000, label: "中键粘贴的内容被执行" },
+  ).catch(() => null);
+  check(
+    "中键粘贴的内容真的执行了（TER-011）",
+    midRan === true,
+    midRan === true ? "已执行" : "屏幕上没看到结果",
+  );
+
   // 粘贴不能把 ^V 当控制字符漏给远端：那会让 shell 收到一个 0x16
   const leaked = await cdp.eval(`window.__wt.inputLog.slice(${logBefore})`);
   check(
@@ -1420,7 +1454,11 @@ try {
       const state = await cdp.eval(
         `({ dom: document.querySelectorAll("#tabs .tab").length, tabs: window.__wt.tabs() })`,
       );
-      return state.dom === 2 && state.tabs.length === 2 ? state : null;
+      // 两条都要**就绪**（有 handle）再往下：只数个数会在第二条还在起 shell 的时候
+      // 就去切标签，那时它晚一步就绪、把焦点抢回去，断言就永远等不到
+      return state.dom === 2 && state.tabs.length === 2 && state.tabs.every((t) => t.handle)
+        ? state
+        : null;
     },
     { timeout: 20000, label: "第二个标签页" },
   );
@@ -3677,7 +3715,7 @@ try {
   check(
     "Ctrl+Tab 按最近使用切，不是按标签位置（TER-001）",
     mruFirst === tabLabels[2],
-    `${mruFirst ?? "没切"}（位置上的是 ${tabLabels[1]}）`,
+    `${mruFirst ?? "没切"}（位置上的是 ${tabLabels[1]}；当前激活 ${await cdp.eval(`window.__wt.tabs().find((t) => t.active)?.label ?? null`)}）`,
   );
   await pressChord(2, "Tab", "Tab", 9);
   const mruDeeper = await waitFor(
@@ -3696,6 +3734,12 @@ try {
 
   // 19i. 左右分屏（`G6`）：两个会话各占一半，各自独立渲染
   await closeAllTabs();
+  // 关闭是异步的（每个标签要收掉自己的 shell/会话）。没关干净就连，会撞上
+  // 「状态栏一直显示正在连接」——排查时会以为 SSH 有问题，其实是前一屏还没收完。
+  await waitFor(
+    async () => ((await cdp.eval(`window.__wt.tabs().length`)) === 0 ? true : null),
+    { timeout: 15000, label: "标签真的关闭干净" },
+  );
   await clickSessionNode("mock-ssh");
   await fillInput("#port", String(sshPort));
   await clickElement("#ssh");
@@ -6004,6 +6048,41 @@ try {
     "重新输入正确口令后能连上（SEC-002 AC-3）",
     reconnected !== null,
     `${reconnected ?? "没连上"}`,
+  );
+  await closeAllTabs();
+
+  // 19zk. 晚就绪的标签不许抢焦点（`TER-001`）：开第二条本地终端、在它连上之前
+  // 切回第一条，等它起来后焦点必须还在第一条——抢焦点会让用户正在敲的命令进了
+  // 别的标签，而且没有任何提示。
+  await closeAllDialogs();
+  await closeAllTabs();
+  await waitFor(
+    async () => ((await cdp.eval(`window.__wt.tabs().length`)) === 0 ? true : null),
+    { timeout: 10000, label: "关掉全部标签" },
+  );
+  await clickElement("#open");
+  const firstLocalHandle = await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.tabs()`);
+      return t.length === 1 && t[0].handle ? t[0].handle : null;
+    },
+    { timeout: 20000, label: "第一条本地终端就绪" },
+  );
+  await clickElement("#open");
+  // 第二条还在起 shell：这时候点回第一条，等于「用户已经切走了」
+  await cdp.eval(`document.querySelectorAll("#tabs .tab")[0].click()`);
+  const bothLocal = await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.tabs()`);
+      return t.length === 2 && t.every((x) => x.handle) ? t : null;
+    },
+    { timeout: 20000, label: "两条本地终端都就绪" },
+  ).catch(() => null);
+  const activeLocal = await cdp.eval(`window.__wt.tabs().find((t) => t.active)?.handle ?? null`);
+  check(
+    "晚就绪的标签不会抢走焦点（TER-001）",
+    bothLocal !== null && activeLocal === firstLocalHandle,
+    activeLocal === firstLocalHandle ? "焦点还在原来那条" : "焦点被新标签抢走了",
   );
   await closeAllTabs();
 

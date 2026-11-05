@@ -387,6 +387,13 @@ function createView(label) {
     inputLog: [],
     /** 用户手动改过标签名（`TER-001`）：改过之后就不再跟着远端 `OSC 2` 变 */
     renamedByUser: false,
+    /**
+     * 连上之后要不要把焦点抢过来（`TER-001`）。
+     *
+     * 默认要；但用户在这条还在连的时候切去别的标签了，就不要再抢回来——
+     * 正在另一个标签里敲命令、焦点突然跳走，是很烦人的事（验收也会因此误判）。
+     */
+    focusOnReady: true,
     /** 粘贴次数（验收用：确认「取消后零字节」时对比它没变） */
     pasteCount: 0,
     /** 自动复制成功次数（验收用：静默能力也要有可观测的成功信号） */
@@ -471,13 +478,24 @@ function createView(label) {
     },
     true,
   );
+  // 中键粘贴（`TER-011`）走 `mousedown` 而不是 `auxclick`：实测 WebView2 里合成
+  // 鼠标事件不一定产生 `auxclick`（标签中键关闭就是因此改用 mousedown）。
+  // `auxclick` 仍然拦一下，免得宿主把它变成「自动滚动」。
   el.addEventListener(
-    "auxclick",
+    "mousedown",
     (ev) => {
       if (ev.button !== 1) return;
       ev.preventDefault();
       if (view !== active) return;
       void pasteFromClipboard(view);
+    },
+    true,
+  );
+  el.addEventListener(
+    "auxclick",
+    (ev) => {
+      if (ev.button !== 1) return;
+      ev.preventDefault();
     },
     true,
   );
@@ -510,7 +528,7 @@ function renderTabs() {
     });
 
     tab.append(label, x);
-    tab.addEventListener("click", () => setActive(view));
+    tab.addEventListener("click", () => activateByUser(view));
 
     // 中键关闭 + 左键拖拽排序（`TER-001`）。
     //
@@ -711,13 +729,32 @@ async function pump(view) {
   }
 }
 
+/**
+ * 用户主动切到某个标签（点标签、快捷键）。
+ *
+ * 只有「用户」切走才算数：其它还没连好的标签此后不要再抢焦点。
+ * 注意别把这一步放进 `setActive`——它也被「某条连好了、自己激活」调用，
+ * 那样后开的两条会互相把对方的意图清掉，结果谁都不会被激活（MRU 也就只剩一条）。
+ */
+function activateByUser(view) {
+  for (const v of sessions.values()) {
+    if (v !== view && !v.running) v.focusOnReady = false;
+  }
+  setActive(view);
+}
+
 /** 会话建立后的公共收尾：激活标签、开始拉取 */
 function afterOpen(view, statusText) {
   view.running = true;
   view.pending = 0;
   view.status = statusText;
-  setActive(view);
-  setStatus(statusText);
+  if (view.focusOnReady) {
+    setActive(view);
+    setStatus(statusText);
+  } else {
+    // 用户在等它连上的时候已经切去别的标签了：只把它画出来，不抢焦点
+    renderTabs();
+  }
   void pump(view);
 }
 
@@ -1980,7 +2017,7 @@ function cycleTab(delta) {
   }, 1600);
   const next = order[mruBurst.cursor];
   if (!next || next === active || !sessions.has(next.id)) return false;
-  setActive(next);
+  activateByUser(next);
   return true;
 }
 
@@ -5128,7 +5165,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-97",
+  ui: "wt-ui-100",
   /**
    * 验收用：刷新会话树并等它**画完**。
    *
