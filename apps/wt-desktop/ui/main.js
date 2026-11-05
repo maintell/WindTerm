@@ -232,6 +232,8 @@ async function loadPrefs() {
     if (typeof p.localShellArgs === "string") localShellArgs = p.localShellArgs;
     if (typeof p.filesAutoOpen === "boolean") filesAutoOpen = p.filesAutoOpen;
     if (typeof p.filesShowHidden === "boolean") filesShowHidden = p.filesShowHidden;
+    if (typeof p.showSizeCol === "boolean") showSizeCol = p.showSizeCol;
+    if (typeof p.showModeCol === "boolean") showModeCol = p.showModeCol;
     if (Number.isFinite(p.netConnectTimeoutSecs)) netTimeout = p.netConnectTimeoutSecs;
     if (Number.isFinite(p.netKeepaliveSecs)) netKeepalive = p.netKeepaliveSecs;
     if (Number.isFinite(p.netKeepaliveMaxMissed)) netMaxMissed = p.netKeepaliveMaxMissed;
@@ -279,6 +281,8 @@ async function savePrefs() {
         localShellArgs,
         filesAutoOpen,
         filesShowHidden,
+        showSizeCol,
+        showModeCol,
         netConnectTimeoutSecs: netTimeout,
         netKeepaliveSecs: netKeepalive,
         netKeepaliveMaxMissed: netMaxMissed,
@@ -3191,6 +3195,10 @@ let filesEntries = [];
 let tabsPosition = "top";
 /** 是否显示 `.` 开头的隐藏文件（`FIL-001` 规格 §4）：默认开，运维场景必须可见 */
 let filesShowHidden = true;
+/** 可配显示列（`FIL-001` 规格 §1）：名称恒显示，大小/权限可关。
+ *  DTO 只有 name/size/mode 三列，没有 mtime/owner，不编造没有数据的列 */
+let showSizeCol = true;
+let showModeCol = true;
 
 /**
  * 列表排序（`FIL-001` 规格 §1「可排序」）。
@@ -3252,13 +3260,19 @@ function buildFileRow(e, index) {
   }
   // 权限位（`FIL-002`）：`drwxr-xr-x` 这种十列串，等宽字体对齐。
   // 服务端不给就留空，别显示一个 "-" 让人以为是文件
+  // 顺序必须与 #files-cols 表头一致：名称 / 大小 / 权限。
+  // 之前这里是 label, perms, size（权限在大小前），表头写的是「大小 权限」——列头与内容错位。
+  const size = document.createElement("span");
+  size.className = "size";
+  size.textContent = e.is_dir ? "" : `${e.size}`;
+  size.style.color = "#8a8a92";
   const perms = document.createElement("span");
   perms.className = "mode";
   perms.textContent = modeString(e.mode);
-  const size = document.createElement("span");
-  size.textContent = e.is_dir ? "" : `${e.size}`;
-  size.style.color = "#8a8a92";
-  row.append(label, perms, size);
+  // 可配显示列（`FIL-001` §1）：名称恒显示；大小、权限可单独关。
+  row.append(label);
+  if (showSizeCol) row.appendChild(size);
+  if (showModeCol) row.appendChild(perms);
   // 单击只选中，双击才动作：与文件管理器一致，也让「改名/删除」有明确的操作对象
   row.addEventListener("click", () => selectEntry(e, row));
   row.addEventListener("dblclick", () => {
@@ -3277,6 +3291,9 @@ function buildFileRow(e, index) {
 /** 表头：点一列排序，再点翻转方向；箭头显示当前状态 */
 const filesCols = document.getElementById("files-cols");
 function renderSortHeader() {
+  // 关掉的列，表头也一起藏：否则表头还占一格、内容却少了，视觉上会错位
+  filesCols.classList.toggle("hide-size", !showSizeCol);
+  filesCols.classList.toggle("hide-mode", !showModeCol);
   for (const btn of filesCols.querySelectorAll(".filecol")) {
     const key = btn.dataset.sort;
     const active = filesSortKey === key;
@@ -5023,6 +5040,32 @@ tabsPositionSelect.addEventListener("change", () => {
   setStatus(tabsPosition === "bottom" ? "标签栏：底部" : "标签栏：顶部");
 });
 
+// 可配显示列（`FIL-001` 规格 §1）：大小 / 权限可单独关，名称恒显示。
+// 只改怎么画，不重新连服务端；关掉某列时若正在按它排序，退回默认排序（别按一列看不见的东西排）。
+const filesColSizeBox = document.getElementById("files-col-size");
+const filesColModeBox = document.getElementById("files-col-mode");
+const applyFileCols = () => {
+  if ((!showSizeCol && filesSortKey === "size") || (!showModeCol && filesSortKey === "mode")) {
+    filesSortKey = "default";
+    filesSortDir = 1;
+  }
+  clearSelection();
+  renderSortHeader();
+  renderFileList();
+};
+filesColSizeBox.addEventListener("change", () => {
+  showSizeCol = filesColSizeBox.checked;
+  applyFileCols();
+  void savePrefs();
+  setStatus(`显示列：大小${showSizeCol ? "开" : "关"}`);
+});
+filesColModeBox.addEventListener("change", () => {
+  showModeCol = filesColModeBox.checked;
+  applyFileCols();
+  void savePrefs();
+  setStatus(`显示列：权限${showModeCol ? "开" : "关"}`);
+});
+
 // 显示隐藏文件（`FIL-001` 规格 §4）：默认开。切换只影响列表怎么画，
 // 不重新连服务端——filesEntries 一直是全量，开关只是过滤。
 const filesShowHiddenBox = document.getElementById("files-show-hidden");
@@ -5055,7 +5098,7 @@ const SET_GROUPS = [
   ["常规", ["ui-lang", "local-shell", "local-shell-path"]],
   ["外观", ["look-size", "look-height", "tabs-position"]],
   ["终端", ["encoding", "look-theme", "theme-import-open", "look-font", "look-scrollback", "term-right-click", "look-word-sep", "look-paste-trim", "look-autocopy-on", "look-autocopy"]],
-  ["文件", ["files-auto-open", "files-show-hidden"]],
+  ["文件", ["files-auto-open", "files-show-hidden", "files-col-size"]],
   ["安全", ["master-open", "vault-rotate", "known-open"]],
   // 按「行里第一个带 id 的元素」认领：配置文件那行首个 id 是路径 span，不是按钮
   ["网络", ["net-timeout", "net-keepalive", "net-max-missed"]],
@@ -5082,6 +5125,7 @@ const SET_META = {
   "local-shell-path": ["（空）", false],
   "files-auto-open": ["开", false],
   "files-show-hidden": ["开", false],
+  "files-col-size": ["全显", false],
   "net-timeout": ["15 秒", false],
   "net-keepalive": ["30 秒", false],
   "net-max-missed": ["3 次", false],
@@ -5318,6 +5362,7 @@ const I18N = {
     "set.lineHeight": "行高",
     "set.scrollback": "回滚行数",
     "set.rightClick": "右键行为",
+    "set.fileCols": "显示列",
     "set.tabsPosition": "标签栏位置",
     "set.showHidden": "显示隐藏文件",
     "set.vaultRotate": "轮换加密密钥",
@@ -5361,6 +5406,7 @@ const I18N = {
     "set.lineHeight": "Line height",
     "set.scrollback": "Scrollback lines",
     "set.rightClick": "Right-click action",
+    "set.fileCols": "Visible columns",
     "set.tabsPosition": "Tab bar position",
     "set.showHidden": "Show hidden files",
     "set.vaultRotate": "Rotate vault key",
@@ -5620,7 +5666,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-113",
+  ui: "wt-ui-114",
   /**
    * 验收用：刷新会话树并等它**画完**。
    *
@@ -5764,6 +5810,8 @@ window.__wt = {
       sortKey: filesSortKey,
       sortDir: filesSortDir,
       tabsPosition,
+      showSizeCol,
+      showModeCol,
       /** 列目录失败的原因（空串表示这次是成功的） */
       error: filesLoadError,
       /** 当前选中项的名字（验收与脚本用） */
@@ -5949,6 +5997,8 @@ window.__wt = {
   await refreshAppPaths();
   filesAutoOpenBox.checked = filesAutoOpen;
   filesShowHiddenBox.checked = filesShowHidden;
+  filesColSizeBox.checked = showSizeCol;
+  filesColModeBox.checked = showModeCol;
   tabsPositionSelect.value = tabsPosition;
   applyTabsPosition();
   renderSortHeader();

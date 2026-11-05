@@ -2900,6 +2900,78 @@ try {
     { timeout: 15000, label: "排序用例后回根" },
   ).catch(() => null);
 
+  // 可配显示列（FIL-001 规格 §1）：名称恒显示，大小/权限可单独关。
+  // 判据读 DOM 每行的 span 数 + __wt.files 的运行态，且表头按钮跟着隐藏（否则会错位）。
+  const colState = () =>
+    cdp.eval(`(() => {
+      const row = document.querySelector("#files-list .vrow");
+      const spans = row ? [...row.querySelectorAll("span")].map((s) => s.className) : [];
+      const cols = document.getElementById("files-cols");
+      return {
+        spans,
+        sizeColHidden: getComputedStyle(cols.querySelector('[data-sort="size"]')).display === "none",
+        modeColHidden: getComputedStyle(cols.querySelector('[data-sort="mode"]')).display === "none",
+        showSizeCol: window.__wt.files.showSizeCol,
+        showModeCol: window.__wt.files.showModeCol,
+      };
+    })()`);
+  // 先确保根目录有条目可渲染（排序用例回根后应能列出文件）
+  const colAll = await colState();
+  check(
+    "默认显示名称/大小/权限三列（FIL-001）",
+    colAll.showSizeCol === true && colAll.showModeCol === true &&
+      colAll.spans.length === 3 &&
+      colAll.spans[1] === "size" && colAll.spans[2] === "mode",
+    JSON.stringify(colAll),
+  );
+  const setFileCol = async (id, on) => {
+    await openSettings();
+    await cdp.eval(
+      "(() => { const el=document.getElementById(" + JSON.stringify(id) + ");"
+      + " el.checked=" + (on ? "true" : "false") + ";"
+      + " el.dispatchEvent(new Event('change',{bubbles:true}));"
+      + " return el.checked; })()"
+    );
+    await closeAllDialogs();
+  };
+  await setFileCol("files-col-size", false);
+  const colNoSize = await colState();
+  check(
+    "关掉「大小」后该列从行与表头一起消失（FIL-001）",
+    colNoSize.showSizeCol === false && colNoSize.spans.length === 2 &&
+      !colNoSize.spans.includes("size") && colNoSize.sizeColHidden === true,
+    JSON.stringify(colNoSize),
+  );
+  await setFileCol("files-col-mode", false);
+  const colOnlyName = await colState();
+  check(
+    "再关「权限」后只剩名称列（FIL-001）",
+    colOnlyName.showModeCol === false && colOnlyName.spans.length === 1 &&
+      colOnlyName.modeColHidden === true,
+    JSON.stringify(colOnlyName),
+  );
+  const colsSaved = await waitFor(
+    async () => {
+      let t;
+      try { t = readFileSync(prefsFile, "utf8"); } catch { return null; }
+      return /showSizeCol\s*=\s*false/.test(t) && /showModeCol\s*=\s*false/.test(t)
+        ? true : null;
+    },
+    { timeout: 10000, label: "显示列落盘" },
+  ).catch(() => null);
+  check("显示列写进 config.toml（FIL-001）", colsSaved === true, colsSaved === true ? "已写入" : "没落盘");
+  // 复原：两列都开回来
+  await setFileCol("files-col-size", true);
+  await setFileCol("files-col-mode", true);
+  const colRestored = await waitFor(
+    async () => {
+      const s = await colState();
+      return s.showSizeCol && s.showModeCol && s.spans.length === 3 ? true : null;
+    },
+    { timeout: 5000, label: "显示列复原" },
+  ).catch(() => null);
+  check("显示列复原（不污染后续）", colRestored === true, `${colRestored}`);
+
   // 路径记忆：进子目录 → 切回「跟随表单」→ 再切回来，应当还在子目录
   await clickElement("#files-mkdir");
   await typeText("sub");

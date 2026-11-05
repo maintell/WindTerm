@@ -840,6 +840,10 @@ struct PrefsDto {
     encoding: String,
     /// 标签栏位置（`TER-001`）：`top` / `bottom`。
     tabs_position: String,
+    /// 文件列表显示列（`FIL-001` §1）：名称恒显示，大小/权限可关。
+    /// DTO 只有 name/size/mode 三列，没有 mtime/owner，不编造没有数据的列。
+    show_size_col: bool,
+    show_mode_col: bool,
     /// 键位（`TER-020`）：`action → chords[]`
     keymap: std::collections::BTreeMap<String, Vec<String>>,
     /// 导入的配色方案（`TER-005`）：跟内置的放一起，重启后还在
@@ -909,6 +913,8 @@ impl Default for PrefsDto {
             scrollback: 10_000,
             encoding: "utf-8".into(),
             tabs_position: "top".into(),
+            show_size_col: true,
+            show_mode_col: true,
             keymap: std::collections::BTreeMap::new(),
             custom_themes: Vec::new(),
             local_shell: "auto".into(),

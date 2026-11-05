@@ -215,6 +215,10 @@
       #files-cols .filecol:nth-child(2), #files-cols .filecol:nth-child(3) { flex: 0 0 68px; }
       #files-cols .filecol:hover, #files-cols .filecol.active { color: var(--fg); }
       #files-cols .arrow { font-size: 10px; }
+      #files-cols.hide-size .filecol[data-sort="size"],
+      #files-cols.hide-mode .filecol[data-sort="mode"] { display: none; }
+      #files-list .row .mode, #files-list .row .size { flex: 0 0 68px; }
+      #files-list .row .size { color: #8a8a92; }
       #files-list { flex: 1; overflow: auto; position: relative; }
       /* 虚拟滚动（FIL-001 AC-1）：行绝对定位，外层撑出总高度 */
       #files-list .vbody { position: relative; }
@@ -1373,6 +1377,12 @@
           <span class="set-name" data-i18n="set.showHidden">显示隐藏文件</span>
           <span class="set-scope">全局</span>
           <input id="files-show-hidden" type="checkbox" />
+        </div>
+        <div class="set-row" data-kw="显示列 列 大小 权限 columns 文件列表 隐藏列">
+          <span class="set-name" data-i18n="set.fileCols">显示列</span>
+          <span class="set-scope">全局</span>
+          <label title="显示文件大小"><input type="checkbox" id="files-col-size" />大小</label>
+          <label title="显示权限位"><input type="checkbox" id="files-col-mode" />权限</label>
         </div>
         <p id="set-empty" hidden>没有匹配的设置项</p>
       </div>
