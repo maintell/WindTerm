@@ -451,6 +451,7 @@
       #term-foot[hidden] { display: none; }
       /* 广播栏（TER-004）：一行输入 + 模式 + 结果，不占正文 */
       #bc-bar {
+        position: relative;
         display: flex;
         align-items: center;
         gap: 6px;
@@ -461,6 +462,35 @@
         flex: none;
       }
       #bc-bar[hidden] { display: none; }
+      /* 目标选择浮层（TER-004）：哪些标签参与这次广播 */
+      #bc-target-pop {
+        position: absolute;
+        bottom: 28px;
+        left: 8px;
+        z-index: 30;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        max-height: 240px;
+        overflow: auto;
+        padding: 6px 10px;
+        background: #1e1e24;
+        border: 1px solid #3a3a44;
+        border-radius: 6px;
+        box-shadow: 0 6px 18px #0008;
+      }
+      #bc-target-pop[hidden] { display: none; }
+      #bc-target-pop label {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        white-space: nowrap;
+        cursor: pointer;
+      }
+      #bc-target-open.narrowed {
+        border-color: #7a6a2b;
+        color: #ffd479;
+      }
       /* 实时逐键广播（TER-004）：这条模式下按键没有二次确认的机会，整条栏换成警示色 */
       #bc-bar.live {
         background: #3a2026;
@@ -1160,11 +1190,13 @@
             <option value="confirm">发送前确认</option>
           </select>
           <input id="bc-input" placeholder="广播到所有已连接会话" spellcheck="false" />
+          <button id="bc-target-open" title="选择这次广播发给哪几个标签（默认全部已连接）">目标</button>
           <button id="bc-send">发送</button>
           <label id="bc-diff-row" title="只展开输出不一致的会话"><input type="checkbox" id="bc-diff" />只看差异</label>
           <label id="bc-live-row" title="实时逐键：你在当前终端的每一次按键都同步到其余已连接会话"><input type="checkbox" id="bc-live" />实时逐键</label>
           <button id="bc-export" title="把上次广播的结果导出成 CSV（Excel 可直接打开）">导出 CSV</button>
           <span id="bc-result"></span>
+          <div id="bc-target-pop" hidden></div>
         </div>
         <div id="term-foot">
           <button id="settings-open" data-i18n="btn.settings" title="设置（可搜索）">设置</button>

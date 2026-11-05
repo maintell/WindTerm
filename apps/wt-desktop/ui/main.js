@@ -143,6 +143,7 @@ const STATUS_EN = {
   "键位已恢复默认": "Keybindings restored to defaults",
   "文件面板需要先填主机与用户名": "The file panel needs host and username first",
   "没有可广播的会话": "No sessions to broadcast to",
+  "选中的标签没有已连接的会话": "None of the selected tabs is connected",
   "已取消广播": "Broadcast cancelled",
   "还没有广播结果可导出": "No broadcast results to export yet",
   "实时广播已开启": "Live broadcast on",
@@ -602,6 +603,8 @@ function createView(label) {
   el.addEventListener("mousedown", () => term.focus());
 
   sessions.set(view.id, view);
+  // 新标签连上后广播目标会变（`TER-004`）：栏开着时立刻把计数刷新过来
+  if (!bcBar.hidden) renderBcTargets();
   return view;
 }
 
@@ -1058,6 +1061,8 @@ async function closeView(view) {
     }
   }
   sessions.delete(view.id);
+  // 关掉的标签要从广播目标里摘掉：栏还开着时计数得跟着变，不能停在旧数字上
+  if (!bcBar.hidden) renderBcTargets();
   // MRU 里也要摘掉：否则关掉的 view（连它的 xterm 实例）会被一直引用着
   const mruAt = mruViews.indexOf(view);
   if (mruAt >= 0) mruViews.splice(mruAt, 1);
@@ -3854,9 +3859,83 @@ function isDangerous(cmd) {
   return DANGEROUS.some((re) => re.test(cmd));
 }
 
-/** 广播目标：当前有连接的所有终端 */
-function broadcastTargets() {
+/**
+ * 广播目标（`TER-004` 规格「目标选择：多选标签」）。
+ *
+ * `null` = 全部已连接会话（默认）；`Set<view.id>` = 只发勾上的那几个标签。
+ * 用**标签**而不是保存的会话来定位：同一条会话可以开两个标签（复制标签），
+ * 按会话选区分不开它们，而用户要的正是「发给这个标签」。
+ */
+let bcTargetsChosen = null;
+
+/** 当前有连接的终端（不管有没有勾选） */
+function bcConnected() {
   return [...sessions.values()].filter((v) => v.handle && v.running);
+}
+
+function broadcastTargets() {
+  const all = bcConnected();
+  if (!bcTargetsChosen) return all;
+  return all.filter((v) => bcTargetsChosen.has(v.id));
+}
+
+/** 关掉的标签要从勾选集合里摘掉，否则「目标 2 台」里有一台早就不在了 */
+function pruneBcTargets() {
+  if (!bcTargetsChosen) return;
+  const alive = new Set([...sessions.values()].map((v) => v.id));
+  let dropped = false;
+  for (const id of [...bcTargetsChosen]) {
+    if (!alive.has(id)) {
+      bcTargetsChosen.delete(id);
+      dropped = true;
+    }
+  }
+  // 勾过的标签全关了 → 退回「全部」。留着空集合会让下一次广播悄悄发不出去；
+  // 而「用户主动把勾全去掉」时集合本就是空的、这里 dropped 为假，仍会走到发送时报错
+  if (dropped && !bcTargetsChosen.size) bcTargetsChosen = null;
+}
+
+/** 刷新「目标」按钮上的计数（浮层内容打开时才重建） */
+function renderBcTargets() {
+  if (!bcTargetsBtn) return;
+  pruneBcTargets();
+  const all = bcConnected().length;
+  const shown = broadcastTargets().length;
+  bcTargetsBtn.textContent = bcTargetsChosen ? `目标 ${shown}/${all}` : "目标 全部";
+  bcTargetsBtn.classList.toggle("narrowed", Boolean(bcTargetsChosen));
+  bcTargetsBtn.title = bcTargetsChosen
+    ? `这次广播只发给勾上的 ${shown} 个标签（共 ${all} 个已连接）`
+    : "选择这次广播发给哪几个标签（默认全部已连接）";
+}
+
+/** 目标浮层：每个已连接标签一行复选框 */
+function renderBcTargetPop() {
+  bcTargetsPop.textContent = "";
+  const all = bcConnected();
+  if (!all.length) {
+    const empty = document.createElement("span");
+    empty.textContent = "还没有已连接的会话";
+    bcTargetsPop.appendChild(empty);
+    return;
+  }
+  for (const v of all) {
+    const row = document.createElement("label");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = !bcTargetsChosen || bcTargetsChosen.has(v.id);
+    cb.addEventListener("change", () => {
+      // 第一次动复选框时把「全部」落成显式集合，之后按勾选增删
+      if (!bcTargetsChosen) bcTargetsChosen = new Set(all.map((x) => x.id));
+      if (cb.checked) bcTargetsChosen.add(v.id);
+      else bcTargetsChosen.delete(v.id);
+      renderBcTargets();
+    });
+    row.appendChild(cb);
+    const text = document.createElement("span");
+    text.textContent = v.label;
+    row.appendChild(text);
+    bcTargetsPop.appendChild(row);
+  }
 }
 
 /** 最近一次广播的结果（验收读它） */
@@ -4027,7 +4106,12 @@ async function runBroadcast() {
   const targets = broadcastTargets();
   const idle = [...sessions.values()].filter((v) => !v.handle || !v.running).length;
   if (!targets.length) {
-    setStatus("没有可广播的会话");
+    // 选了目标却一台都没连上，和「压根没有会话」是两回事：
+    // 前者要说清是选中的那些没连上，否则用户会以为广播坏了。
+    // 写成两条独立调用而不是三元表达式：词表门禁只认「纯字面量 setStatus」，
+    // 塞进三元里它就会以为这两条没人用，翻译与覆盖都跟着漏掉
+    if (bcTargetsChosen) setStatus("选中的标签没有已连接的会话");
+    else setStatus("没有可广播的会话");
     return;
   }
   const dangerous = isDangerous(cmd);
@@ -4074,8 +4158,28 @@ function initBroadcast() {
     bcToggle.classList.toggle("on", !bcBar.hidden);
     // 关掉广播栏就等于关掉实时广播：栏都收起来了还继续往各会话发按键，
     // 用户看不到任何提示，这是最危险的一种「静默还在生效」
-    if (bcBar.hidden) stopLiveBroadcast(true);
-    else bcInput.focus();
+    if (bcBar.hidden) {
+      stopLiveBroadcast(true);
+      bcTargetsPop.hidden = true;
+    } else {
+      renderBcTargets();
+      bcInput.focus();
+    }
+  });
+
+  // 目标浮层（`TER-004`「多选标签」）：点按钮开合，点别处收起
+  bcTargetsBtn.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    if (bcTargetsPop.hidden) {
+      renderBcTargetPop();
+      bcTargetsPop.hidden = false;
+    } else {
+      bcTargetsPop.hidden = true;
+    }
+  });
+  bcTargetsPop.addEventListener("click", (ev) => ev.stopPropagation());
+  document.addEventListener("click", () => {
+    if (!bcTargetsPop.hidden) bcTargetsPop.hidden = true;
   });
 
   bcLive.addEventListener("change", async () => {
@@ -4118,6 +4222,8 @@ const bcInput = document.getElementById("bc-input");
 const bcSend = document.getElementById("bc-send");
 const bcDiff = document.getElementById("bc-diff");
 const bcLive = document.getElementById("bc-live");
+const bcTargetsBtn = document.getElementById("bc-target-open");
+const bcTargetsPop = document.getElementById("bc-target-pop");
 const bcResult = document.getElementById("bc-result");
 
 // 广播结果导出 CSV（`TER-004`）：按「分组 × 主机」铺成行，Excel 直接能看。
@@ -6214,6 +6320,8 @@ window.__wt = {
       // 实时逐键（`broadcast-live`）：验收靠 chars/sends 判断「真的发了几份」，
       // 只看开关状态证明不了按键有没有被镜像出去
       live: { ...liveBroadcast },
+      /** 勾选的目标标签 id；`null` 表示全部已连接（`TER-004` 目标选择） */
+      chosen: bcTargetsChosen ? [...bcTargetsChosen] : null,
     };
   },
   /**

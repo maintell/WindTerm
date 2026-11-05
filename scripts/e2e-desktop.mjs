@@ -5454,6 +5454,52 @@ try {
     { timeout: 8000, label: "取消广播" },
   );
   check("取消后没有发出任何命令", cancelled.last.sent === 0, cancelled.result || "未发送");
+
+  // 目标选择（`TER-004` 规格「多选标签」）：取消勾选一个标签，命令只发给剩下那个
+  const tgt = await cdp.eval(`(() => {
+    document.getElementById("bc-target-open").click();
+    const rows = [...document.querySelectorAll("#bc-target-pop label")];
+    return {
+      rows: rows.length,
+      targets: window.__wt.broadcast.targets,
+      label: document.getElementById("bc-target-open").textContent,
+    };
+  })()`);
+  check(
+    "目标浮层列出所有已连接标签（TER-004）",
+    tgt.rows >= 2 && tgt.targets >= 2,
+    `${tgt.rows} 行，按钮写着「${tgt.label}」`,
+  );
+  const narrowed = await cdp.eval(`(() => {
+    const boxes = [...document.querySelectorAll("#bc-target-pop input")];
+    boxes[1].checked = false;
+    boxes[1].dispatchEvent(new Event("change", { bubbles: true }));
+    const b = window.__wt.broadcast;
+    return {
+      targets: b.targets,
+      chosen: b.chosen ? b.chosen.length : null,
+      label: document.getElementById("bc-target-open").textContent,
+    };
+  })()`);
+  check(
+    "取消勾选后目标只剩勾上的那些（TER-004）",
+    narrowed.targets === 1 && narrowed.chosen === 1,
+    `按钮写着「${narrowed.label}」`,
+  );
+  await fillInput("#bc-input", "echo solo");
+  await clickElement("#bc-send");
+  const solo = await waitFor(
+    async () => {
+      const b = await cdp.eval(`window.__wt.broadcast`);
+      return b.last && !b.last.cancelled && b.last.sent === 1 ? b : null;
+    },
+    { timeout: 30000, label: "定向广播完成" },
+  ).catch(() => null);
+  check(
+    "广播只发给了勾选的标签（TER-004）",
+    solo !== null && solo.last.groups.length === 1 && solo.last.groups[0].labels.length === 1,
+    solo ? `${solo.last.sent} 台 / ${solo.last.groups.length} 组` : "没等到结果",
+  );
   await clickElement("#bc-toggle");
   await closeAllTabs();
 
