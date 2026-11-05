@@ -155,7 +155,9 @@ def test_ssh_connect(server, wt):
 | 用 `document.querySelector(".xterm-screen")` 取终端坐标，点到的是**非激活标签** | 每个标签都有自己的 `.xterm-screen`，隐藏的那些也在 DOM 里、`getBoundingClientRect()` 全是 0 → 算出坐标 `(0,0)`，点下去什么也没发生。症状极具误导性：实时广播的「镜像到别的会话」一直红，看上去像广播没实现，实际是**一个键都没进终端**。做法：按面积挑可见的那个（`width>0 && height>0` 里取最大），并且先把「焦点真的在 `.xterm-helper-textarea` 上」做成显式前提再去打字 |
 | mock 服务器对**每个字节**回一句 `echo:<原文>`，整串标记永远不会出现在屏幕上 | 逐键输入的断言原本找 `live-marker` 这整串，结果永远超时——mock 是逐块回显的，屏幕上长成 `echo:lecho:i…`。改成判「**新出现**的 `echo:q`」：打字前后各取一次 `__wt.screens()`，比较哪个会话新增了这段。教训：断言要打在**协议实际产生的东西**上，不要假设终端会把键击拼成一行 |
 | 点完确认框立刻打字，头几个键会漏掉 | `askConfirm` 是 `await` 对话框 `close` 事件后才把状态置真的（例如 `liveBroadcast.on = true`）。点完 `ask-ok` 马上 `typeText`，前几个字符既没进缓冲也没被镜像，症状是「危险命令拦截不生效」（`blocked=0`、开关还是 `on`）。做法：点完确认**先等目标状态真置上**（`waitFor` 读 `__wt.broadcast.live.on`）再操作 |
-当前覆盖 359 项断言：
+| 给可滚动列表加 `tabindex` 后，双击文件「没反应」 | 键盘导航要求列表能拿焦点，于是 `selectEntry` 里调 `filesList.focus()`。**聚焦一个可滚动容器会把它滚一下**，双击的第二次点击就落到别的位置，`dblclick` 不再触发——表现成「双击打不开目录」，而事件明明绑着。修法：`focus({ preventScroll: true })` |
+
+当前覆盖 378 项断言：
 
 - 本地终端：页面加载与 Tauri 桥接、启动自检、点击建会话、句柄可取、首屏输出渲染、
   焦点在终端、键盘输入、命令输出、统计字段非零值、前后端行列一致、ack 回流归零、

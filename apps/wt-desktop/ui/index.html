@@ -241,6 +241,15 @@
       #files-list .row .link.broken { color: #ff7b72; text-decoration: line-through; }
       /* 权限位列：等宽 + 暗色，不抢名字的位置 */
       #files-list .row .mode { color: #6a6a72; font-family: monospace; font-size: 10px; }
+      /* 类型标记（FIL-001 规格第 2 条）：单字符 + 颜色，不引图标库、不动 textContent */
+      #files-list .row .kind-dir::before { content: "▸"; color: #7fb3ff; }
+      #files-list .row .kind-file::before { content: "·"; color: #5a5a62; }
+      #files-list .row .kind-link::before { content: "↗"; color: #7fb3ff; }
+      #files-list .row .kind-exec::before { content: "⚙"; color: #d7ba7d; }
+      #files-list .row .kind-special::before { content: "◊"; color: #c586c0; }
+      #files-list .row .kind-dir::before, #files-list .row .kind-file::before,
+      #files-list .row .kind-link::before, #files-list .row .kind-exec::before,
+      #files-list .row .kind-special::before { display: inline-block; width: 12px; }
       #vault-panel {
         border-bottom: 1px solid #2a2a30;
         padding: 4px 0;

@@ -3373,6 +3373,21 @@ function visibleFiles() {
 let filesLoadError = "";
 let filesScrollRaf = 0;
 
+/**
+ * 条目类型（`FIL-001` 规格第 2 条）：目录 / 普通文件 / 符号链接 / 设备或管道 / 可执行。
+ *
+ * 只看 `mode` 的类型位与执行位——服务端不给 mode 时一律当普通文件，不猜。
+ */
+function entryKind(e) {
+  if (e.is_symlink) return "link";
+  if (e.is_dir) return "dir";
+  const type = Number.isFinite(e.mode) ? e.mode & 0o170000 : 0;
+  // 字符设备 / 块设备 / FIFO / socket：都不是普通文件，标出来免得双击去「编辑」
+  if (type === 0o020000 || type === 0o060000 || type === 0o010000 || type === 0o140000) return "special";
+  if (Number.isFinite(e.mode) && (e.mode & 0o111) !== 0) return "exec";
+  return "file";
+}
+
 /** 一条的显示名：目录带 `/`、链接带 `@`（`ls -F` 的老习惯） */
 function entryLabel(e) {
   if (e.is_symlink) return `${e.name}@`;
@@ -3387,12 +3402,18 @@ function buildFileRow(e, index) {
   const label = document.createElement("span");
   // 注意字段名：`RemoteEntryDto` 没有 camelCase 重命名，序列化出来就是 snake_case
   label.textContent = entryLabel(e);
+  // 类型标记（`FIL-001` 规格第 2 条）走 CSS `::before`，**不进 textContent**：
+  // 名字里多一个字符，既有的「名字等于 notes.txt」这类判断全会错，用户复制路径也脏。
+  label.classList.add(`kind-${entryKind(e)}`);
   if (e.is_symlink) {
     // 目标放 tooltip，断链单独标色
     label.title = e.broken
       ? `断链：${e.link_target ?? "（读不到目标）"} 不存在`
       : `链接到 ${e.link_target ?? ""}`;
-    label.className = e.broken ? "link broken" : "link";
+    // 用 classList 追加而不是整体赋值：直接写 `className` 会把上面刚加的
+    // `kind-*` 类型标记一起冲掉（链接就没有 `↗` 了）
+    label.classList.add("link");
+    if (e.broken) label.classList.add("broken");
   }
   // 权限位（`FIL-002`）：`drwxr-xr-x` 这种十列串，等宽字体对齐。
   // 服务端不给就留空，别显示一个 "-" 让人以为是文件
@@ -3695,8 +3716,10 @@ filesList.addEventListener("contextmenu", (ev) => {
 
 function selectEntry(entry, row) {
   selectedEntry = entry;
-  // 键盘导航要求列表本身能拿焦点（`FIL-001` 规格第 8 条）：行是 div，点它不会移焦点
-  if (document.activeElement !== filesList) filesList.focus();
+  // 键盘导航要求列表本身能拿焦点（`FIL-001` 规格第 8 条）：行是 div，点它不会移焦点。
+  // `preventScroll` 不能省：聚焦一个可滚动容器会把它滚一下，双击的第二次点击就落到
+  // 别的位置上，`dblclick` 不再触发——表现为「双击没反应」，查半天以为事件没绑。
+  if (document.activeElement !== filesList) filesList.focus({ preventScroll: true });
   for (const r of filesList.children) r.classList.remove?.("selected");
   row.classList.add("selected");
   filesRename.disabled = false;

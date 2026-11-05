@@ -3192,6 +3192,63 @@ try {
   );
   await closeAllDialogs();
 
+  // 类型标记（`FIL-001` 规格第 2 条）：目录 / 普通文件 / 链接 / 设备 / 可执行。
+  // 判据读 CSS `::before` 的 content —— 标记是画出来的，不进 textContent；
+  // 断言里必须同时确认「名字没被污染」，否则以后有人把字符拼进名字也没人发现。
+  // mock 用「以 / 结尾的空键」表示目录（见 testing.rs 的 mkdir）：种一个文件在子目录里
+  // 并不会让父目录出现，必须直接种那个目录键。
+  await cdp.eval(`window.__TAURI__.core.invoke("mock_seed_file", { path: "/icondir/", content: "" })`);
+  await cdp.eval(`(() => {
+    const sel = document.getElementById("files-session");
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    return sel.value;
+  })()`);
+  // 等「这一行真的出现在列表里」而不是只等 listCount：种文件之后那次重列可能落在
+  // 我们读行之前（或者干脆没触发），只等计数会让后面的断言拿着旧列表说话。
+  const iconRows = await waitFor(
+    async () => {
+      const rows = await cdp.eval(`window.__wt.files.rows`);
+      return rows.some((r) => r.startsWith("icondir")) ? rows : null;
+    },
+    { timeout: 15000, label: "根目录出现 icondir" },
+  ).catch(() => null);
+  const icons = await cdp.eval(`(() => {
+    const label = (text) => {
+      const row = [...document.querySelectorAll("#files-list .row")].find(
+        (r) => r.querySelector("span")?.textContent === text,
+      );
+      return row ? row.querySelector("span") : null;
+    };
+    // 目录名以 icondir 开头即可：mock 的目录名可能带尾斜杠，写死整串会假失败
+    const labelByPrefix = (prefix) => {
+      const row = [...document.querySelectorAll("#files-list .row")].find(
+        (r) => (r.querySelector("span")?.textContent ?? "").startsWith(prefix),
+      );
+      return row ? row.querySelector("span") : null;
+    };
+    const glyph = (el) => (el ? getComputedStyle(el, "::before").content : null);
+    const dir = labelByPrefix("icondir");
+    const file = label("notes.txt");
+    return {
+      dirGlyph: glyph(dir),
+      fileGlyph: glyph(file),
+      dirText: dir ? dir.textContent : null,
+      fileText: file ? file.textContent : null,
+      dirClass: dir ? dir.className : null,
+    };
+  })()`);
+  check(
+    "目录与文件有不同的类型标记（FIL-001）",
+    icons.dirGlyph === "\"▸\"" && icons.fileGlyph === "\"·\"",
+    `目录=${icons.dirGlyph} 文件=${icons.fileGlyph}｜rows=${(iconRows ?? []).join("、")}`,
+  );
+  check(
+    "类型标记不污染名字（FIL-001）",
+    (icons.dirText ?? "").startsWith("icondir") && !(icons.dirText ?? "").includes("▸") &&
+      icons.fileText === "notes.txt",
+    `${JSON.stringify(icons.dirText)} / ${JSON.stringify(icons.fileText)}`,
+  );
+
   // 自动刷新（`FIL-001` 规格 §6）：窗口获得焦点时按「可配间隔」节流刷新。
   // 默认关；设为 5 秒后写进 config.toml；节流：距上次列目录不足间隔时不刷，
   // 用 _ageDirLoad 模拟「已过去足够久」再模拟一次焦点，应刷新一次且计数 +1。
@@ -6576,7 +6633,11 @@ try {
   );
   check(
     "断链单独标色，而不是伪装成普通文件（FIL-002）",
-    linkView !== null && linkView.deadClass === "link broken",
+    // 断言按「类名列表」比，不比整串：标签上现在还挂着 `kind-link` 类型标记，
+    // 写死整串的话，以后再加任何一个类都会假失败
+    linkView !== null &&
+      linkView.deadClass.split(" ").includes("link") &&
+      linkView.deadClass.split(" ").includes("broken"),
     linkView ? linkView.deadClass : "没找到 dead.txt",
   );
 
