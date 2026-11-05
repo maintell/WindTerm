@@ -3230,6 +3230,31 @@ async fn sftp_mkdir(
     sftp.create_dir(&path).await.map_err(|e| e.to_string())
 }
 
+/// 路径解析（`FIL-001` 规格 §5「支持输入完整路径，含 `~` 展开」）。
+///
+/// SFTP 没有 shell，`~` 不会被自动展开；用 `SSH_FXP_REALPATH` 让服务端解析，
+/// 比在前端猜 home 目录可靠。这条命令与 `sftp_list` 一样每次独立建连
+/// （连接复用已因并发回归回退，见 P0 表 `SEC-002`），不引入共享状态。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SftpPathArg {
+    req: SshOpenReq,
+    path: String,
+    #[serde(default)]
+    jump: Option<JumpReq>,
+}
+
+#[tauri::command]
+async fn sftp_canonicalize(
+    state: State<'_
+, AppState>,
+    arg: SftpPathArg,
+) -> Result<String, String> {
+    let SftpPathArg { req, path, jump } = arg;
+    let sftp = open_sftp(&state, req, jump).await?;
+    sftp.canonicalize(&path).await.map_err(|e| e.to_string())
+}
+
 /// 改名 / 移动。
 #[tauri::command]
 async fn sftp_rename(
@@ -3423,6 +3448,7 @@ fn main() {
             tunnel_update,
             prefs_reset,
             session_count,
+            sftp_canonicalize,
             tunnels_export,
             tunnels_import,
             prefs_load,

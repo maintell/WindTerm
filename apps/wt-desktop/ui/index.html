@@ -165,7 +165,7 @@
          否则最左侧的按钮会被挤到 x<0，点上去等于点在视口外 */
       #files-head { flex-wrap: wrap; }
       #files-head #files-session { flex: 1 0 100%; }
-      #files-head #files-path { flex: 1 0 100%; }
+      #files-head #files-path { flex: 1 1 auto; min-width: 0; }
       #files-head select {
         background: #2a2a30;
         color: var(--fg);
@@ -178,6 +178,13 @@
       #files-head { border-bottom: 1px solid #2a2a30; }
       #files-foot { border-top: 1px solid #2a2a30; }
       #files-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      /* 面包屑：分隔符是真实文本节点，所以 #files-path 的 textContent 仍精确等于路径 */
+      #files-path .path-crumb { cursor: pointer; }
+      #files-path .path-crumb:hover { text-decoration: underline; color: var(--fg); }
+      #files-path-input { flex: 1 0 100%; font: inherit; font-size: 12px;
+        background: #2a2a30; color: var(--fg); border: 1px solid var(--accent);
+        border-radius: 4px; padding: 2px 6px; }
+      #files-path[hidden], #files-path-input[hidden] { display: none; }
       #files button {
         background: #2a2a30;
         color: var(--fg);
@@ -1062,6 +1069,8 @@
               <option value="">跟随连接表单</option>
             </select>
             <span id="files-path">/</span>
+            <button id="files-path-edit" title="输入完整路径跳转">路径…</button>
+            <input id="files-path-input" hidden placeholder="输入完整路径，回车跳转（Esc 取消）" spellcheck="false" />
             <button id="files-mkdir" title="在当前目录新建文件夹">+ 目录</button>
             <button id="files-rename" title="重命名选中项" disabled>改名</button>
             <button id="files-chmod" title="改权限位（八进制）" disabled>权限</button>

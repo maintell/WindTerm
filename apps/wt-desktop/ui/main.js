@@ -3015,6 +3015,88 @@ function sftpReq() {
  */
 let filesGen = 0;
 
+/**
+ * 路径面包屑（`FIL-001` 规格 §5）：`/ › var › log`，每一段都能点回去。
+ *
+ * **关键**：`#files-path.textContent` 必须恒等于 `sftpPath`——十几条 e2e 断言
+ * 都读它。所以分隔符用**真实文本节点**而不是 UI 图标/箭头字符，段名放进 span，
+ * 拼起来的文本恰好就是原路径，不能改成「/ var log」这种带装饰的形式。
+ */
+function renderFilePath() {
+  filesPath.textContent = "";
+  filesPath.title = sftpPath;
+  const parts = sftpPath.split("/").filter(Boolean);
+  // 分隔符放在**段之间**（不是每段后面）：否则 /sub 会拼成 /sub/，
+  // 与 sftpPath 不等，十几条读 textContent 的断言会一起红。
+  filesPath.appendChild(document.createTextNode("/"));
+  let acc = "";
+  for (let i = 0; i < parts.length; i += 1) {
+    if (i > 0) filesPath.appendChild(document.createTextNode("/"));
+    const part = parts[i];
+    acc += "/" + part;
+    const crumb = document.createElement("span");
+    crumb.className = "path-crumb";
+    crumb.textContent = part;
+    crumb.title = `跳到 ${acc}`;
+    const target = acc;
+    crumb.addEventListener("click", () => void loadDir(target));
+    filesPath.appendChild(crumb);
+  }
+}
+
+// 输入完整路径跳转（`FIL-001` 规格 §5，含 `~` 展开）。
+// `~` 由服务端 `SSH_FXP_REALPATH` 解析：SFTP 没有 shell，前端猜 home 目录不可靠。
+const filesPathInput = document.getElementById("files-path-input");
+const filesPathEditBtn = document.getElementById("files-path-edit");
+
+function closePathInput() {
+  filesPathInput.hidden = true;
+  filesPath.hidden = false;
+  filesPathEditBtn.hidden = false;
+}
+
+filesPathEditBtn.addEventListener("click", () => {
+  filesPathInput.value = sftpPath;
+  filesPath.hidden = true;
+  filesPathEditBtn.hidden = true;
+  filesPathInput.hidden = false;
+  filesPathInput.focus();
+  filesPathInput.select();
+});
+
+filesPathInput.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape") {
+    ev.preventDefault();
+    closePathInput();
+    return;
+  }
+  if (ev.key !== "Enter") return;
+  ev.preventDefault();
+  const raw = filesPathInput.value.trim();
+  if (!raw) return;
+  // 相对路径按当前目录补全；绝对路径与 `~` 原样交给服务端解析
+  const path = raw.startsWith("/") || raw.startsWith("~") ? raw : joinPath(sftpPath, raw);
+  closePathInput();
+  void (async () => {
+    let target = path;
+    if (path.includes("~")) {
+      try {
+        target = await withDeadline(
+          invoke("sftp_canonicalize", {
+            arg: { req: filesReq(), path, jump: jumpReq() },
+          }),
+          20000,
+          "解析路径",
+        );
+      } catch (e) {
+        setFilesMsg(`路径解析失败：${e}`);
+        return;
+      }
+    }
+    await loadDir(target);
+  })();
+});
+
 async function loadDir(path) {
   const gen = ++filesGen;
   setFilesMsg("读取中…");
@@ -3033,8 +3115,7 @@ async function loadDir(path) {
     sftpPath = r.path || path;
     // 每个会话各自记住浏览位置：切换会话回来还在原处
     filesPaths.set(filesSessionId, sftpPath);
-    filesPath.textContent = sftpPath;
-    filesPath.title = sftpPath;
+    renderFilePath();
     // 只存数据，DOM 由 `renderFileList` 按可视窗口渲染（`FIL-001` AC-1）：
     // 1000 个条目逐个建 DOM 会明显卡顿，而绝大多数根本看不到
     filesLoadError = "";
@@ -5435,7 +5516,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-109",
+  ui: "wt-ui-110",
   /**
    * 验收用：刷新会话树并等它**画完**。
    *

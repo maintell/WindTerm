@@ -192,19 +192,38 @@ class Cdp {
   }
 
   /** 在页面里求值；异常直接抛出，便于定位是页面错还是断言错。 */
-  async eval(expression, { awaitPromise = true } = {}) {
+  async eval(expression, { awaitPromise = true, timeoutMs = 20000 } = {}) {
     const r = await this.send("Runtime.evaluate", {
       expression,
       awaitPromise,
       returnByValue: true,
       userGesture: true,
-    });
+    }, timeoutMs);
     if (r.exceptionDetails) {
       const d = r.exceptionDetails;
       throw new Error(d.exception?.description ?? d.text ?? "页面求值异常");
     }
     return r.result?.value;
   }
+}
+
+/**
+ * 等页面重新响应 CDP（销毁多个 xterm 实例 + 杀子进程时，WebView2 主线程会短暂卡住）。
+ * 用最简单的表达式反复探，恢复了再继续——把「页面卡了一下」和「功能坏了」分开。
+ * 不改全局 eval 的语义：重发一条带副作用的表达式可能点两次，这里只探只读的 `1`。
+ */
+async function waitPageResponsive(label = "页面恢复响应", timeout = 30000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    try {
+      const v = await cdp.eval(`1`, { awaitPromise: false, timeoutMs: 4000 });
+      if (v === 1) return true;
+    } catch {
+      /* 还没恢复，继续探 */
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  throw new Error(`等待「${label}」超时（${timeout} ms）`);
 }
 
 async function waitFor(fn, { timeout = 20000, interval = 100, label = "条件" } = {}) {
@@ -932,6 +951,10 @@ async function closeAllTabs() {
     },
     { timeout: 20000, label: "关闭所有标签页" },
   );
+  // 一次关多个本地终端会销毁多个 xterm 实例、并让后端杀子进程/放 ConPTY，
+  // WebView2 主线程可能短暂不响应；此时紧接的任何裸 eval 都会等满 20 秒然后
+  // 抛「CDP 超时」打断整轮。这里统一等它恢复，所有调用点都受益。
+  await waitPageResponsive("关标签后页面恢复响应");
 }
 
 // ── 主流程 ──────────────────────────────────────────────────
@@ -2731,6 +2754,113 @@ try {
     { timeout: 10000, label: "路径记忆" },
   ).catch(() => null);
   check("切回会话后回到各自上次的目录", restoredPath !== null, `${restoredPath}`);
+
+  // 路径面包屑可点击跳转 + 输入完整路径（FIL-001 规格 §5）。
+  // 判据读 #files-path.textContent / files.path，注意面包屑用真实文本节点拼，
+  // textContent 必须仍精确等于路径（十几条既有断言都依赖它）。
+  // 种一个两级目录：/sub/deep/note.txt。先跳到 /sub/deep，再点第一段（sub）跳回 /sub，
+  // 这样「点面包屑」才是真的换了路径，而不是原地不动也算过。
+  await cdp.eval(`window.__TAURI__.core.invoke("mock_seed_file", {
+    path: "/sub/deep/note.txt", content: ${JSON.stringify(Buffer.from("deep").toString("base64"))},
+  })`);
+  await clickElement("#files-path-edit");
+  await waitFor(
+    async () => ((await cdp.eval(`!document.getElementById("files-path-input").hidden`)) ? true : null),
+    { timeout: 5000, label: "路径输入框出现（去深层）" },
+  );
+  await cdp.eval(`(() => {
+    const el = document.getElementById("files-path-input");
+    el.value = "/sub/deep";
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    return el.value;
+  })()`);
+  const atDeep = await waitFor(
+    async () => {
+      const t = await cdp.eval(`document.getElementById("files-path").textContent`);
+      return t === "/sub/deep" ? t : null;
+    },
+    { timeout: 15000, label: "跳到 /sub/deep" },
+  ).catch(() => null);
+  const crumbAt = await cdp.eval(`(() => {
+    const el = document.getElementById("files-path");
+    return {
+      text: el.textContent,
+      crumbs: [...el.querySelectorAll(".path-crumb")].map((c) => c.textContent),
+      treePath: window.__wt.files.path,
+    };
+  })()`);
+  check(
+    "面包屑分段渲染且 textContent 仍精确等于路径（FIL-001）",
+    atDeep === "/sub/deep" &&
+      crumbAt.text === crumbAt.treePath &&
+      crumbAt.crumbs.length === 2 &&
+      crumbAt.crumbs.join("/") === "sub/deep",
+    JSON.stringify({ atDeep, ...crumbAt }),
+  );
+  // 点第一段（sub）应回到 /sub；用命中测试防坐标漂移
+  const firstCrumb = await cdp.eval(`(() => {
+    const c = document.querySelector("#files-path .path-crumb");
+    if (!c) return null;
+    c.scrollIntoView({ block: "nearest" });
+    const r = c.getBoundingClientRect();
+    return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2), text: c.textContent };
+  })()`);
+  if (firstCrumb) await clickAt({ x: firstCrumb.x, y: firstCrumb.y });
+  const crumbJump = await waitFor(
+    async () => {
+      const t = await cdp.eval(`document.getElementById("files-path").textContent`);
+      return t === "/sub" ? t : null;
+    },
+    { timeout: 15000, label: "点面包屑跳回 /sub" },
+  ).catch(() => null);
+  check(
+    "点面包屑某一段能跳到那一层（FIL-001）",
+    crumbJump === "/sub",
+    `${crumbJump ?? await cdp.eval(`document.getElementById("files-path").textContent`)}`,
+  );
+
+  // 输入 `~` 回车：由服务端 REALPATH 解析（SFTP 没有 shell，前端不猜 home）。
+  // mock 的 realpath 返回 "/"，所以断言跳到 "/"——这条同时验证 "~ 会走解析" 与 "回车会跳"。
+  await clickElement("#files-path-edit");
+  await waitFor(
+    async () => ((await cdp.eval(`!document.getElementById("files-path-input").hidden`)) ? true : null),
+    { timeout: 5000, label: "路径输入框出现（输入 ~）" },
+  );
+  await cdp.eval(`(() => {
+    const el = document.getElementById("files-path-input");
+    el.value = "~";
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    return el.value;
+  })()`);
+  const tildeJump = await waitFor(
+    async () => {
+      const t = await cdp.eval(`document.getElementById("files-path").textContent`);
+      return t === "/" ? t : null;
+    },
+    { timeout: 20000, label: "输入 ~ 跳到根" },
+  ).catch(() => null);
+  check(
+    "输入 ~ 会经服务端解析并跳到展开后的路径（FIL-001）",
+    tildeJump === "/",
+    `${tildeJump ?? await cdp.eval(`document.getElementById("files-path").textContent`)}`,
+  );
+  // Esc 取消编辑不应改变路径，也不该留下输入框
+  await clickElement("#files-path-edit");
+  await cdp.eval(`(() => {
+    const el = document.getElementById("files-path-input");
+    el.value = "/does-not-exist";
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    return true;
+  })()`);
+  const escState = await cdp.eval(`({
+    hidden: document.getElementById("files-path-input").hidden,
+    path: document.getElementById("files-path").textContent,
+  })`);
+  check(
+    "Esc 取消路径编辑不会改路径（FIL-001）",
+    escState.hidden === true && escState.path === "/",
+    JSON.stringify(escState),
+  );
 
   // 收尾：先复原端口，再让面板跟随表单，最后上到根目录删掉子目录
   await cdp.eval(`(() => {
