@@ -1255,6 +1255,39 @@ fn prefs_reset() -> Result<Option<String>, String> {
     Ok(Some(backup.display().to_string()))
 }
 
+/// 把广播结果导出成 CSV（`TER-004`）。
+///
+/// 落点与会话/隧道导出一致（下载目录 + 时间戳 + 冲突加序号），路径回给界面。
+/// 单元格按 RFC 4180 转义：远端输出里逗号、引号、换行都很常见，不转义会直接把表格
+/// 撑歪；文件开头加 UTF-8 BOM，否则 Excel 打开中文是乱码。
+#[tauri::command]
+fn broadcast_export_csv(rows: Vec<Vec<String>>) -> Result<String, String> {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut text = String::new();
+    for row in &rows {
+        let cells: Vec<String> = row.iter().map(|c| csv_cell(c)).collect();
+        text.push_str(&cells.join(","));
+        text.push_str("\r\n");
+    }
+    let path = unique_path(&download_dir(), &format!("windterm-broadcast-{secs}.csv"));
+    let mut bytes = vec![0xEF, 0xBB, 0xBF];
+    bytes.extend_from_slice(text.as_bytes());
+    std::fs::write(&path, bytes).map_err(|e| format!("写入 {} 失败：{e}", path.display()))?;
+    Ok(path.display().to_string())
+}
+
+/// CSV 单元格转义（RFC 4180）：含逗号、引号或换行时整体加引号，引号翻倍。
+fn csv_cell(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
 /// 把全部隧道配置导出成 JSON（`NET-004`）。
 ///
 /// 落点与会话导出一致（下载目录 + 时间戳 + 冲突加序号），并把路径回给界面。
@@ -3238,6 +3271,7 @@ fn main() {
             session_reorder,
             session_export,
             app_paths,
+            broadcast_export_csv,
             prefs_reset,
             tunnels_export,
             tunnels_import,

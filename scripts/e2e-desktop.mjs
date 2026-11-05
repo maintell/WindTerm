@@ -3807,6 +3807,28 @@ try {
     bcDone.result,
   );
 
+  // 导出 CSV（`TER-004`）：表头 + 每台一行，命令列要写上刚才发的那条
+  await clickElement("#bc-export");
+  const csvPath = await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      const m = /已导出广播结果：(.+)$/.exec(s);
+      return m ? m[1].trim() : null;
+    },
+    { timeout: 15000, label: "导出广播结果" },
+  ).catch(() => null);
+  const csvText = csvPath ? readFileSync(csvPath, "utf8").replace(/^\uFEFF/, "") : "";
+  check(
+    "广播结果能导出 CSV（TER-004）",
+    csvText.startsWith("命令,主机,输出") && csvText.includes("echo hi"),
+    csvPath ? `${csvPath}` : "没导出",
+  );
+  check(
+    "CSV 里每台主机一行（TER-004）",
+    csvText.split(/\r?\n/).filter((l) => l.includes("echo hi")).length === 2,
+    `数据行 ${csvText.split(/\r?\n/).filter((l) => l.includes("echo hi")).length} 条`,
+  );
+
   // 危险命令：必须拦下来先确认，取消后一个字节都不发
   await fillInput("#bc-input", "rm -rf /");
   await clickElement("#bc-send");

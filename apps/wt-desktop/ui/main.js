@@ -3319,6 +3319,9 @@ async function runBroadcast() {
   const results = await settleCapture(targets, 400, 8000);
   const groups = groupByOutput(results);
   lastBroadcast = { sent: targets.length, cancelled: false, idle, groups };
+  // 记住这条命令：导出 CSV 时要写进「命令」列
+  bcInput.dataset.lastCmd = cmd;
+  bcExport.disabled = false;
   renderBroadcast(groups, targets.length);
   if (bcDiff.checked && groups.length > 1) {
     const onlyDiff = groups.filter((g) => g.labels.length < targets.length);
@@ -3353,6 +3356,29 @@ const bcInput = document.getElementById("bc-input");
 const bcSend = document.getElementById("bc-send");
 const bcDiff = document.getElementById("bc-diff");
 const bcResult = document.getElementById("bc-result");
+
+// 广播结果导出 CSV（`TER-004`）：按「分组 × 主机」铺成行，Excel 直接能看。
+// 没有结果时按钮禁用，而不是导出一张空表让人以为导成功了。
+const bcExport = document.getElementById("bc-export");
+bcExport.disabled = true;
+bcExport.addEventListener("click", async () => {
+  const last = lastBroadcast;
+  if (!last?.groups?.length) {
+    setStatus("还没有广播结果可导出");
+    return;
+  }
+  const rows = [["命令", "主机", "输出"]];
+  for (const g of last.groups) {
+    const text = g.text.trimEnd();
+    for (const label of g.labels) rows.push([bcInput.dataset.lastCmd ?? "", label, text]);
+  }
+  try {
+    const path = await invoke("broadcast_export_csv", { rows });
+    setStatus(`已导出广播结果：${path}`);
+  } catch (e) {
+    setStatus(`导出失败：${e}`);
+  }
+});
 const askDialog = document.getElementById("ask-dialog");
 const askTitle = document.getElementById("ask-title");
 const askBody = document.getElementById("ask-body");
@@ -4748,7 +4774,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-82",
+  ui: "wt-ui-83",
   /** 「本次记住」存了几条（验收用：只回数量，不回口令） */
   sessionPasswords() {
     return sessionPasswords.size;
