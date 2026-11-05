@@ -228,6 +228,15 @@ fn term_stats(state: State<'_, AppState>, handle: String) -> Result<StatsDto, St
     })
 }
 
+/// 后端还活着的会话数（诊断用）。
+///
+/// 界面上的标签数与会话数应当同步：跑完一大串用例后两者对不上，说明有句柄没被关掉——
+/// 这类泄漏在 Windows 上表现为「后面开终端越来越慢、最后起不来」，很难从界面上看出来。
+#[tauri::command]
+fn session_count(state: State<'_, AppState>) -> usize {
+    state.registry.len()
+}
+
 #[tauri::command]
 fn term_close(state: State<'_, AppState>, handle: String) {
     let h = SessionHandle::from(handle.as_str());
@@ -3383,6 +3392,7 @@ fn main() {
             keymap_export,
             tunnel_update,
             prefs_reset,
+            session_count,
             tunnels_export,
             tunnels_import,
             prefs_load,

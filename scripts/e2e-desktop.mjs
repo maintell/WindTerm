@@ -4209,7 +4209,19 @@ try {
   check(
     "三条标签都渲染出来了（前提）",
     tabReady !== null,
-    tabReady ? JSON.stringify(tabReady.labels) : "没渲染全",
+    tabReady
+      ? JSON.stringify(tabReady.labels)
+      : // 没渲染全时把现场带上：本地 shell 是起不来（状态栏会显示"打开本地终端超时"）
+        // 还是仅仅慢，看这两项就够了
+        JSON.stringify({
+          tabs: await cdp.eval(`window.__wt.tabs()`),
+          status: await cdp.eval(`document.getElementById("status").textContent`),
+          dom: await cdp.eval(`document.querySelectorAll("#tabs .tab").length`),
+          // 后端会话数：与标签数对不上就是句柄泄漏（界面看不出来，但会让后面起不来）
+          backendSessions: await cdp.eval(
+            `window.__TAURI__.core.invoke("session_count").catch((e) => String(e))`,
+          ),
+        }),
   );
   const tabLabels = tabReady?.labels ?? [];
   const boxOf = (label) => tabReady?.boxes.find((b) => b.label === label) ?? null;
@@ -4291,6 +4303,22 @@ try {
   await clickSessionNode("mock-ssh");
   await fillInput("#port", String(sshPort));
   let firstConnected = await connectOnce("分屏第一个会话", 45000);
+  // 现场要在**第一次失败、视图还活着**的时候抓：重试前会 closeAllTabs，把带错误文本的
+  // 那个视图一起关掉，之后再读 `__wt.screen()` 就是空的了（上一轮就是这么丢掉线索的）。
+  let firstFail = null;
+  if (!firstConnected) {
+    const st = await cdp.eval(`document.getElementById("status").textContent`);
+    const scr = await cdp.eval(`window.__wt.screen()`);
+    const tabCount = await cdp.eval(`window.__wt.tabs().length`);
+    firstFail = {
+      status: st,
+      tabs: tabCount,
+      tail: String(scr ?? "")
+        .split("\n")
+        .filter((l) => l.trim())
+        .slice(-3),
+    };
+  }
   if (!firstConnected) {
     // 一台机器上先后开了几十个会话之后，建连偶尔会明显变慢（PTY 收尾更慢）。
     // 这一条要验的是「两个 pane 各有一个会话」，不是「机器多快能连上」——
@@ -4300,12 +4328,11 @@ try {
     await fillInput("#port", String(sshPort));
     firstConnected = await connectOnce("分屏第一个会话（重试）", 45000);
   }
-  check(
-    "分屏前第一条会话连上了（前提）",
-    firstConnected !== null,
-    firstConnected ??
-      `没连上（状态栏：${await cdp.eval(`document.getElementById("status").textContent`)}）`,
-  );
+  // 失败的现场要说清楚：状态栏只说明「连接失败」，真正的原因（`[SSH_XXX] …`）在终端里。
+  // 不把尾部打出来，就只能在「是不是 mock 挂了」这类猜测里打转。
+  const premiseDetail =
+    firstConnected ?? `没连上（第一次失败现场：${JSON.stringify(firstFail)}）`;
+  check("分屏前第一条会话连上了（前提）", firstConnected !== null, premiseDetail);
   // 前提没连上就别再点第二下：继续只会堆出一串「超时」，真正的原因被埋掉。
   if (firstConnected) {
     await clickElement("#ssh");
