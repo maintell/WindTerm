@@ -40,6 +40,9 @@
 
 实现按 [`docs/spec/14-roadmap-acceptance.md`](docs/spec/14-roadmap-acceptance.md) 的里程碑推进。
 
+**要接手或想先看清「还差什么、卡在谁身上」**，看 [`docs/status/handover.md`](docs/status/handover.md)：
+一条命令怎么验、6 条未做分别卡在哪、17 条部分完成按「卡在哪一类」分好组，以及已知技术债。
+
 ```bash
 pwsh ./scripts/check-all.ps1          # 一键验收：单测 + clippy + 文档对账
 pwsh ./scripts/check-all.ps1 -WithE2e # 再加端到端验收（约 8 分钟）
