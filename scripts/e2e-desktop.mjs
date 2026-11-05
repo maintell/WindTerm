@@ -901,15 +901,24 @@ async function clickUntil(clickFn, probeFn, { timeout = 8000, tries = 3, label =
  * 才合成 `dblclick` 的。只发一次 `click` 永远不会触发双击处理器。
  */
 async function doubleClickFileRow(name) {
-  const box = await cdp.eval(`(() => {
-    const row = [...document.querySelectorAll("#files-list .row")].find(
-      (r) => r.querySelector("span")?.textContent === ${JSON.stringify(name)},
-    );
-    if (!row) return null;
-    const r = row.getBoundingClientRect();
-    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-  })()`);
-  if (!box) throw new Error(`文件面板里找不到 ${name}`);
+  // 命中测试 + 重试：虚拟滚动 + 表头条会改可见区，量到的旧坐标可能点到别的行上。
+  // 名字字面量在模板外算好，避免模板里再嵌套反引号（踩过多次）。
+  const nameLit = JSON.stringify(name);
+  const probe = "(() => {"
+    + " const row=[...document.querySelectorAll('#files-list .row')]"
+    + ".find(r=>r.querySelector('span')?.textContent===" + nameLit + ");"
+    + " if(!row) return null;"
+    + " row.scrollIntoView({block:'nearest'});"
+    + " const r=row.getBoundingClientRect();"
+    + " const cx=Math.round(r.x+r.width/2), cy=Math.round(r.y+r.height/2);"
+    + " const top=document.elementFromPoint(cx,cy);"
+    + " return top && (top===row || row.contains(top)) ? {x:cx,y:cy} : null;"
+    + "})()";
+  const box = await waitFor(
+    () => cdp.eval(probe),
+    { timeout: 6000, label: `找到文件行 ${name}` },
+  ).catch(() => null);
+  if (!box) throw new Error(`文件面板里找不到（或点不到）${name}`);
   const base = { x: box.x, y: box.y, button: "left" };
   await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...base, clickCount: 1 });
   await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...base, clickCount: 1 });
@@ -2819,6 +2828,76 @@ try {
   await waitFor(
     async () => ((await cdp.eval(`window.__wt.files.path`)) === "/" ? true : null),
     { timeout: 15000, label: "回根目录" },
+  ).catch(() => null);
+
+  // 列表排序（FIL-001 规格 §1）：点列头按 名称/大小/权限 排，再点翻转方向。
+  // 用独立目录 /sort-test，三个文件大小不同，避免污染根目录既有 rows 断言。
+  const seedSort = (path, text) =>
+    cdp.eval(`window.__TAURI__.core.invoke("mock_seed_file", { path: ${JSON.stringify(path)}, content: ${JSON.stringify(Buffer.from(text).toString("base64"))} })`);
+  await seedSort("/sort-test/c.txt", "ccc");
+  await seedSort("/sort-test/a.txt", "x");
+  await seedSort("/sort-test/b.txt", "bbbbbbbb");
+  await clickElement("#files-path-edit");
+  await waitFor(
+    async () => ((await cdp.eval(`!document.getElementById("files-path-input").hidden`)) ? true : null),
+    { timeout: 5000, label: "路径输入框（去 sort-test）" },
+  );
+  await cdp.eval(`(() => {
+    const el = document.getElementById("files-path-input");
+    el.value = "/sort-test";
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    return el.value;
+  })()`);
+  const sortDefault = await waitFor(
+    async () => {
+      const f = await cdp.eval(`window.__wt.files`);
+      return f.path === "/sort-test" && f.rows.length === 3 ? f : null;
+    },
+    { timeout: 15000, label: "进入 sort-test" },
+  ).catch(() => null);
+  check(
+    "排序前默认是「目录在前+名称」且 sortKey 为 default（FIL-001）",
+    sortDefault !== null && sortDefault.sortKey === "default" &&
+      sortDefault.rows[0] === "a.txt" && sortDefault.rows[2] === "c.txt",
+    sortDefault ? JSON.stringify({ rows: sortDefault.rows, sortKey: sortDefault.sortKey }) : "没进目录",
+  );
+  // 点「大小」列头：按字节数升序（a=1 < c=3 < b=8），再点翻转成降序
+  const clickSortCol = (key) =>
+    cdp.eval("document.querySelector('[data-sort=\"" + key + "\"]').click()");
+  await clickSortCol("size");
+  const sizeAsc = await cdp.eval(`window.__wt.files`);
+  check(
+    "点「大小」后按字节数升序（FIL-001 可排序）",
+    sizeAsc.sortKey === "size" && sizeAsc.sortDir === 1 &&
+      sizeAsc.rows.join(",") === "a.txt,c.txt,b.txt",
+    JSON.stringify({ rows: sizeAsc.rows, key: sizeAsc.sortKey, dir: sizeAsc.sortDir }),
+  );
+  await clickSortCol("size");
+  const sizeDesc = await cdp.eval(`window.__wt.files`);
+  check(
+    "再点同一列翻转为降序（FIL-001）",
+    sizeDesc.sortDir === -1 && sizeDesc.rows.join(",") === "b.txt,c.txt,a.txt",
+    JSON.stringify({ rows: sizeDesc.rows, dir: sizeDesc.sortDir }),
+  );
+  await clickSortCol("name");
+  const nameSorted = await cdp.eval(`window.__wt.files`);
+  check(
+    "点「名称」切回按名称排序（FIL-001）",
+    nameSorted.sortKey === "name" && nameSorted.rows.join(",") === "a.txt,b.txt,c.txt",
+    JSON.stringify({ rows: nameSorted.rows, key: nameSorted.sortKey }),
+  );
+  // 复原：回根目录、排序恢复默认（点「名称」第三次不会回到 default，直接改状态 + 重渲染）
+  await cdp.eval(`(() => { window.__wt._resetFileSort?.(); return true; })()`);
+  await clickElement("#files-path-edit");
+  await cdp.eval(`(() => {
+    const el = document.getElementById("files-path-input");
+    el.value = "/";
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    return el.value;
+  })()`);
+  await waitFor(
+    async () => ((await cdp.eval(`window.__wt.files.path`)) === "/" ? true : null),
+    { timeout: 15000, label: "排序用例后回根" },
   ).catch(() => null);
 
   // 路径记忆：进子目录 → 切回「跟随表单」→ 再切回来，应当还在子目录

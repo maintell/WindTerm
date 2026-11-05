@@ -208,6 +208,13 @@
       #files-tree .ftree-row:hover { background: #24242a; }
       #files-tree .ftree-row.selected { background: #2f4f7f; }
       #files-tree .ftree-toggle { width: 12px; color: #8a8a92; }
+      #files-cols { display: flex; gap: 0; border-bottom: 1px solid #2a2a30;
+        color: var(--muted); user-select: none; }
+      #files-cols .filecol { flex: 1; text-align: left; background: none; border: 0;
+        border-radius: 0; padding: 2px 8px; font: inherit; color: var(--muted); cursor: pointer; }
+      #files-cols .filecol:nth-child(2), #files-cols .filecol:nth-child(3) { flex: 0 0 68px; }
+      #files-cols .filecol:hover, #files-cols .filecol.active { color: var(--fg); }
+      #files-cols .arrow { font-size: 10px; }
       #files-list { flex: 1; overflow: auto; position: relative; }
       /* 虚拟滚动（FIL-001 AC-1）：行绝对定位，外层撑出总高度 */
       #files-list .vbody { position: relative; }
@@ -1081,6 +1088,11 @@
             <button id="files-refresh" title="刷新">⟳</button>
           </div>
           <div id="files-tree" aria-label="远端目录树"></div>
+          <div id="files-cols">
+            <button type="button" class="filecol" data-sort="name">名称 <span class="arrow"></span></button>
+            <button type="button" class="filecol" data-sort="size">大小 <span class="arrow"></span></button>
+            <button type="button" class="filecol" data-sort="mode">权限 <span class="arrow"></span></button>
+          </div>
           <div id="files-list"></div>
           <div id="files-foot"><span id="files-msg"></span></div>
           <input id="files-upload" type="file" multiple hidden />

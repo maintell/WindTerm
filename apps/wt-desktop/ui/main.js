@@ -3188,9 +3188,38 @@ let filesEntries = [];
 /** 是否显示 `.` 开头的隐藏文件（`FIL-001` 规格 §4）：默认开，运维场景必须可见 */
 let filesShowHidden = true;
 
+/**
+ * 列表排序（`FIL-001` 规格 §1「可排序」）。
+ *
+ * 默认 `default` = 后端给的「目录在前 + 名称升序」——既有断言都按这个顺序写的，
+ * 不能一上来就改。点列头才切到 name/size/mode，再点同一列翻转方向。
+ * 排序在前端对**全量**做，之后才过隐藏文件过滤，虚拟滚动照常工作。
+ */
+let filesSortKey = "default";
+let filesSortDir = 1;
+
+function sortedFiles() {
+  if (filesSortKey === "default") return filesEntries;
+  const dir = filesSortDir;
+  return [...filesEntries].sort((a, b) => {
+    // 目录永远在前：文件管理器的一致习惯，排序不应把目录冲散到列表中间
+    if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+    let d = 0;
+    if (filesSortKey === "name") {
+      d = a.name.localeCompare(b.name, "zh", { numeric: true });
+    } else if (filesSortKey === "size") {
+      d = a.size - b.size;
+    } else if (filesSortKey === "mode") {
+      d = (a.mode ?? 0) - (b.mode ?? 0);
+    }
+    return d !== 0 ? d * dir : a.name.localeCompare(b.name, "zh", { numeric: true });
+  });
+}
+
 /** 按「显示隐藏文件」开关过滤后的条目。列表渲染与 __wt.files.rows 都用它 */
 function visibleFiles() {
-  return filesShowHidden ? filesEntries : filesEntries.filter((e) => !e.name.startsWith("."));
+  const base = sortedFiles();
+  return filesShowHidden ? base : base.filter((e) => !e.name.startsWith("."));
 }
 /** 列目录失败的原因；非空时列表只显示这条，不再显示「（空目录）」 */
 let filesLoadError = "";
@@ -3241,6 +3270,34 @@ function buildFileRow(e, index) {
  * 关键是**先记住 scrollTop 再清空**：清空后内容高度变 0，浏览器会把 scrollTop
  * 夹回 0，那时再读窗口就永远是第一屏（表现为「滚下去又跳回顶部」）。
  */
+/** 表头：点一列排序，再点翻转方向；箭头显示当前状态 */
+const filesCols = document.getElementById("files-cols");
+function renderSortHeader() {
+  for (const btn of filesCols.querySelectorAll(".filecol")) {
+    const key = btn.dataset.sort;
+    const active = filesSortKey === key;
+    btn.classList.toggle("active", active);
+    btn.querySelector(".arrow").textContent = active
+      ? filesSortDir === 1 ? "↑" : "↓"
+      : "";
+  }
+}
+filesCols.addEventListener("click", (ev) => {
+  const btn = ev.target.closest(".filecol");
+  if (!btn) return;
+  const key = btn.dataset.sort;
+  if (filesSortKey === key) filesSortDir = -filesSortDir;
+  else {
+    filesSortKey = key;
+    filesSortDir = 1;
+  }
+  clearSelection();
+  filesList.scrollTop = 0;
+  renderSortHeader();
+  renderFileList();
+  setStatus(`文件列表按 ${btn.textContent.trim().replace(/[↑↓]/g, "")} 排序`);
+});
+
 function renderFileList() {
   const savedTop = filesList.scrollTop;
   filesList.textContent = "";
@@ -5540,7 +5597,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-111",
+  ui: "wt-ui-112",
   /**
    * 验收用：刷新会话树并等它**画完**。
    *
@@ -5583,6 +5640,15 @@ window.__wt = {
   tabDrag() {
     return { ...tabDrag };
   },
+  /** 验收用：把文件列表排序复位成默认（点列头只能切到三种排序，没有回默认的按钮） */
+  _resetFileSort() {
+    filesSortKey = "default";
+    filesSortDir = 1;
+    renderSortHeader();
+    renderFileList();
+    return { sortKey: filesSortKey, sortDir: filesSortDir };
+  },
+
   /** 滚动位置（验收用：上滚/下滚/到顶/到底看这个，不要看屏幕猜） */
   scroll() {
     if (!active) return null;
@@ -5672,6 +5738,8 @@ window.__wt = {
       /** 全量条目数（含被隐藏的），与 rows 一起看能验「过滤真的生效」 */
       total: filesEntries.length,
       showHidden: filesShowHidden,
+      sortKey: filesSortKey,
+      sortDir: filesSortDir,
       /** 列目录失败的原因（空串表示这次是成功的） */
       error: filesLoadError,
       /** 当前选中项的名字（验收与脚本用） */
@@ -5857,6 +5925,7 @@ window.__wt = {
   await refreshAppPaths();
   filesAutoOpenBox.checked = filesAutoOpen;
   filesShowHiddenBox.checked = filesShowHidden;
+  renderSortHeader();
   initBroadcast();
   loadTree();
   try {
