@@ -5352,6 +5352,39 @@ try {
   check("改回 keepalive 也落盘（不污染后续）", netBack === true, netBack === true);
   await closeAllDialogs();
 
+  // 19zf. 每项设置都标出默认值与是否需要重启（`SET-001`）
+  await closeAllDialogs();
+  await clickUntil(
+    () => clickElement("#tree-settings"),
+    async () => (await cdp.eval(`document.getElementById("settings").open`)) ? true : null,
+    { timeout: 5000, tries: 3, label: "打开设置看标注" },
+  );
+  const metaInfo = await cdp.eval(`(() => {
+    const rows = [...document.querySelectorAll("#set-body .set-row")];
+    const withCtl = rows.filter((r) => r.querySelector("select, input"));
+    const missing = withCtl
+      .filter((r) => !r.querySelector(".set-meta"))
+      .map((r) => r.querySelector("select, input")?.id ?? "?");
+    const texts = [...document.querySelectorAll("#set-body .set-meta")].map((e) => e.textContent);
+    return {
+      withCtl: withCtl.length,
+      missing,
+      sample: texts[0] ?? null,
+      allRestart: texts.length > 0 && texts.every((t) => t.includes("重启")),
+    };
+  })()`);
+  check(
+    "每项设置都标出默认值（SET-001）",
+    metaInfo.withCtl >= 10 && metaInfo.missing.length === 0,
+    `有控件的 ${metaInfo.withCtl} 行，缺标注：${metaInfo.missing.join("、") || "无"}`,
+  );
+  check(
+    "标注里写明是否需要重启（SET-001）",
+    metaInfo.allRestart && metaInfo.sample !== null,
+    `${metaInfo.sample}`,
+  );
+  await closeAllDialogs();
+
   // 18. 页面无未捕获异常
   check("页面无未捕获异常", cdp.exceptions.length === 0, cdp.exceptions.join(" | ") || "0 条");
 

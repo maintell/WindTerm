@@ -141,7 +141,7 @@ def test_ssh_connect(server, wt):
 | DTO 没写 `rename_all` 时，字段名是 snake_case | `RemoteEntryDto` 没有 camelCase 重命名，序列化出来是 `is_symlink` / `link_target`；界面按 `e.isSymlink` 去读只会拿到 `undefined`，症状是「后端字段有值、界面就是没反应」，而且不报错。同一个仓库里 `PrefsDto` 是 camelCase、这个是 snake_case，**看 DTO 定义再写前端** |
 | `dataset` 里取出来永远是字符串 | 会话键是数字时，`dataset.id` 拿去 `indexOf` 一个都匹配不上。症状极具迷惑性：拖拽计数全对、`moved` 为真、目标也拿到了，**顺序就是不变**。比较前统一 `String()` |
 
-当前覆盖 246 项断言：
+当前覆盖 248 项断言：
 
 - 本地终端：页面加载与 Tauri 桥接、启动自检、点击建会话、句柄可取、首屏输出渲染、
   焦点在终端、键盘输入、命令输出、统计字段非零值、前后端行列一致、ack 回流归零、
@@ -215,6 +215,8 @@ def test_ssh_connect(server, wt):
   分组路径；搜英文 `font` 也能命中中文项；清空后高亮与路径都收起且名称恢复原文；
 - 设置分组（`SET-001`）：面板分成常规/外观/终端/文件/安全五组（读 `.set-group` 的
   `data-group` 与每组行数，空组不渲染）；搜索「乱码」时只剩终端组，清空后五组都回来；
+- 设置项标注（`SET-001`）：每项带控件的设置都有「默认 X · 不需要重启」；动作类行（管理主密码、
+  导入配色、重置偏好）不标——它们没有「默认值」这回事；
 - 网络设置（`SET-001`）：「网络」分组有 3 行；把 keepalive 改成 0 会写进 `config.toml`
   （`netKeepaliveSecs = 0`），改回 30 也落盘；
 - 设置入口（`G15`）：**一个会话都没开**时终端底栏是隐藏的（先断言这条前提），此时点左侧树头的

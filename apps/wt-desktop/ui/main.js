@@ -4354,6 +4354,47 @@ const SET_GROUPS = [
   ["高级", ["app-prefs-path", "prefs-reset"]],
 ];
 
+/**
+ * 每项设置的「默认值 + 是否需要重启」（`SET-001` 的硬指标）。
+ *
+ * 挂在这张表上而不是写进每条 HTML：加一项设置只改一处；漏登记时界面上会明显缺一行，
+ * 而不是散在十几个 row 里各写各的、谁也不知道哪项漏了。
+ * 动作类行（管理主密码、导入配色、重置偏好…）没有「默认值」，不登记。
+ */
+const SET_META = {
+  encoding: ["UTF-8", false],
+  "look-theme": ["WindTerm Dark", false],
+  "look-font": ["JetBrains Mono", false],
+  "look-size": ["13", false],
+  "look-height": ["1.2", false],
+  "look-scrollback": ["10000", false],
+  "local-shell": ["跟随系统", false],
+  "local-shell-path": ["（空）", false],
+  "files-auto-open": ["开", false],
+  "net-timeout": ["15 秒", false],
+  "net-keepalive": ["30 秒", false],
+  "net-max-missed": ["3 次", false],
+};
+
+function applySetMeta() {
+  for (const row of document.querySelectorAll("#set-body .set-row")) {
+    const ctl = row.querySelector("select, input");
+    const meta = ctl?.id ? SET_META[ctl.id] : null;
+    let el = row.querySelector(".set-meta");
+    if (!meta) {
+      el?.remove();
+      continue;
+    }
+    if (!el) {
+      el = document.createElement("span");
+      el.className = "set-meta";
+      row.appendChild(el);
+    }
+    const [def, restart] = meta;
+    el.textContent = `默认 ${def} · ${restart ? "需重启" : "不需要重启"}`;
+  }
+}
+
 function buildSettingGroups() {
   const body = document.getElementById("set-body");
   const empty = document.getElementById("set-empty");
@@ -4468,6 +4509,7 @@ document.getElementById("prefs-reset").addEventListener("click", async () => {
     await initShellControls();
     initNetControls();
     buildSettingGroups();
+    applySetMeta();
     applyLook();
     await refreshAppPaths();
     setStatus(backup ? `已重置偏好；旧配置备份在 ${backup}` : "偏好本来就是默认值");
@@ -4706,7 +4748,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-81",
+  ui: "wt-ui-82",
   /** 「本次记住」存了几条（验收用：只回数量，不回口令） */
   sessionPasswords() {
     return sessionPasswords.size;
@@ -4965,6 +5007,7 @@ window.__wt = {
   initLookControls();
   await initShellControls();
   buildSettingGroups();
+  applySetMeta();
   initNetControls();
   await refreshAppPaths();
   filesAutoOpenBox.checked = filesAutoOpen;

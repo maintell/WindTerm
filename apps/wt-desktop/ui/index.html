@@ -670,6 +670,8 @@
       #local-shell-custom[hidden] { display: none; }
       /* 字体缺失的回退提示（TER-005）：不能静默回退，得说清「没有「X」，用的是「Y」」 */
       .set-warn { color: #ffb86b; font-size: 11px; }
+      /* 默认值与是否需要重启（SET-001 的硬性要求）：放在行尾，暗色不抢视线 */
+      .set-meta { color: #6a6a72; font-size: 11px; white-space: nowrap; }
       /* 设置分组（SET-001）：标题要能一眼扫到，别做成和条目一样的行 */
       .set-group-title {
         margin: 10px 0 4px;
