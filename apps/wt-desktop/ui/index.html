@@ -1184,7 +1184,7 @@
       </div>
       <div id="set-body">
         <div class="set-row" data-kw="编码 encoding gbk utf-8 乱码 字符集">
-          <span class="set-name">终端编码</span>
+          <span class="set-name" data-i18n="set.encoding">终端编码</span>
           <span class="set-scope">全局</span>
           <select id="encoding">
             <option value="utf-8">UTF-8</option>
@@ -1196,27 +1196,27 @@
           </select>
         </div>
         <div class="set-row" data-kw="配色 主题 theme 颜色 皮肤">
-          <span class="set-name">配色</span>
+          <span class="set-name" data-i18n="set.theme">配色</span>
           <span class="set-scope">全局</span>
           <select id="look-theme"></select>
         </div>
         <div class="set-row" data-kw="主密码 master password 保险库 vault 改密码 移除">
-          <span class="set-name">主密码</span>
+          <span class="set-name" data-i18n="set.master">主密码</span>
           <span class="set-scope">全局</span>
           <button type="button" id="master-open">管理…</button>
         </div>
         <div class="set-row" data-kw="已知主机 known_hosts 主机密钥 指纹 host key 信任">
-          <span class="set-name">已知主机</span>
+          <span class="set-name" data-i18n="set.knownHosts">已知主机</span>
           <span class="set-scope">全局</span>
           <button type="button" id="known-open">查看…</button>
         </div>
         <div class="set-row" data-kw="配色 主题 导入 import iterm windows terminal schemes">
-          <span class="set-name">导入配色方案</span>
+          <span class="set-name" data-i18n="set.themeImport">导入配色方案</span>
           <span class="set-scope">全局</span>
           <button type="button" id="theme-import-open">导入…</button>
         </div>
         <div class="set-row" data-kw="字体 font family 等宽">
-          <span class="set-name">字体</span>
+          <span class="set-name" data-i18n="set.font">字体</span>
           <span class="set-scope">全局</span>
           <select id="look-font">
             <option value='"JetBrains Mono", Consolas, "Cascadia Mono", monospace'>JetBrains Mono</option>
@@ -1229,48 +1229,48 @@
           <span id="look-mono-warn" class="set-warn" hidden></span>
         </div>
         <div class="set-row" data-kw="字号 font size 字">
-          <span class="set-name">字号</span>
+          <span class="set-name" data-i18n="set.fontSize">字号</span>
           <span class="set-scope">全局</span>
           <input id="look-size" type="number" min="9" max="28" step="1" />
         </div>
         <div class="set-row" data-kw="行高 line height 间距">
-          <span class="set-name">行高</span>
+          <span class="set-name" data-i18n="set.lineHeight">行高</span>
           <span class="set-scope">全局</span>
           <input id="look-height" type="number" min="1" max="2" step="0.05" />
         </div>
         <div class="set-row" data-kw="回滚 滚动 缓冲 scrollback 行数 历史">
-          <span class="set-name">回滚行数</span>
+          <span class="set-name" data-i18n="set.scrollback">回滚行数</span>
           <span class="set-scope">全局</span>
           <input id="look-scrollback" type="number" min="1000" max="1000000" step="1000" />
         </div>
         <div class="set-row" data-kw="配置文件 config toml 路径 位置 备份 在哪">
-          <span class="set-name">配置文件</span>
+          <span class="set-name" data-i18n="set.configFile">配置文件</span>
           <span class="set-scope">全局</span>
           <span id="app-prefs-path" class="set-path-shown"></span>
           <button type="button" id="app-prefs-open">打开所在目录</button>
         </div>
         <div class="set-row" data-kw="重置 reset 恢复默认 清空 preferences 恢复出厂">
-          <span class="set-name">重置偏好</span>
+          <span class="set-name" data-i18n="set.resetPrefs">重置偏好</span>
           <span class="set-scope">全局</span>
           <button type="button" id="prefs-reset">重置…</button>
         </div>
         <div class="set-row" data-kw="连接 超时 timeout 秒 network 网络 连不上">
-          <span class="set-name">连接超时（秒）</span>
+          <span class="set-name" data-i18n="set.netTimeout">连接超时（秒）</span>
           <span class="set-scope">全局</span>
           <input id="net-timeout" type="number" min="1" max="300" step="1" />
         </div>
         <div class="set-row" data-kw="keepalive 保活 心跳 间隔 秒 network 网络">
-          <span class="set-name">keepalive 间隔（秒，0 关闭）</span>
+          <span class="set-name" data-i18n="set.netKeepalive">keepalive 间隔（秒，0 关闭）</span>
           <span class="set-scope">全局</span>
           <input id="net-keepalive" type="number" min="0" max="3600" step="5" />
         </div>
         <div class="set-row" data-kw="keepalive 丢失 次数 断线 network 网络">
-          <span class="set-name">keepalive 最多丢失（次）</span>
+          <span class="set-name" data-i18n="set.netMaxMissed">keepalive 最多丢失（次）</span>
           <span class="set-scope">全局</span>
           <input id="net-max-missed" type="number" min="1" max="20" step="1" />
         </div>
         <div class="set-row" data-kw="语言 language 中文 english 界面 i18n">
-          <span class="set-name">界面语言</span>
+          <span class="set-name" data-i18n="set.lang">界面语言</span>
           <span class="set-scope">全局</span>
           <select id="ui-lang">
             <option value="zh">中文</option>
@@ -1278,12 +1278,12 @@
           </select>
         </div>
         <div class="set-row" data-kw="shell 本地终端 powershell cmd git bash wsl 命令行 终端类型">
-          <span class="set-name">本地终端 Shell</span>
+          <span class="set-name" data-i18n="set.shell">本地终端 Shell</span>
           <span class="set-scope">新建终端生效</span>
           <select id="local-shell"></select>
         </div>
         <div class="set-row" id="local-shell-custom" hidden data-kw="shell 自定义 路径 参数 custom 命令行">
-          <span class="set-name">自定义 Shell</span>
+          <span class="set-name" data-i18n="set.shellCustom">自定义 Shell</span>
           <span class="set-scope">新建终端生效</span>
           <input id="local-shell-path" placeholder="可执行文件完整路径" spellcheck="false" />
           <input id="local-shell-args" placeholder="参数（空格分隔）" spellcheck="false" />

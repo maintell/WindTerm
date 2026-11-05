@@ -4683,6 +4683,23 @@ const I18N = {
     "btn.tunnels": "隧道",
     "btn.split": "分屏",
     "btn.broadcast": "广播",
+    "set.lang": "界面语言",
+    "set.shell": "本地终端 Shell",
+    "set.shellCustom": "自定义 Shell",
+    "set.fontSize": "字号",
+    "set.lineHeight": "行高",
+    "set.scrollback": "回滚行数",
+    "set.encoding": "终端编码",
+    "set.theme": "配色",
+    "set.themeImport": "导入配色方案",
+    "set.font": "字体",
+    "set.master": "主密码",
+    "set.knownHosts": "已知主机",
+    "set.configFile": "配置文件",
+    "set.resetPrefs": "重置偏好",
+    "set.netTimeout": "连接超时（秒）",
+    "set.netKeepalive": "keepalive 间隔（秒，0 关闭）",
+    "set.netMaxMissed": "keepalive 最多丢失（次）",
   },
   en: {
     "btn.local": "New local terminal",
@@ -4692,6 +4709,23 @@ const I18N = {
     "btn.tunnels": "Tunnels",
     "btn.split": "Split",
     "btn.broadcast": "Broadcast",
+    "set.lang": "Language",
+    "set.shell": "Local shell",
+    "set.shellCustom": "Custom shell",
+    "set.fontSize": "Font size",
+    "set.lineHeight": "Line height",
+    "set.scrollback": "Scrollback lines",
+    "set.encoding": "Terminal encoding",
+    "set.theme": "Color scheme",
+    "set.themeImport": "Import color scheme",
+    "set.font": "Font",
+    "set.master": "Master password",
+    "set.knownHosts": "Known hosts",
+    "set.configFile": "Config file",
+    "set.resetPrefs": "Reset preferences",
+    "set.netTimeout": "Connect timeout (s)",
+    "set.netKeepalive": "Keepalive interval (s, 0 = off)",
+    "set.netMaxMissed": "Keepalive max missed",
   },
 };
 
@@ -4904,7 +4938,15 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-88",
+  ui: "wt-ui-89",
+  /** 界面语言与词表（验收用：查「有没有漏翻的键」） */
+  i18n() {
+    return {
+      lang: uiLang,
+      zh: Object.keys(I18N.zh),
+      en: Object.keys(I18N.en),
+    };
+  },
   /** 「本次记住」存了几条（验收用：只回数量，不回口令） */
   sessionPasswords() {
     return sessionPasswords.size;

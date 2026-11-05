@@ -5545,6 +5545,25 @@ try {
     { timeout: 8000, label: "切回中文" },
   ).catch(() => null);
   check("切回中文也生效（SET-012）", backToChinese !== null, `${backToChinese ?? "没变"}`);
+
+  // 词表缺口门禁：页面里用到的键必须在两份词表里都存在——漏翻一处就红，
+  // 而不是等到用户把界面切成英文才发现某处还是中文
+  const i18nInfo = await cdp.eval(`(() => {
+    const used = [...new Set([...document.querySelectorAll("[data-i18n]")].map((e) => e.dataset.i18n))];
+    return { used, dict: window.__wt.i18n() };
+  })()`);
+  const missingZh = i18nInfo.used.filter((k) => !i18nInfo.dict.zh.includes(k));
+  const missingEn = i18nInfo.dict.zh.filter((k) => !i18nInfo.dict.en.includes(k));
+  check(
+    "每个 data-i18n 都有中英译文（SET-012）",
+    missingZh.length === 0 && missingEn.length === 0,
+    `中文缺 ${missingZh.join("、") || "无"}；英文缺 ${missingEn.join("、") || "无"}`,
+  );
+  check(
+    "多语言覆盖到设置项名称（SET-012）",
+    i18nInfo.used.length >= 20,
+    `${i18nInfo.used.length} 处`,
+  );
   await closeAllDialogs();
 
   // 18. 页面无未捕获异常
