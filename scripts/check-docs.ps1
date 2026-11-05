@@ -380,6 +380,24 @@ foreach ($line in $statusRows) {
 }
 
 # ─────────────────────────────────────────────────────────────
+# 12d. 覆盖表引用的文件必须真实存在
+#      「验收依据」里写 `xxx/tests/foo.rs` 是最强的一种声明；那个文件被删掉或改名后，
+#      表里还留着它，等于拿一份不存在的证据撑结论。这条门禁专门抓这种。
+# ─────────────────────────────────────────────────────────────
+$refPat = '`([A-Za-z0-9_./-]+\.(?:rs|mjs|ps1|md|toml|json|js|html))`'
+$refPrefixes = @('', 'crates/', 'apps/', 'docs/', 'scripts/', 'docs/status/')
+foreach ($m in [regex]::Matches($statusText, $refPat)) {
+    $rel = $m.Groups[1].Value
+    # 纯文件名（如 `config.toml`）不是路径声明，跳过
+    if ($rel -notmatch '/') { continue }
+    $found = $false
+    foreach ($p in $refPrefixes) {
+        if (Test-Path -LiteralPath (Join-Path $repoRoot ($p + $rel))) { $found = $true; break }
+    }
+    if (-not $found) { Fail ("P0 覆盖表引用了不存在的文件：{0}" -f $rel) }
+}
+
+# ─────────────────────────────────────────────────────────────
 # 12. 相对链接可达（NFR-026）
 #     用户手册会随功能增长不断加页，链接断了没人发现。
 #     只查相对路径的 .md 链接；外链不查（离线环境查不了）
