@@ -5301,6 +5301,57 @@ try {
   );
   await closeAllDialogs();
 
+  // 19ze. 网络设置：连接超时与 keepalive（`SET-001`）
+  await closeAllDialogs();
+  await clickUntil(
+    () => clickElement("#tree-settings"),
+    async () => (await cdp.eval(`document.getElementById("settings").open`)) ? true : null,
+    { timeout: 5000, tries: 3, label: "打开设置看网络组" },
+  );
+  const netGroup = await cdp.eval(`(() => {
+    const g = [...document.querySelectorAll("#set-body .set-group")].find((x) =>
+      x.dataset.group === "网络",
+    );
+    return g ? { rows: g.querySelectorAll(".set-row").length } : null;
+  })()`);
+  check(
+    "设置里有「网络」分组（SET-001）",
+    netGroup !== null && netGroup.rows === 3,
+    JSON.stringify(netGroup),
+  );
+
+  const setNet = (id, v) =>
+    cdp.eval(`(() => {
+      const el = document.getElementById(${JSON.stringify(id)});
+      el.value = ${JSON.stringify(v)};
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      return el.value;
+    })()`);
+  await setNet("net-keepalive", "0");
+  const netOff = await waitFor(
+    async () => {
+      const t = readFileSync(prefsFile, "utf8");
+      return /netKeepaliveSecs\s*=\s*0/.test(t) ? true : null;
+    },
+    { timeout: 10000, label: "keepalive 关闭落盘" },
+  ).catch(() => null);
+  check(
+    "改 keepalive 会写进 config.toml（SET-001）",
+    netOff === true,
+    netOff === true,
+  );
+
+  await setNet("net-keepalive", "30");
+  const netBack = await waitFor(
+    async () => {
+      const t = readFileSync(prefsFile, "utf8");
+      return /netKeepaliveSecs\s*=\s*30/.test(t) ? true : null;
+    },
+    { timeout: 10000, label: "keepalive 复原" },
+  ).catch(() => null);
+  check("改回 keepalive 也落盘（不污染后续）", netBack === true, netBack === true);
+  await closeAllDialogs();
+
   // 18. 页面无未捕获异常
   check("页面无未捕获异常", cdp.exceptions.length === 0, cdp.exceptions.join(" | ") || "0 条");
 

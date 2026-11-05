@@ -1250,6 +1250,21 @@
           <span class="set-scope">全局</span>
           <button type="button" id="prefs-reset">重置…</button>
         </div>
+        <div class="set-row" data-kw="连接 超时 timeout 秒 network 网络 连不上">
+          <span class="set-name">连接超时（秒）</span>
+          <span class="set-scope">全局</span>
+          <input id="net-timeout" type="number" min="1" max="300" step="1" />
+        </div>
+        <div class="set-row" data-kw="keepalive 保活 心跳 间隔 秒 network 网络">
+          <span class="set-name">keepalive 间隔（秒，0 关闭）</span>
+          <span class="set-scope">全局</span>
+          <input id="net-keepalive" type="number" min="0" max="3600" step="5" />
+        </div>
+        <div class="set-row" data-kw="keepalive 丢失 次数 断线 network 网络">
+          <span class="set-name">keepalive 最多丢失（次）</span>
+          <span class="set-scope">全局</span>
+          <input id="net-max-missed" type="number" min="1" max="20" step="1" />
+        </div>
         <div class="set-row" data-kw="shell 本地终端 powershell cmd git bash wsl 命令行 终端类型">
           <span class="set-name">本地终端 Shell</span>
           <span class="set-scope">新建终端生效</span>

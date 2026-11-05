@@ -206,6 +206,9 @@ async function loadPrefs() {
     if (typeof p.localShellPath === "string") localShellPath = p.localShellPath;
     if (typeof p.localShellArgs === "string") localShellArgs = p.localShellArgs;
     if (typeof p.filesAutoOpen === "boolean") filesAutoOpen = p.filesAutoOpen;
+    if (Number.isFinite(p.netConnectTimeoutSecs)) netTimeout = p.netConnectTimeoutSecs;
+    if (Number.isFinite(p.netKeepaliveSecs)) netKeepalive = p.netKeepaliveSecs;
+    if (Number.isFinite(p.netKeepaliveMaxMissed)) netMaxMissed = p.netKeepaliveMaxMissed;
     // 导入的配色要在建会话之前就进表，否则第一个终端会先闪一下默认配色
     for (const t of p.customThemes ?? []) {
       if (THEME_DATA.some((x) => x.name === t.name)) continue;
@@ -240,6 +243,9 @@ async function savePrefs() {
         localShellPath,
         localShellArgs,
         filesAutoOpen,
+        netConnectTimeoutSecs: netTimeout,
+        netKeepaliveSecs: netKeepalive,
+        netKeepaliveMaxMissed: netMaxMissed,
       },
     });
   } catch (e) {
@@ -275,6 +281,11 @@ let localShellArgs = "";
 
 /** SSH 连上就打开文件面板（`FIL-001`）。默认开，规格要能关。 */
 let filesAutoOpen = true;
+
+/** 网络参数（`SET-001` 的「网络」组）：建连超时与 keepalive。0 表示关闭 keepalive */
+let netTimeout = 15;
+let netKeepalive = 30;
+let netMaxMissed = 3;
 
 /** 每个编码一个解码器：`stream: true` 才能让多字节字符跨块拼接正确 */
 const decoders = new Map();
@@ -4339,6 +4350,7 @@ const SET_GROUPS = [
   ["文件", ["files-auto-open"]],
   ["安全", ["master-open", "known-open"]],
   // 按「行里第一个带 id 的元素」认领：配置文件那行首个 id 是路径 span，不是按钮
+  ["网络", ["net-timeout", "net-keepalive", "net-max-missed"]],
   ["高级", ["app-prefs-path", "prefs-reset"]],
 ];
 
@@ -4454,6 +4466,7 @@ document.getElementById("prefs-reset").addEventListener("click", async () => {
     await loadPrefs();
     initLookControls();
     await initShellControls();
+    initNetControls();
     buildSettingGroups();
     applyLook();
     await refreshAppPaths();
@@ -4461,6 +4474,40 @@ document.getElementById("prefs-reset").addEventListener("click", async () => {
   } catch (e) {
     setStatus(`重置失败：${e}`);
   }
+});
+
+// 网络组（`SET-001`）：建连超时与 keepalive。改完写进 config.toml，下一次建连生效。
+const netTimeoutInput = document.getElementById("net-timeout");
+const netKeepaliveInput = document.getElementById("net-keepalive");
+const netMaxMissedInput = document.getElementById("net-max-missed");
+
+function initNetControls() {
+  netTimeoutInput.value = String(netTimeout);
+  netKeepaliveInput.value = String(netKeepalive);
+  netMaxMissedInput.value = String(netMaxMissed);
+}
+
+netTimeoutInput.addEventListener("change", () => {
+  netTimeout = clampNum(Number(netTimeoutInput.value) || 15, 1, 300);
+  netTimeoutInput.value = String(netTimeout);
+  void savePrefs();
+  setStatus(`连接超时：${netTimeout} 秒（下一次建连生效）`);
+});
+
+netKeepaliveInput.addEventListener("change", () => {
+  netKeepalive = clampNum(Number(netKeepaliveInput.value) || 0, 0, 3600);
+  netKeepaliveInput.value = String(netKeepalive);
+  void savePrefs();
+  setStatus(
+    netKeepalive === 0 ? "keepalive 已关闭" : `keepalive 间隔：${netKeepalive} 秒`
+  );
+});
+
+netMaxMissedInput.addEventListener("change", () => {
+  netMaxMissed = clampNum(Number(netMaxMissedInput.value) || 3, 1, 20);
+  netMaxMissedInput.value = String(netMaxMissed);
+  void savePrefs();
+  setStatus(`keepalive 最多丢失：${netMaxMissed} 次`);
 });
 
 function filterSettings(query) {
@@ -4659,7 +4706,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-80",
+  ui: "wt-ui-81",
   /** 「本次记住」存了几条（验收用：只回数量，不回口令） */
   sessionPasswords() {
     return sessionPasswords.size;
@@ -4918,6 +4965,7 @@ window.__wt = {
   initLookControls();
   await initShellControls();
   buildSettingGroups();
+  initNetControls();
   await refreshAppPaths();
   filesAutoOpenBox.checked = filesAutoOpen;
   initBroadcast();

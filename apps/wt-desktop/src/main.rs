@@ -816,6 +816,12 @@ struct PrefsDto {
     /// SSH 连上就打开文件面板（`FIL-001`）。规格要求默认开、但要能关——
     /// 有人只想开一个终端。
     files_auto_open: bool,
+    /// 建连超时（秒，`SET-001` 的「网络」组）
+    net_connect_timeout_secs: u32,
+    /// keepalive 间隔（秒，0 = 关闭）
+    net_keepalive_secs: u32,
+    /// keepalive 连续丢失多少次算断线
+    net_keepalive_max_missed: u32,
 }
 
 /// 一套导入的配色：4 个界面色 + 16 个 ANSI 色，和内置的结构一致。
@@ -845,6 +851,9 @@ impl Default for PrefsDto {
             local_shell_path: String::new(),
             local_shell_args: String::new(),
             files_auto_open: true,
+            net_connect_timeout_secs: 15,
+            net_keepalive_secs: 30,
+            net_keepalive_max_missed: 3,
         }
     }
 }
@@ -1684,14 +1693,26 @@ async fn connect_over_accept_new(
     Ok((conn, true))
 }
 
+/// 把偏好里的网络参数套到连接配置上（`SET-001` 的「网络」组）。
+///
+/// **所有建连的地方都走这里**：超时与 keepalive 是全局行为，散在五处手抄迟早不一致，
+/// 而且改一处忘一处很难被发现——只有某个入口超时特别短时才会有人怀疑。
+fn apply_net_prefs(cfg: &mut wt_ssh::SshConfig) {
+    let prefs = prefs_load().unwrap_or_default();
+    cfg.connect_timeout_secs = prefs.net_connect_timeout_secs.clamp(1, 300);
+    cfg.keepalive_secs = prefs.net_keepalive_secs.min(3600);
+    cfg.keepalive_max_missed = prefs.net_keepalive_max_missed.clamp(1, 20);
+}
+
 /// 一跳的连接参数。主机与用户名不能为空——空着连上去只会得到一条看不懂的错误。
 fn hop_cfg(hop: &JumpReq) -> Result<wt_ssh::SshConfig, String> {
-    let cfg = wt_ssh::SshConfig {
+    let mut cfg = wt_ssh::SshConfig {
         host: hop.host.trim().to_string(),
         port: hop.port,
         user: hop.user.trim().to_string(),
         ..Default::default()
     };
+    apply_net_prefs(&mut cfg);
     if cfg.host.is_empty() || cfg.user.is_empty() {
         return Err("[SSH_BAD_ARGUMENT] 跳板机的主机与用户名都不能为空".into());
     }
@@ -1913,12 +1934,13 @@ async fn ssh_open(
     let SshOpenReq {
         host, port, user, cols, rows, ..
     } = req;
-    let cfg = wt_ssh::SshConfig {
+    let mut cfg = wt_ssh::SshConfig {
         host: host.trim().to_string(),
         port: port.unwrap_or(22),
         user: user.trim().to_string(),
         ..Default::default()
     };
+    apply_net_prefs(&mut cfg);
     if cfg.host.is_empty() {
         return Err("[SSH_BAD_ARGUMENT] 主机不能为空".into());
     }
@@ -2099,12 +2121,13 @@ async fn open_sftp(
     jump: Option<JumpReq>,
 ) -> Result<wt_ssh::SftpClient, String> {
     let _scope = TraceScope::enter("open_sftp");
-    let cfg = wt_ssh::SshConfig {
+    let mut cfg = wt_ssh::SshConfig {
         host: req.host.trim().to_string(),
         port: req.port.unwrap_or(22),
         user: req.user.trim().to_string(),
         ..Default::default()
     };
+    apply_net_prefs(&mut cfg);
     trace(&format!(
         "[open_sftp] 参数 host={} port={} user={} agent={} key={} pw={}",
         cfg.host,
@@ -2556,12 +2579,13 @@ async fn tunnel_start(
         ));
     }
 
-    let cfg = wt_ssh::SshConfig {
+    let mut cfg = wt_ssh::SshConfig {
         host: arg.req.host.trim().to_string(),
         port: arg.req.port.unwrap_or(22),
         user: arg.req.user.trim().to_string(),
         ..Default::default()
     };
+    apply_net_prefs(&mut cfg);
     if cfg.host.is_empty() {
         return Err("[SSH_BAD_ARGUMENT] 主机不能为空".into());
     }
@@ -2838,12 +2862,13 @@ async fn start_spec(state: &AppState, spec: &wt_core::TunnelSpec) -> Result<Tunn
         ));
     };
 
-    let cfg = wt_ssh::SshConfig {
+    let mut cfg = wt_ssh::SshConfig {
         host,
         port: session.port.unwrap_or(22),
         user,
         ..Default::default()
     };
+    apply_net_prefs(&mut cfg);
     let auth = AuthInput::Password(password);
     let (conn, _added) = connect_accept_new(&cfg, &auth, &[]).await?;
     let conn = std::sync::Arc::new(conn);
