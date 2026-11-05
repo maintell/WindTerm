@@ -4522,6 +4522,24 @@ document.getElementById("master-open").addEventListener("click", () => {
 
 document.getElementById("master-close").addEventListener("click", () => masterDialog.close());
 
+// 轮换加密密钥（`SEC-007`）：换个新 salt 重封一遍，条目与密码都不变。
+// 为什么要问一句：轮换会覆盖磁盘上的密文，虽然条目不动，但属于「不可撤销」的动作。
+document.getElementById("vault-rotate").addEventListener("click", async () => {
+  const ok = await askConfirm(
+    "轮换加密密钥？",
+    "会用一个新的 salt 把保险库重新加密一遍：条目不变、主密码不变，但磁盘上的密文会被覆盖（旧文件不再保留）。",
+    "轮换",
+  );
+  if (!ok) return;
+  try {
+    const st = await invoke("vault_rotate_key");
+    await refreshVault();
+    setStatus(`密钥已轮换（${st.entries} 条，保险库仍解锁）`);
+  } catch (e) {
+    setStatus(`轮换失败：${e}`);
+  }
+});
+
 document.getElementById("master-change").addEventListener("click", () => {
   void (async () => {
     if (masterNew.value !== masterNew2.value) {
@@ -4859,7 +4877,7 @@ const SET_GROUPS = [
   ["外观", ["look-size", "look-height"]],
   ["终端", ["encoding", "look-theme", "theme-import-open", "look-font", "look-scrollback", "term-right-click", "look-word-sep", "look-paste-trim", "look-autocopy-on", "look-autocopy"]],
   ["文件", ["files-auto-open"]],
-  ["安全", ["master-open", "known-open"]],
+  ["安全", ["master-open", "vault-rotate", "known-open"]],
   // 按「行里第一个带 id 的元素」认领：配置文件那行首个 id 是路径 span，不是按钮
   ["网络", ["net-timeout", "net-keepalive", "net-max-missed"]],
   ["高级", ["app-prefs-path", "prefs-reset"]],
@@ -5119,6 +5137,7 @@ const I18N = {
     "set.lineHeight": "行高",
     "set.scrollback": "回滚行数",
     "set.rightClick": "右键行为",
+    "set.vaultRotate": "轮换加密密钥",
     "set.pasteTrim": "粘贴时去掉行尾空白",
     "set.wordSeparator": "双击选词的额外分隔符",
     "set.autoCopy": "选中即复制",
@@ -5159,6 +5178,7 @@ const I18N = {
     "set.lineHeight": "Line height",
     "set.scrollback": "Scrollback lines",
     "set.rightClick": "Right-click action",
+    "set.vaultRotate": "Rotate vault key",
     "set.pasteTrim": "Trim trailing whitespace on paste",
     "set.wordSeparator": "Extra word separators (double-click)",
     "set.autoCopy": "Copy on select",
@@ -5415,7 +5435,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-108",
+  ui: "wt-ui-109",
   /**
    * 验收用：刷新会话树并等它**画完**。
    *

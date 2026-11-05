@@ -4272,8 +4272,25 @@ try {
     { timeout: 15000, label: "标签真的关闭干净" },
   );
   // 收尾是异步的（后端要杀子进程、放 ConPTY）。紧接着建连时偶发卡在「正在连接」，
-  // 给一拍让收尾先落地——比单纯把超时从 30 秒拉到 60 秒更对症。
-  await new Promise((r) => setTimeout(r, 1500));
+  // 所以这里不只等界面的标签数，还要等**后端**的会话数真的归零——两者对不上
+  // 就是「关标签没关干净」，那正是后面建连卡住的直接嫌疑。
+  const closedClean = await waitFor(
+    async () => {
+      const n = await cdp.eval(
+        `window.__TAURI__.core.invoke("session_count").catch(() => -1)`,
+      );
+      return n === 0 ? true : null;
+    },
+    { timeout: 20000, label: "后端会话全部关闭" },
+  ).catch(() => null);
+  const sessionsLeft = await cdp.eval(
+    `window.__TAURI__.core.invoke("session_count").catch(() => -1)`,
+  );
+  check(
+    "关闭标签后后端会话数归零（前提）",
+    closedClean === true,
+    `session_count=${sessionsLeft}`,
+  );
   // 点「连接」之前先确认按钮是启用的：上一次 `ssh_open` 万一没返回，按钮会一直禁用，
   // 这时点下去什么都不会发生，表现出来又是一次「30 秒超时」。把这种卡死单独认出来，
   // 比让它伪装成超时有用得多。
@@ -5056,6 +5073,96 @@ try {
     "新主密码能解开保险库",
     typeof newWorks === "object" && newWorks !== null,
     JSON.stringify(newWorks)?.slice(0, 60),
+  );
+
+  // 密钥轮换（`SEC-007`）：salt 必须换新、条目一条不少；锁上之后同一个主密码还要能解开
+  // （证明轮换只换了密钥材料，没动口令）。判据读磁盘上的 header，不看界面文案。
+  const rotVaultFile = join(DATA_DIR, "vault.wtvlt");
+  const readRotSalt = () => {
+    const buf = readFileSync(rotVaultFile);
+    const len = buf.readUInt32LE(8);
+    const header = JSON.parse(buf.subarray(12, 12 + len).toString("utf8"));
+    const find = (o) => {
+      for (const k of Object.keys(o ?? {})) {
+        if (k === "salt") return o[k];
+        if (o[k] && typeof o[k] === "object") {
+          const s = find(o[k]);
+          if (s) return s;
+        }
+      }
+      return null;
+    };
+    return find(header);
+  };
+  const rotSaltBefore = readRotSalt();
+  const rotEntriesBefore = await cdp.eval(`window.__TAURI__.core.invoke("vault_status").then((s) => s.entries)`);
+  // 前面的「改主密码」对话框还开着：模态框会把设置面板整个盖住，点「轮换…」就落到
+  // master-dialog 上（上一轮失败信息里写着「那个位置上是 master-dialog」）。先关掉。
+  await closeAllDialogs();
+  await openSettings();
+  const rotEntryShown = await cdp.eval(`!!document.getElementById("vault-rotate")`);
+  check("设置里有「轮换加密密钥」入口（SEC-007）", rotEntryShown === true, String(rotEntryShown));
+  // 设置对话框里滚动 + 布局会变：量到的坐标可能不是按钮最终所在的位置，点下去就落空。
+  // 所以先滚进视区、做一次命中测试，命中再点（和「重置偏好」那次踩的坑同一类）。
+  const clickInSettings = async (id) => {
+    for (let i = 0; i < 10; i += 1) {
+      const h = await cdp.eval(`(() => {
+        const el = document.getElementById(${JSON.stringify(id)});
+        if (!el) return { why: "no-el" };
+        el.scrollIntoView({ block: "center" });
+        const r = el.getBoundingClientRect();
+        const cx = Math.round(r.x + r.width / 2);
+        const cy = Math.round(r.y + r.height / 2);
+        const top = document.elementFromPoint(cx, cy);
+        return { ok: top === el, cx, cy, top: top ? top.id || top.tagName : "null" };
+      })()`);
+      if (h.ok) {
+        await clickAt({ x: h.cx, y: h.cy });
+        return true;
+      }
+      await new Promise((r) => setTimeout(r, 160));
+    }
+    return false;
+  };
+  const rotClicked = await clickInSettings("vault-rotate");
+  const rotAsk = await waitFor(
+    async () => ((await cdp.eval(`document.getElementById("ask-dialog").open`)) ? true : null),
+    { timeout: 5000, label: "轮换确认框" },
+  ).catch(() => null);
+  check("点「轮换…」会先弹确认框（SEC-007）", rotClicked && rotAsk === true, `点击=${rotClicked}，确认框=${rotAsk === true}`);
+  await clickDialogButton("ask-ok", "yes");
+  await closeAllDialogs();
+  const rotated = await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      return /密钥已轮换/.test(s) ? s : null;
+    },
+    { timeout: 20000, label: "轮换完成" },
+  ).catch(() => null);
+  const rotSaltAfter = readRotSalt();
+  const rotEntriesAfter = await cdp.eval(`window.__TAURI__.core.invoke("vault_status").then((s) => s.entries)`);
+  check(
+    "轮换后 salt 换新、条目一条不少（SEC-007）",
+    rotated !== null &&
+      typeof rotSaltBefore === "string" &&
+      typeof rotSaltAfter === "string" &&
+      rotSaltBefore !== rotSaltAfter &&
+      rotEntriesAfter === rotEntriesBefore,
+    `salt ${String(rotSaltBefore).slice(0, 8)}… → ${String(rotSaltAfter).slice(0, 8)}…，条目 ${rotEntriesBefore} → ${rotEntriesAfter}`,
+  );
+  await cdp.eval(`window.__TAURI__.core.invoke("vault_lock")`);
+  const unlockAfterRotate = await cdp.eval(`(async () => {
+    try {
+      const s = await window.__TAURI__.core.invoke("vault_unlock", { password: ${JSON.stringify(MASTER2)} });
+      return s.unlocked === true;
+    } catch (e) {
+      return "ERR:" + String(e);
+    }
+  })()`);
+  check(
+    "轮换后同一个主密码仍能解开保险库（SEC-007）",
+    unlockAfterRotate === true,
+    String(unlockAfterRotate).slice(0, 60),
   );
   // 关掉对话框：模态框会挡住后面「连接失败」那一段的点击，
   // 表现是它一直等不到报错——报错点离真正原因隔了好几步

@@ -143,8 +143,15 @@ impl SessionRegistry {
     }
 
     /// 关闭并移除会话。幂等：句柄不存在时静默返回。
+    ///
+    /// **先把条目取出来、松开锁，再关闭。** `close()` 要杀子进程、释放 ConPTY，
+    /// 可能慢；而 `if let Some(s) = self.sessions.lock().unwrap().remove(..)` 这种写法
+    /// 会让零时锁活到整个 `if let` 结束——等于攥着注册表的锁去关终端，
+    /// 期间所有会话操作（开终端、读写、统计）全排队，表现是「关掉几个标签之后，
+    /// 再开终端/建连一直卡住」。
     pub fn close(&self, h: &SessionHandle) {
-        if let Some(mut s) = self.sessions.lock().unwrap().remove(h.as_str()) {
+        let removed = self.sessions.lock().unwrap().remove(h.as_str());
+        if let Some(mut s) = removed {
             s.close();
         }
     }

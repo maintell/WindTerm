@@ -474,6 +474,35 @@ fn vault_change_password(
     Ok(status_of(&st))
 }
 
+/// 轮换保险库密钥（`SEC-007`）：换一个新的 salt，把条目原地重封一遍。
+///
+/// 为什么值得单独做：salt 固定不变意味着同一个口令永远派生出同一把 KEK；轮换之后，
+/// 即便旧密钥材料在别处泄漏过，也解不开新的密文。条目一条都不动，只是重新加密。
+/// 要求**已解锁**（内存里有主密码）——轮换不能凭空发生。
+#[tauri::command]
+fn vault_rotate_key(state: State<'_, AppState>) -> Result<VaultStatusDto, String> {
+    let mut st = state.vault.lock().unwrap();
+    let Some(password) = st.password.as_ref().map(|p| p.to_string()) else {
+        return Err(locked_error());
+    };
+    let entries = st
+        .vault
+        .as_ref()
+        .map(|v| v.entries().to_vec())
+        .ok_or_else(locked_error)?;
+
+    // 新建一个容器 = 新 salt；再把条目搬过去，最后用同一个主密码重封。
+    let mut fresh = wt_crypto::Vault::create(&password).map_err(|e| e.to_string())?;
+    for e in entries {
+        fresh.add(e).map_err(|err| err.to_string())?;
+    }
+    let sealed = fresh.seal(&password).map_err(|e| e.to_string())?;
+    std::fs::write(vault_path(), sealed).map_err(|e| format!("写入保险库失败：{e}"))?;
+
+    st.vault = Some(fresh);
+    Ok(status_of(&st))
+}
+
 /// 移除保险库（`SEC-001`）：删文件 + 清内存。**不可恢复**，调用方必须先做二次确认。
 #[tauri::command]
 fn vault_remove(state: State<'_, AppState>) -> Result<VaultStatusDto, String> {
@@ -3372,6 +3401,7 @@ fn main() {
             vault_create,
             vault_unlock,
             vault_change_password,
+            vault_rotate_key,
             vault_remove,
             vault_lock,
             credential_save,
