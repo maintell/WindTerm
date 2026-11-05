@@ -3057,6 +3057,80 @@ try {
     JSON.stringify(mtimeOff),
   );
 
+  // 文件列表右键菜单（`FIL-001` 规格第 9 条）：只列这个对象能做什么，动作复用工具栏那套。
+  // 用真右键（CDP 派发）而不是 `dispatchEvent`：菜单是靠 contextmenu 事件挂上去的，
+  // 合成事件能过但证明不了浏览器真的把它送进来。
+  const rowBox = await cdp.eval(`(() => {
+    const row = [...document.querySelectorAll("#files-list .row")].find(
+      (r) => r.querySelector("span")?.textContent === "notes.txt",
+    );
+    if (!row) return null;
+    const r = row.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  })()`);
+  const rc = { ...rowBox, button: "right", clickCount: 1 };
+  await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...rc });
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...rc });
+  const fileMenu = await waitFor(
+    async () => {
+      const m = await cdp.eval(`(() => {
+        const el = document.getElementById("ctx-menu");
+        return {
+          hidden: el.hidden,
+          kind: el.dataset.kind ?? null,
+          items: [...el.querySelectorAll("button")].map((b) => b.textContent),
+        };
+      })()`);
+      return !m.hidden && m.kind === "files" ? m : null;
+    },
+    { timeout: 8000, label: "文件右键菜单" },
+  ).catch(() => null);
+  const need = ["用编辑器打开", "下载", "新建文件夹", "重命名", "删除", "权限…", "复制路径"];
+  check(
+    "文件行右键给出该对象能做的动作（FIL-001）",
+    fileMenu !== null && need.every((x) => fileMenu.items.includes(x)),
+    fileMenu ? fileMenu.items.join("、") : "菜单没出来",
+  );
+  await clickCtxItem("权限…");
+  const permDlg = await waitFor(
+    async () => {
+      const d = await cdp.eval(`(() => ({
+        open: document.getElementById("name-dialog").open,
+        title: document.getElementById("name-title").textContent,
+      }))()`);
+      return d.open ? d : null;
+    },
+    { timeout: 5000, label: "权限对话框" },
+  ).catch(() => null);
+  check(
+    "菜单里的「权限…」作用在右键那个文件上（FIL-001）",
+    permDlg !== null && permDlg.title.includes("notes.txt"),
+    permDlg ? permDlg.title : "没弹框",
+  );
+  await closeAllDialogs();
+  // 空区右键只给「新建文件夹」：把「打开/下载」这类需要目标的项也列出来就是骗人。
+  //
+  // 这里在容器上派发事件而不是真的右键：列表行会铺满可视区，按坐标找不到「空区」；
+  // 而「有没有命中某一行」这条分支上一条断言已经用真右键验过了，这条只测另一半。
+  const blankMenu = await cdp.eval(`(() => {
+    document.getElementById("ctx-menu").hidden = true;
+    const list = document.getElementById("files-list");
+    const r = list.getBoundingClientRect();
+    list.dispatchEvent(new MouseEvent("contextmenu", {
+      bubbles: true, cancelable: true, clientX: r.x + 30, clientY: r.top + 4,
+    }));
+    const el = document.getElementById("ctx-menu");
+    return { hidden: el.hidden, items: [...el.querySelectorAll("button")].map((b) => b.textContent) };
+  })()`);
+  check(
+    "空区右键只剩「新建文件夹」（FIL-001）",
+    blankMenu.hidden === false &&
+      blankMenu.items.length === 1 &&
+      blankMenu.items[0] === "新建文件夹",
+    blankMenu ? blankMenu.items.join("、") : "菜单没出来",
+  );
+  await cdp.eval(`document.getElementById("ctx-menu").hidden = true`);
+
   // 自动刷新（`FIL-001` 规格 §6）：窗口获得焦点时按「可配间隔」节流刷新。
   // 默认关；设为 5 秒后写进 config.toml；节流：距上次列目录不足间隔时不刷，
   // 用 _ageDirLoad 模拟「已过去足够久」再模拟一次焦点，应刷新一次且计数 +1。

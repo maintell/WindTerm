@@ -3500,24 +3500,27 @@ filesList.addEventListener("scroll", () => {
   });
 });
 
-/** 选中某一行（只改状态，不发请求）。 */
-// 改权限位（`FIL-002` 的 `SETSTAT`）。输入用八进制——`chmod 644` 是所有人都会的写法，
-// 摆在对话框里点九宫格反而更慢。
-filesChmod.addEventListener("click", async () => {
-  if (!selectedEntry) return;
-  const full = Number.isFinite(selectedEntry.mode) ? selectedEntry.mode : 0o100644;
+/**
+ * 改权限位（`FIL-002` 的 `SETSTAT`）。输入用八进制——`chmod 644` 是所有人都会的写法，
+ * 摆在对话框里点九宫格反而更慢。
+ *
+ * 抽成函数而不是写在按钮监听里：右键菜单要用同一套（`FIL-001` 规格第 9 条），
+ * 两处各写一遍迟早有一处忘了保留类型位。
+ */
+async function chmodEntry(target = selectedEntry) {
+  if (!target) return;
+  const full = Number.isFinite(target.mode) ? target.mode : 0o100644;
   // 类型位必须原样带回去：只写权限位、把 S_IFREG 丢了的后果是有服务端把路径当成
   // 未知类型，后续操作全失败。
   const type = full & 0o170000;
   const cur = (full & 0o777).toString(8).padStart(3, "0");
-  const ans = await askName(`改权限：${selectedEntry.name}（八进制，如 644）`, cur);
+  const ans = await askName(`改权限：${target.name}（八进制，如 644）`, cur);
   if (ans === null) return;
   const perm = Number.parseInt(ans, 8);
   if (!Number.isFinite(perm) || perm < 0 || perm > 0o777) {
     setStatus(`权限位要 0~777 的八进制数，收到「${ans}」`);
     return;
   }
-  const target = selectedEntry;
   try {
     await withDeadline(
       invoke("sftp_chmod", {
@@ -3534,6 +3537,92 @@ filesChmod.addEventListener("click", async () => {
   } catch (e) {
     setStatus(`改权限失败：${e}`);
   }
+}
+
+filesChmod.addEventListener("click", () => void chmodEntry());
+
+// ── 文件列表右键菜单（`FIL-001` 规格第 9 条）────────────────
+//
+// 只列「这个对象能做什么」，动作全部复用工具栏那几个函数。两处各写一套的话，
+// 迟早有一处忘了保留类型位（权限）或者忘了二次确认（删除）。
+let ctxEntry = null;
+
+/** 删除（右键菜单版）：菜单里没法「再点一次确认」，所以直接弹确认框 */
+async function removeEntryConfirmed(target) {
+  const ok = await askConfirm(
+    `删除 ${target.name}？`,
+    target.is_dir ? "目录非空时服务端会拒绝；不做递归删除。" : "删除后不可恢复。",
+    "删除",
+  );
+  if (!ok) return;
+  setFilesMsg("删除中…");
+  try {
+    await withDeadline(
+      invoke("sftp_remove", {
+        req: filesReq(),
+        path: joinPath(sftpPath, target.name),
+        isDir: target.is_dir,
+        jump: jumpReq(),
+      }),
+      20000,
+      "删除",
+    );
+    setFilesMsg(`已删除 ${target.name}`);
+    clearSelection();
+    await loadDir(sftpPath);
+  } catch (e) {
+    setFilesMsg(`删除失败：${e}`);
+  }
+}
+
+async function copyEntryPath(entry) {
+  const full = joinPath(sftpPath, entry.name);
+  try {
+    await navigator.clipboard.writeText(full);
+    setStatus(`已复制路径：${full}`);
+  } catch {
+    setStatus(`复制失败，路径是：${full}`);
+  }
+}
+
+/** 菜单项按「有目标 / 空区」两套：空区只给「新建文件夹」 */
+function fileMenuItems() {
+  const e = ctxEntry;
+  const items = [];
+  if (e) {
+    items.push({
+      label: e.is_dir ? "打开" : "用编辑器打开",
+      run: () =>
+        e.is_dir
+          ? loadDir(joinPath(sftpPath, e.name))
+          : openEditor(joinPath(sftpPath, e.name), e.name),
+    });
+    if (!e.is_dir) {
+      items.push({ label: "下载", run: () => downloadFile(joinPath(sftpPath, e.name)) });
+    }
+  }
+  items.push({ label: "新建文件夹", run: () => makeDir() });
+  if (e) {
+    items.push({ label: "重命名", run: () => renameEntry(e) });
+    items.push({ label: "删除", run: () => removeEntryConfirmed(e) });
+    items.push({ label: "权限…", run: () => chmodEntry(e) });
+    items.push({ label: "复制路径", run: () => copyEntryPath(e) });
+  }
+  return items;
+}
+
+filesList.addEventListener("contextmenu", (ev) => {
+  ev.preventDefault();
+  const row = ev.target.closest(".vrow");
+  let entry = null;
+  if (row) {
+    const label = row.querySelector("span")?.textContent ?? "";
+    entry = filesEntries.find((x) => entryLabel(x) === label) ?? null;
+    // 右键同时选中：菜单里的动作都作用在这个对象上，界面得看得出来是哪一个
+    if (entry) selectEntry(entry, row);
+  }
+  ctxEntry = entry;
+  showCtxMenu(ev.clientX, ev.clientY, fileMenuItems(), "files");
 });
 
 function selectEntry(entry, row) {
@@ -3603,9 +3692,9 @@ async function makeDir() {
   }
 }
 
-async function renameEntry() {
-  if (!selectedEntry) return;
-  const oldName = selectedEntry.name;
+async function renameEntry(target = selectedEntry) {
+  if (!target) return;
+  const oldName = target.name;
   const name = await askName(`把 ${oldName} 改名为`, oldName);
   if (!name || name === oldName) return;
   setFilesMsg("改名中…");
