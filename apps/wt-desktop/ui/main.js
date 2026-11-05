@@ -262,7 +262,10 @@ async function loadPrefs() {
 }
 
 /** 把偏好写回 `config.toml`。失败只提示，本次运行内的效果仍然生效。 */
+/** savePrefs 被调用了几次（验收用：验证「改了控件真的触发保存」，防死控件） */
+let savePrefsCount = 0;
 async function savePrefs() {
+  savePrefsCount += 1;
   const plain = {};
   for (const [action, v] of Object.entries(keymap)) plain[action] = v.chords;
   try {
@@ -5870,6 +5873,7 @@ window.__wt = {
       showModeCol,
       autoRefreshSecs,
       autoRefreshCount,
+      savePrefsCount,
       /** 列目录失败的原因（空串表示这次是成功的） */
       error: filesLoadError,
       /** 当前选中项的名字（验收与脚本用） */
