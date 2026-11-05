@@ -5536,6 +5536,9 @@ try {
     inEnglish !== null,
     `${inEnglish ?? "没变"}`,
   );
+  // 对话框标题也要跟着变：它们是最容易漏翻的一批（用户在弹窗里才看到）
+  const dlgEn = await cdp.eval(`document.getElementById("keys-title").textContent`);
+  check("对话框标题也翻了（SET-012）", dlgEn === "Keybindings", `${dlgEn}`);
   await setLang("zh");
   const backToChinese = await waitFor(
     async () => {
@@ -5561,7 +5564,7 @@ try {
   );
   check(
     "多语言覆盖到设置项名称（SET-012）",
-    i18nInfo.used.length >= 20,
+    i18nInfo.used.length >= 30,
     `${i18nInfo.used.length} 处`,
   );
   await closeAllDialogs();

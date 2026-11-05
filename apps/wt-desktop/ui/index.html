@@ -1165,7 +1165,7 @@
     <!-- 密钥生成/导入（LOC-014） -->
     <!-- 远端文件编辑（FIL-005）：下载到本地 → 编辑器 → 写回 -->
     <dialog id="edit-dialog">
-      <p id="edit-title">编辑远端文件</p>
+      <p id="edit-title" data-i18n="dlg.editTitle">编辑远端文件</p>
       <pre id="edit-info"></pre>
       <div class="key-row">
         <button type="button" id="edit-open">用系统程序打开</button>
@@ -1173,7 +1173,7 @@
         <button type="button" id="edit-save">写回远端</button>
       </div>
       <menu>
-        <button type="button" id="edit-close">关闭</button>
+        <button type="button" id="edit-close" data-i18n="btn.close">关闭</button>
       </menu>
     </dialog>
     <!-- 设置中心（SET-001）：可搜索、标注生效范围。控件只有这一份，底栏不再重复 -->
@@ -1306,18 +1306,18 @@
       <div class="key-row"><input id="master-new2" type="password" placeholder="再输一次新主密码" /></div>
       <div class="key-row">
         <button type="button" id="master-change">改主密码</button>
-        <button type="button" id="master-remove">移除保险库…</button>
+        <button type="button" id="master-remove" data-i18n="dlg.vaultRemove">移除保险库…</button>
         <button type="button" id="master-close">关闭</button>
       </div>
       <pre id="master-msg"></pre>
     </dialog>
     <dialog id="known-dialog">
-      <p id="known-title">已记录的主机密钥</p>
+      <p id="known-title" data-i18n="dlg.knownTitle">已记录的主机密钥</p>
       <div id="known-list"></div>
-      <menu><button type="button" id="known-close">关闭</button></menu>
+      <menu><button type="button" id="known-close" data-i18n="btn.close">关闭</button></menu>
     </dialog>
     <dialog id="theme-dialog">
-      <p id="theme-title">导入配色方案</p>
+      <p id="theme-title" data-i18n="dlg.themeTitle">导入配色方案</p>
       <textarea id="theme-text" spellcheck="false" placeholder="把 Windows Terminal 的 schemes JSON 粘到这里，或选择 .itermcolors 文件"></textarea>
       <div class="key-row">
         <button type="button" id="theme-file-btn">选择文件…</button>
@@ -1350,13 +1350,13 @@
     <input id="key-file" type="file" hidden />
     <input id="keys-file" type="file" accept=".json,application/json" hidden />
     <dialog id="keys-dialog">
-      <p id="keys-title">键位</p>
+      <p id="keys-title" data-i18n="dlg.keysTitle">键位</p>
       <div id="keys-list"></div>
       <menu>
         <button type="button" id="keys-export">导出</button>
         <button type="button" id="keys-import">导入</button>
-        <button type="button" id="keys-reset">恢复默认</button>
-        <button type="button" id="keys-close">关闭</button>
+        <button type="button" id="keys-reset" data-i18n="btn.resetDefault">恢复默认</button>
+        <button type="button" id="keys-close" data-i18n="btn.close">关闭</button>
       </menu>
     </dialog>
     <dialog id="ask-dialog">
@@ -1386,8 +1386,8 @@
         <pre id="paste-preview"></pre>
         <!-- 同上：粘贴放前面，回车才是「粘贴」 -->
         <div id="paste-actions">
-          <button value="yes" id="paste-ok">粘贴</button>
-          <button value="no" id="paste-cancel">取消</button>
+          <button value="yes" id="paste-ok" data-i18n="btn.paste">粘贴</button>
+          <button value="no" id="paste-cancel" data-i18n="btn.cancel">取消</button>
         </div>
       </form>
     </dialog>

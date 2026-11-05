@@ -4700,6 +4700,15 @@ const I18N = {
     "set.netTimeout": "连接超时（秒）",
     "set.netKeepalive": "keepalive 间隔（秒，0 关闭）",
     "set.netMaxMissed": "keepalive 最多丢失（次）",
+    "btn.close": "关闭",
+    "btn.resetDefault": "恢复默认",
+    "btn.paste": "粘贴",
+    "btn.cancel": "取消",
+    "dlg.editTitle": "编辑远端文件",
+    "dlg.vaultRemove": "移除保险库…",
+    "dlg.knownTitle": "已记录的主机密钥",
+    "dlg.themeTitle": "导入配色方案",
+    "dlg.keysTitle": "键位",
   },
   en: {
     "btn.local": "New local terminal",
@@ -4726,6 +4735,15 @@ const I18N = {
     "set.netTimeout": "Connect timeout (s)",
     "set.netKeepalive": "Keepalive interval (s, 0 = off)",
     "set.netMaxMissed": "Keepalive max missed",
+    "btn.close": "Close",
+    "btn.resetDefault": "Restore defaults",
+    "btn.paste": "Paste",
+    "btn.cancel": "Cancel",
+    "dlg.editTitle": "Edit remote file",
+    "dlg.vaultRemove": "Remove vault…",
+    "dlg.knownTitle": "Recorded host keys",
+    "dlg.themeTitle": "Import color scheme",
+    "dlg.keysTitle": "Keybindings",
   },
 };
 
@@ -4938,7 +4956,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-89",
+  ui: "wt-ui-90",
   /** 界面语言与词表（验收用：查「有没有漏翻的键」） */
   i18n() {
     return {
