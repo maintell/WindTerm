@@ -14,6 +14,10 @@
     }
   },
   "bundle": {
-    "active": false
+    "active": true,
+    "icon": ["icons/icon.ico"],
+    "targets": ["nsis"],
+    "shortDescription": "开源的 SSH / SFTP / 隧道远程运维工作台",
+    "longDescription": "WindTerm：Tauri 2 + Rust 实现的跨平台远程运维工作台（SSH / SFTP / 端口转发 / 本地终端）。"
   }
 }

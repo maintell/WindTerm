@@ -1,0 +1,56 @@
+# 发版：只在推 v* 标签（或手动派发且指向该标签）时跑一条 runner，
+# 只做「编译 + 打包 + 上传 Release」。格式、测试、文档对账在本地完成
+# （`pwsh scripts/check-all.ps1 -WithE2e`），不放进流水线——runner 只干编译与发布。
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# 固定并发组：tag 推送与手动派发不能各成一组并行抢同一批资产
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    # 手动派发必须指向发版标签，否则就是在给任意提交打包
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: 编译（release）
+        run: cargo build --release -p wt-desktop
+
+      - name: 打成便携 zip
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $dist = "dist"
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          Copy-Item "target/release/wt-desktop.exe" (Join-Path $dist "WindTerm.exe")
+          Compress-Archive -Path (Join-Path $dist "WindTerm.exe") `
+            -DestinationPath (Join-Path $dist "WindTerm-$tag-windows-x64-portable.zip") -Force
+          $hash = (Get-FileHash (Join-Path $dist "WindTerm-$tag-windows-x64-portable.zip") -Algorithm SHA256).Hash.ToLower()
+          "$hash  WindTerm-$tag-windows-x64-portable.zip" | Set-Content (Join-Path $dist "SHA256SUMS.txt")
+          Get-ChildItem $dist | ForEach-Object { "$($_.Name) $($_.Length) 字节" }
+
+      - name: 发布到 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/SHA256SUMS.txt
+          fail_on_unmatched_files: true
+          generate_release_notes: true
