@@ -323,6 +323,12 @@ def test_ssh_connect(server, wt):
 - 改权限（`FIL-002` 的 `SETSTAT`）：选中 `notes.txt` → 「权限」→ 填 `600` → 确定，
   列表里的权限列必须变成 `-rw-------`；单测另验权限位变了而**类型位没被改掉**
   （还是 `S_IFREG`）；
+- 上传保留修改时间（`FIL-018` / `FIL-002` 的 `SETSTAT mtime`）：本地副本用
+  `utimesSync` 设成 `1600000000`，走真实上传链路后读 `__wt.files.mtimes`（原始秒数，
+  不解析格式化文本）断言远端也是 `1600000000`——mock 默认基准是 `1700000000+内容长度`，
+  值明显不同，能验出「真的设进去了」而不是碰巧。单测两层：`set_mtime` 协议能力、
+  `SftpWriter::finish_with_mtime` 完整 writer 链路；SETSTAT 失败时 `mtimeKept=false`
+  但上传仍成功（内容比时间重要）；
 - 权限位（`FIL-002`）：普通文件那一列是 `-rw-r--r--`、链接以 `l` 开头——按 `st_mode` 的
   类型位与 rwx 位算出来，不是硬编码；单测另验类型位（`S_IFLNK` / `S_IFREG`）与 0644；
 - 符号链接（`FIL-002` / `FIL-001` AC-2）：种一个正常链接与一个断链，面板里前者显示

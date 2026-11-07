@@ -247,6 +247,20 @@ impl SftpClient {
         })
     }
 
+    /// 改修改时间（`FIL-002` 的 `SSH_FXP_SETSTAT`，SFTP v3 的 `mtime` 是 Unix 秒）。
+    ///
+    /// 「上传保留本地 mtime」（`FIL-018`）就靠它：文件写完、`rename` 之前把源文件的
+    /// 修改时间设到远端，备份/增量同步才不会因为「远端时间变成上传时间」而全量重传。
+    /// 不支持时由调用方降级（内容比时间重要），这里只如实把服务端错误报出去。
+    pub async fn set_mtime(&self, path: &str, secs: u32) -> Result<(), WtError> {
+        use russh_sftp::protocol::FileAttributes;
+        let mut attrs = FileAttributes::empty();
+        attrs.mtime = Some(secs);
+        self.inner.set_metadata(path, attrs).await.map_err(|e| {
+            sftp_error(&format!("无法修改 {path} 的修改时间"), e.to_string())
+        })
+    }
+
     /// 读整个文件。
     pub async fn read_file(&self, path: &str) -> Result<Vec<u8>, WtError> {
         self.inner
@@ -334,6 +348,8 @@ impl SftpClient {
 pub struct SftpWriter {
     file: russh_sftp::client::fs::File,
     written: u64,
+    /// 远端路径：收尾时可能要 SETSTAT mtime（上传保留本地修改时间）
+    path: String,
     /// 只作所有权守卫，不被读取
     #[allow(dead_code)]
     owner: SftpClient,
@@ -350,6 +366,7 @@ impl SftpWriter {
         Ok(Self {
             file,
             written: 0,
+            path: path.to_string(),
             owner: client,
         })
     }
@@ -371,12 +388,27 @@ impl SftpWriter {
 
     /// 收尾：`close` 会等远端确认，再放掉连接。
     pub async fn finish(self) -> Result<u64, WtError> {
+        Ok(self.finish_with_mtime(None).await?.0)
+    }
+
+    /// 收尾并（可选）把远端文件的修改时间设成源文件的（`FIL-018`：上传保留 mtime）。
+    /// 返回 `(写入字节数, 有没有保留成功)`。
+    ///
+    /// 顺序很关键：先 `close` 让内容落定，再 `SETSTAT mtime`——反过来的话后续写入
+    /// 可能把时间又改回「刚刚」。设时间失败**不推翻已成功的上传**：内容比时间重要，
+    /// 但返回 `false` 让调用方如实提示，不静默当成功。
+    pub async fn finish_with_mtime(self, mtime: Option<u32>) -> Result<(u64, bool), WtError> {
         let written = self.written;
         self.file
             .close()
             .await
             .map_err(|e| sftp_error("关闭上传文件失败", e.to_string()))?;
-        Ok(written)
+        let mut mtime_kept = false;
+        if let Some(secs) = mtime {
+            // 借 owner 发 SETSTAT（set_mtime 需要 &self），同一条连接、close 之后
+            mtime_kept = self.owner.set_mtime(&self.path, secs).await.is_ok();
+        }
+        Ok((written, mtime_kept))
     }
 }
 

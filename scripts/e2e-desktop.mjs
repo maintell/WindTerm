@@ -2724,6 +2724,30 @@ try {
   );
   check("分块上传后远端出现该文件", bigUploaded !== null, "200 KB");
 
+  // 上传保留本地修改时间（FIL-018 / FIL-002 的 SETSTAT mtime）：
+  // 给本地副本设一个明显不同的 mtime，上传后读远端列目录回报的原始秒数，
+  // 必须与设定值相等——只看「文件出现在列表里」证明不了时间被保留。
+  const stampPath = join(DATA_DIR, "stamped.txt");
+  writeFileSync(stampPath, Buffer.from("keep my mtime"));
+  const stampSec = 1_600_000_000; // 2020-09-13，和 mock 默认基准 1_700_000_000 明显不同
+  const stampWhen = new Date(stampSec * 1000);
+  utimesSync(stampPath, stampWhen, stampWhen);
+  await setFileInput("#files-upload", [stampPath]);
+  const stamped = await waitFor(
+    async () => {
+      const f = await cdp.eval(`window.__wt.files`);
+      return f.mtimes && Object.hasOwn(f.mtimes, "stamped.txt") ? f : null;
+    },
+    { timeout: 60000, label: "带 mtime 的文件上传" },
+  ).catch(() => null);
+  check(
+    "上传后远端文件的修改时间等于本地源文件（FIL-018 SETSTAT mtime）",
+    stamped !== null && stamped.mtimes["stamped.txt"] === stampSec,
+    stamped
+      ? `本地 ${stampSec} → 远端 ${stamped.mtimes["stamped.txt"]}`
+      : `没读到 stamped.txt 的 mtime（msg=${(await cdp.eval(`window.__wt.files`)).msg}）`,
+  );
+
   // 16d-4b. 远端文件编辑（`FIL-005`）：下载到本地 → 改 → 写回远端
   await clickFileRow("notes.txt");
   await clickElement("#files-edit");

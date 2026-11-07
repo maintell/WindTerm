@@ -4483,9 +4483,22 @@ async function uploadFiles(picked, targetDir = sftpPath) {
         setFilesMsg(`上传中… ${file.name} ${pct}%`);
         offset = written;
       }
-      await withDeadline(invoke("sftp_upload_end", { id }), 20000, "结束上传");
+      // 保留本地文件的修改时间（FIL-018）：前端从 File.lastModified（毫秒）算出 Unix 秒，
+      // 后端在 close 之后 SETSTAT mtime。新建空文件那条路径没有源文件，不传这个参数。
+      const mtimeSecs = Number.isFinite(file.lastModified) && file.lastModified > 0
+        ? Math.floor(file.lastModified / 1000)
+        : undefined;
+      const end = await withDeadline(
+        invoke("sftp_upload_end", { id, mtimeSecs }),
+        20000,
+        "结束上传",
+      );
       id = null;
       done += 1;
+      // SETSTAT 失败不推翻上传成功，但要如实说出来，不假装保留了时间
+      if (mtimeSecs !== undefined && end && end.mtimeKept === false) {
+        setFilesMsg(`已上传 ${file.name}（服务端不支持保留修改时间）`);
+      }
     } catch (e) {
       if (id) await invoke("sftp_upload_abort", { id }).catch(() => {});
       setFilesMsg(`上传 ${file.name} 失败：${e}`);
@@ -6884,7 +6897,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-118",
+  ui: "wt-ui-119",
   /**
    * 验收用：刷新会话树并等它**画完**。
    *
@@ -7059,6 +7072,8 @@ window.__wt = {
       selected: selectedEntry?.name ?? null,
       /** 最近一次上传的进度快照：`{name,total,last,events}` */
       upload: lastUpload,
+      /** 原始修改时间映射（name → Unix 秒），验收读它，不去解析 DOM 的格式化文本 */
+      mtimes: Object.fromEntries(filesEntries.map((e) => [e.name, e.mtime ?? null])),
     };
   },
   /** 当前激活会话的句柄 */

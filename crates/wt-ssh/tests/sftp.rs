@@ -126,6 +126,41 @@ async fn creates_renames_and_removes_over_real_channel() {
     );
 }
 
+/// 上传保留本地 mtime（FIL-018）：写句柄收尾时 SETSTAT 的时间必须能被后续列目录读回。
+/// 这是「上传链路」的闭环证据——只测 set_mtime 本身证明不了 writer 真的调了它。
+#[tokio::test]
+async fn streaming_writer_finish_keeps_source_mtime() {
+    let server = MockSshServer::start().await;
+    let conn = SshConnection::connect_password(&cfg(server.port), "secret", HostKeyPolicy::AcceptAll)
+        .await
+        .expect("连接应成功");
+    let sftp = SftpClient::open(conn).await.expect("应能打开 sftp 子系统");
+
+    let mut writer = SftpWriter::create(sftp, "/photo.jpg")
+        .await
+        .expect("创建写句柄");
+    writer.write_chunk(b"jpegdata").await.expect("写块");
+    let want = 1_550_000_000u32;
+    let (total, kept) = writer
+        .finish_with_mtime(Some(want))
+        .await
+        .expect("收尾并设 mtime");
+    assert_eq!(total, 8);
+    assert!(kept, "SETSTAT mtime 应成功（mock 支持）");
+
+    // 换一条连接列目录，确认时间是设进去的值而不是默认基准
+    let conn = SshConnection::connect_password(&cfg(server.port), "secret", HostKeyPolicy::AcceptAll)
+        .await
+        .expect("再连一次应成功");
+    let reader = SftpClient::open(conn).await.expect("打开 sftp");
+    let entries = reader.list_dir("/").await.expect("列目录");
+    let e = entries
+        .iter()
+        .find(|e| e.name == "photo.jpg")
+        .expect("photo.jpg 应在列表里");
+    assert_eq!(e.mtime, Some(want), "远端修改时间必须等于源文件：{e:?}");
+}
+
 #[tokio::test]
 async fn streaming_writer_takes_chunks_across_calls() {
     let server = MockSshServer::start().await;
@@ -236,6 +271,33 @@ async fn lists_symlinks_with_target_and_broken_flag() {
     let file_mode = file.mode.expect("普通文件也该有 mode");
     assert_eq!(file_mode & 0o170000, 0o100000, "real.txt 应是普通文件");
     assert_eq!(file_mode & 0o777, 0o644, "mock 给的权限是 0644");
+}
+
+/// SETSTAT mtime（FIL-002）：设进去的 Unix 秒必须在列目录的 mtime 里读得回来。
+/// 这是「上传保留本地修改时间」（FIL-018）能成立的服务端侧前提。
+#[tokio::test]
+async fn set_mtime_changes_reported_time() {
+    let server = MockSshServer::start().await;
+    {
+        let mut fs = server.fs.lock().await;
+        fs.insert("/backup.tar".into(), b"data".to_vec());
+    }
+    let conn = SshConnection::connect_password(&cfg(server.port), "secret", HostKeyPolicy::AcceptAll)
+        .await
+        .expect("连接应成功");
+    let sftp = SftpClient::open(conn).await.expect("应能打开 sftp 子系统");
+
+    // 默认 mtime 是「基准 + 内容长度」，设一个明显不同的时间
+    let want = 1_600_000_000u32;
+    sftp.set_mtime("/backup.tar", want)
+        .await
+        .expect("设置修改时间");
+    let entries = sftp.list_dir("/").await.expect("列目录");
+    let e = entries
+        .iter()
+        .find(|e| e.name == "backup.tar")
+        .expect("backup.tar 应在列表里");
+    assert_eq!(e.mtime, Some(want), "修改时间应变成设进去的值：{e:?}");
 }
 
 #[tokio::test]

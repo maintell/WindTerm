@@ -2892,9 +2892,25 @@ async fn sftp_upload_chunk(
     result.map_err(|e| e.to_string())
 }
 
+/// 上传收尾结果：写了多少字节、有没有成功保留源文件的修改时间。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UploadEndDto {
+    bytes: u64,
+    mtime_kept: bool,
+}
+
 /// 收尾：刷完缓冲并关闭远端文件，返回总字节数。
+///
+/// `mtime_secs` 由前端从 `File.lastModified` 传来（`FIL-018`：上传保留本地修改时间）。
+/// SETSTAT mtime 在 writer 内部、`close` 之后用**同一条连接**完成；失败不推翻已成功的
+/// 上传（内容比时间重要），但 `mtime_kept=false` 会让前端如实提示，不假装保留了。
 #[tauri::command]
-async fn sftp_upload_end(state: State<'_, AppState>, id: String) -> Result<u64, String> {
+async fn sftp_upload_end(
+    state: State<'_, AppState>,
+    id: String,
+    mtime_secs: Option<u32>,
+) -> Result<UploadEndDto, String> {
     let writer = {
         state
             .uploads
@@ -2903,7 +2919,11 @@ async fn sftp_upload_end(state: State<'_, AppState>, id: String) -> Result<u64, 
             .remove(&id)
             .ok_or_else(|| format!("[SFTP_UPLOAD_UNKNOWN] 没有 id 为 {id} 的上传"))?
     };
-    writer.finish().await.map_err(|e| e.to_string())
+    let (bytes, mtime_kept) = writer
+        .finish_with_mtime(mtime_secs)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(UploadEndDto { bytes, mtime_kept })
 }
 
 /// 放弃这次上传：丢掉写句柄（连接随之释放）。

@@ -38,6 +38,11 @@ pub type MockLinks = Arc<AsyncMutex<HashMap<String, String>>>;
 /// 没被改过的路径用 readdir 里的默认值（文件 0644、目录 0755）。
 pub type MockModes = Arc<AsyncMutex<HashMap<String, u32>>>;
 
+/// mock 的修改时间覆盖表：路径 → Unix 秒（`FIL-002` 的 `SETSTAT` mtime）。
+/// `set_mtime` 设过的值记在这里，readdir / stat 回报时优先用它，
+/// 没设过的仍按「内容长度偏移」的确定性默认值。
+pub type MockTimes = Arc<AsyncMutex<HashMap<String, u32>>>;
+
 /// 内存文件系统上的 SFTP 服务端（只实现列目录/读/写/stat）。
 ///
 /// 刻意不完整——它的价值是让「客户端真的会讲 SFTP」可验证，
@@ -46,15 +51,17 @@ pub struct MemSftp {
     fs: MockFs,
     links: MockLinks,
     modes: MockModes,
+    times: MockTimes,
     dir_sent: bool,
 }
 
 impl MemSftp {
-    pub fn new(fs: MockFs, links: MockLinks, modes: MockModes) -> Self {
+    pub fn new(fs: MockFs, links: MockLinks, modes: MockModes, times: MockTimes) -> Self {
         Self {
             fs,
             links,
             modes,
+            times,
             dir_sent: false,
         }
     }
@@ -101,6 +108,7 @@ impl russh_sftp::server::Handler for MemSftp {
         };
         let fs = self.fs.lock().await;
         let modes = self.modes.lock().await;
+        let times = self.times.lock().await;
         // 先快照键：判断「这一项是不是目录」要再查一遍前缀，边迭代边借用过不了编译
         let keys: Vec<String> = fs.keys().cloned().collect();
         let files = keys
@@ -129,17 +137,17 @@ impl russh_sftp::server::Handler for MemSftp {
                 };
                 let mut attrs = FileAttributes::empty();
                 attrs.permissions = Some(modes.get(&full).copied().unwrap_or(default_mode));
-                // 修改时间用「内容长度」做偏移：mock 没有真实时钟，但又要让「按时间排序」
-                // 有确定顺序可断言——内容越长时间越晚，两个已知大小的文件就能验出排序。
-                // 目录没有内容，固定给基准时间。
-                attrs.mtime = Some(
+                // 修改时间：SETSTAT mtime 设过的优先，否则用「内容长度」做确定性偏移
+                // （内容越长时间越晚，两个已知大小的文件就能验出排序；目录固定基准时间）。
+                // 优先项让「上传保留本地 mtime」这类断言能真的读到设进去的值。
+                attrs.mtime = Some(times.get(&full).copied().unwrap_or(
                     1_700_000_000
                         + if is_dir {
                             0
                         } else {
                             fs.get(&full).map(|v| v.len() as u32).unwrap_or(0)
                         },
-                );
+                ));
                 attrs.size = Some(if is_dir {
                     0
                 } else {
@@ -244,13 +252,18 @@ impl russh_sftp::server::Handler for MemSftp {
             }
         }
         let mut modes = self.modes.lock().await;
+        let mut times = self.times.lock().await;
         for (from, to) in pairs {
-            // 目标原有的权限记录必须先丢掉：`rename` 换掉的是 inode，目标原来的
+            // 目标原有的权限/时间记录必须先丢掉：`rename` 换掉的是 inode，目标原来的
             // 属性不再存在。留着它会让「临时文件没设权限」也看起来是保留成功的
             // ——变异验证就是这么发现用例没生效的。
             modes.remove(&to);
             if let Some(mode) = modes.remove(&from) {
-                modes.insert(to, mode);
+                modes.insert(to.clone(), mode);
+            }
+            times.remove(&to);
+            if let Some(t) = times.remove(&from) {
+                times.insert(to, t);
             }
         }
         Ok(ok_status(id))
@@ -346,14 +359,16 @@ impl russh_sftp::server::Handler for MemSftp {
             .get(&path)
             .copied()
             .unwrap_or(0o644 | 0o100000);
+        let mtime = self.times.lock().await.get(&path).copied();
         let mut attrs = FileAttributes::empty();
         attrs.size = Some(size);
         attrs.permissions = Some(mode);
+        attrs.mtime = mtime;
         Ok(Attrs { id, attrs })
     }
 
-    /// 改元数据（`FIL-002` 的 `SETSTAT`）：这里只认权限位，其它字段照收不报错，
-    /// 但不会假装支持（`uid/gid/mtime` 尚未实现，mock 也没法模拟）。
+    /// 改元数据（`FIL-002` 的 `SETSTAT`）：认权限位与 mtime，别的字段照收不报错，
+    /// 但不会假装支持（`uid/gid` 尚未实现，mock 也没法模拟）。
     async fn setstat(
         &mut self,
         id: u32,
@@ -366,7 +381,10 @@ impl russh_sftp::server::Handler for MemSftp {
             return Err(StatusCode::NoSuchFile);
         }
         if let Some(mode) = attrs.permissions {
-            self.modes.lock().await.insert(path, mode);
+            self.modes.lock().await.insert(path.clone(), mode);
+        }
+        if let Some(mtime) = attrs.mtime {
+            self.times.lock().await.insert(path, mtime);
         }
         Ok(ok_status(id))
     }
@@ -394,6 +412,7 @@ struct MockServer {
     fs: MockFs,
     links: MockLinks,
     modes: MockModes,
+    times: MockTimes,
     /// 已经接受过多少个客户端连接。`SES-024` AC-3 的直接证据：
     /// 「第二条经同一跳板机的连接不该让它的会话数再涨」只能靠这个数说话。
     sessions: Arc<std::sync::atomic::AtomicUsize>,
@@ -409,6 +428,7 @@ impl russh::server::Server for MockServer {
             fs: self.fs.clone(),
             links: self.links.clone(),
             modes: self.modes.clone(),
+            times: self.times.clone(),
             input_buf: String::new(),
             forward_stops: HashMap::new(),
         }
@@ -426,6 +446,8 @@ struct MockHandler {
     links: MockLinks,
     /// SFTP 子系统的权限位覆盖表（`SETSTAT`）
     modes: MockModes,
+    /// SFTP 子系统的修改时间覆盖表（`SETSTAT` mtime）
+    times: MockTimes,
     /// shell 收到的输入累积（按字符截断）。客户端是**逐键**发的，
     /// 想识别一段词就必须累积，否则永远匹配不到整词。
     input_buf: String,
@@ -578,7 +600,12 @@ impl russh::server::Handler for MockHandler {
             }
             "sftp" => {
                 session.channel_success(channel_id)?;
-                let handler = MemSftp::new(self.fs.clone(), self.links.clone(), self.modes.clone());
+                let handler = MemSftp::new(
+                    self.fs.clone(),
+                    self.links.clone(),
+                    self.modes.clone(),
+                    self.times.clone(),
+                );
                 // 必须 spawn：在 handler 里 await 服务端会挡住连接循环，
                 // 客户端发来的报文永远读不到（表现为服务端「立刻退出」）
                 tokio::spawn(async move {
@@ -851,6 +878,8 @@ pub struct MockSshServer {
     pub port: u16,
     /// 权限位覆盖：`SETSTAT` 改过的路径记在这里，列目录时优先生效
     pub modes: MockModes,
+    /// 修改时间覆盖：`SETSTAT` mtime 改过的路径记在这里，列目录时优先生效
+    pub times: MockTimes,
     /// SFTP 子系统的内存文件系统：用例在连接前预置、连接后检查
     pub fs: MockFs,
     /// 符号链接表：链接路径 → 目标（`FIL-002`）。目标不存在就是断链
@@ -884,11 +913,13 @@ impl MockSshServer {
             fs: Arc::new(AsyncMutex::new(HashMap::new())),
             links: Arc::new(AsyncMutex::new(HashMap::new())),
             modes: Arc::new(AsyncMutex::new(HashMap::new())),
+            times: Arc::new(AsyncMutex::new(HashMap::new())),
             sessions: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }));
         let fs = server.fs.clone();
         let links = server.links.clone();
         let modes = server.modes.clone();
+        let times = server.times.clone();
         let sessions = server.sessions.clone();
         tokio::spawn(server.run_on_socket(config, listener));
 
@@ -900,6 +931,7 @@ impl MockSshServer {
             fs,
             links,
             modes,
+            times,
             sessions,
         }
     }
