@@ -29,7 +29,7 @@ clippy 零告警、文档对账 PASSED、端到端 `N/N 项通过`，退出码 0
 |---|---|---|
 | `GUI-015` RDP 客户端 / `SES-005` RDP 会话 | 需要真服务端联调：NLA、剪贴板重定向、图形帧都要对端配合；**用户已定「暂时不推进」** | 一台能连的 RDP 机器（主机/端口/账号），且用户解除暂缓 |
 | `GUI-018` RDP 剪贴板重定向 / `GUI-022` CredSSP/NLA | 同上，且 NLA 依赖 Windows SSPI；同样暂缓 | 同上 |
-| `SYS-008` 多平台打包 | 工作流与配置已就位：`.github/workflows/release.yml`（推 `v*` 标签 → 单条 Windows runner 编译 + 便携 zip + Release）、`bundle.active=true`（目标 nsis）。**缺的是一次真实推标签触发的验证**；MSI 未本机跑过 `tauri build`，macOS 公证与 Linux 包还没有 | 首次推 `v*` 标签跑通 CI；确认图标与 MSI/公证/多平台包的渠道 |
+| `SYS-008` 多平台打包 | **便携 zip 链路本地已跑通**：`scripts/verify-package.ps1` 复现 workflow 打包步骤并自校验（exe→zip→SHA256SUMS→解包字节一致→无 BOM→哈希对得上），本机实测通过。仍缺：① 首次推 `v*` 标签触发 CI（仓库至今 0 个 tag、workflow 没跑过）；② 配置与产物不一致——`bundle.targets: ["nsis"]` 承诺 NSIS，但本机无 `cargo-tauri`/NSIS 工具链、CI 只做 `cargo build --release` + 便携 zip，NSIS/MSI 从未产出，需定调（让 CI 真跑 `tauri build`，或把 targets 对齐实际产物）；③ macOS 公证、Linux 包 | 首次推 `v*` 标签；定 NSIS 取舍；确认图标与多平台渠道 |
 | `SET-013` MobaXterm 设置导入 | 只导会话树；配色/字体/快捷键的键名不能靠猜 | 一份真实的 `MobaXterm.ini`（删掉密码等敏感内容） |
 
 > RDP/VNC 是用户 2026-11-06 明确「暂时不推进」的一块，已记为暂缓、不当作缺陷。
@@ -109,6 +109,8 @@ clippy 零告警、文档对账 PASSED、端到端 `N/N 项通过`，退出码 0
 ## 6. 建议的下一步顺序
 
 1. 纯工作量那一组里挑「能独立自证」的子项继续推进（本会话一直在做：FIL-011 收尾 → FIL-005 自动检测）。
-2. **首次推 `v*` 标签跑通 CI**，让「能装到别人机器上」成为事实，补齐 `SYS-008` 的验证证据。
+2. **首次推 `v*` 标签跑通 CI**，让「能装到别人机器上」成为事实。便携 zip 链路已由
+   `scripts/verify-package.ps1` 在本地验证过，但仓库至今 0 个 tag、workflow 没真跑过；
+   另外要定 `bundle.targets: nsis` 与实际只产出便携 zip 的不一致（见第 3 节）。
 3. 给一份真实的 `MobaXterm.ini`（删敏感内容）→ 补 `SET-013` 的设置导入。
 4. 上面几件都不急时，再回头定 `SEC-003` DSA 的取舍；RDP/VNC 保持暂缓，等用户改主意。
