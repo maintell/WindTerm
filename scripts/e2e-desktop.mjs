@@ -6853,6 +6853,23 @@ try {
     comspec === true,
     comspec === true ? "COMSPEC 被 cmd 展开" : "没等到 cmd.exe",
   );
+
+  // COLORTERM/TERM 注入（TER-024 明确要求）：pty.rs 在 spawn 时设了
+  // COLORTERM=truecolor 与 TERM=xterm-256color，但一直没验过「子进程真的收到」。
+  // 光读源码不等于生效——在真起的 cmd 里 echo 出来才算数。
+  await typeText("echo %COLORTERM%/%TERM%");
+  const colorterm = await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.screen()`);
+      return t.includes("truecolor/xterm-256color") ? true : null;
+    },
+    { timeout: 15000, label: "COLORTERM/TERM 注入" },
+  ).catch(() => null);
+  check(
+    "本地终端子进程真的收到 COLORTERM=truecolor 与 TERM=xterm-256color（TER-024）",
+    colorterm === true,
+    colorterm === true ? "echo 读回 truecolor/xterm-256color" : "没读到注入的环境变量",
+  );
   await closeAllTabs();
 
   // 复原：这是会写进配置文件的全局设置，留着会污染后面所有用例
