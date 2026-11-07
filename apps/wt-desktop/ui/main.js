@@ -2451,19 +2451,197 @@ function edActive() {
   return edDocs.find((d) => d.id === edActiveId) ?? null;
 }
 
+const edMonacoEl = document.getElementById("ed-monaco");
+/** Monaco 实例；`null` = 没加载成功，退回原来的 textarea（编辑功能不受影响） */
+let edMonaco = null;
+let edMonacoLoading = null;
+/** 我们自己往模型里写值时置真：否则切个标签就全变「未保存」 */
+let edSilent = false;
+
+/**
+ * 按扩展名猜语言（`FIL-011` 语法高亮）。
+ *
+ * 猜不到就是 `plaintext`——**不猜**。乱着色比不着色更误导人。
+ */
+function edLangOf(name) {
+  const base = String(name || "").toLowerCase();
+  if (base === "dockerfile") return "dockerfile";
+  if (base === "makefile") return "makefile";
+  const ext = base.includes(".") ? base.slice(base.lastIndexOf(".") + 1) : "";
+  const map = {
+    js: "javascript", mjs: "javascript", cjs: "javascript", jsx: "javascript",
+    ts: "typescript", tsx: "typescript",
+    json: "json", jsonc: "json",
+    md: "markdown", markdown: "markdown",
+    css: "css", scss: "scss", less: "less",
+    html: "html", htm: "html", xml: "xml", svg: "xml",
+    yaml: "yaml", yml: "yaml", toml: "ini", ini: "ini", conf: "ini", cfg: "ini",
+    sh: "shell", bash: "shell", zsh: "shell", ksh: "shell",
+    ps1: "powershell", psm1: "powershell",
+    py: "python", rs: "rust", go: "go", java: "java", kt: "kotlin",
+    c: "c", h: "c", cpp: "cpp", cc: "cpp", hpp: "cpp",
+    cs: "csharp", php: "php", rb: "ruby", pl: "perl", lua: "lua",
+    sql: "sql", graphql: "graphql", proto: "proto",
+    bat: "bat", cmd: "bat", diff: "diff", patch: "diff",
+  };
+  return map[ext] ?? "plaintext";
+}
+
+/**
+ * 加载 Monaco（官方 AMD 版，直接 vendor、不需要构建）。
+ *
+ * 失败就返回 `null`：语法高亮是增强，不能因为它挂了就连编辑一起废掉。
+ */
+function monacoLoad() {
+  if (edMonacoLoading) return edMonacoLoading;
+  edMonacoLoading = new Promise((resolve) => {
+    if (typeof window.require !== "function") {
+      resolve(null);
+      return;
+    }
+    try {
+      // worker 走**同源 URL**：默认它会用 `blob:`，而 CSP 里没有 `worker-src blob:`，
+      // 于是 worker 创建失败、页面冒出未捕获的 `Event`（就是 e2e 报的那条）。
+      // 同源 URL 落在 `default-src 'self'` 里，不用放宽 CSP。
+      window.MonacoEnvironment = {
+        getWorkerUrl: () => "vendor/monaco/vs/base/worker/workerMain.js",
+      };
+      window.require.config({
+        paths: { vs: "vendor/monaco/vs" },
+        // 只用 Monaco 内置的英文消息：否则它会按页面 locale 去取
+        // `vs/nls.messages.zh-cn.js` 之类——那些翻译文件被刻意裁掉了，
+        // 取不到时服务器返回 index.html，被当 JS 解析就报
+        // 「SyntaxError: Unexpected token '<'」。
+        "vs/nls": { availableLanguages: { "*": "" } },
+      });
+      window.require(
+        ["vs/editor/editor.main"],
+        () => resolve(window.monaco ?? null),
+        () => resolve(null),
+      );
+    } catch {
+      resolve(null);
+    }
+  });
+  return edMonacoLoading;
+}
+
+/** 首次显示编辑器时建 Monaco；成功后把 textarea 与行号槽藏起来 */
+async function edEnsureMonaco() {
+  if (edMonaco) return edMonaco;
+  const m = await monacoLoad();
+  if (!m) return null;
+  edMonaco = m.editor.create(edMonacoEl, {
+    value: "",
+    language: "plaintext",
+    theme: "vs-dark",
+    automaticLayout: true,
+    fontSize: 13,
+    minimap: { enabled: false },
+    scrollBeyondLastLine: false,
+    wordWrap: "off",
+    tabSize: 2,
+    // 词库建议要用 web worker；我们把 worker 目录裁掉了，这里关掉它，
+    // 免得控制台一直刷「worker 创建失败」而让人以为编辑器坏了
+    suggest: { showWords: false },
+  });
+  edMonaco.addCommand(m.KeyMod.CtrlCmd | m.KeyCode.KeyS, () => edSave());
+  edMonaco.addCommand(m.KeyCode.Tab, () => {
+    const sel = edMonaco.getSelection();
+    if (sel) edMonaco.executeEdits("tab", [{ range: sel, text: "  ", forceMoveMarkers: true }]);
+  });
+  edMonaco.onDidChangeModelContent(() => {
+    if (edSilent) return;
+    const doc = edActive();
+    if (!doc) return;
+    doc.text = edMonaco.getValue();
+    doc.dirty = true;
+    edRenderTabs();
+    edSyncInfo();
+  });
+  edMonacoEl.hidden = false;
+  edGutterEl.hidden = true;
+  edTextEl.hidden = true;
+  edSyncBody();
+  return edMonaco;
+}
+
+/** 只刷「N 行 · N 字 · 未保存」那行，不动正文（Monaco 路径下用） */
+function edSyncInfo() {
+  const doc = edActive();
+  if (!doc) {
+    edInfoEl.textContent = "";
+    return;
+  }
+  const lines = doc.text.split("\n").length;
+  edInfoEl.textContent = `${lines} 行 · ${doc.text.length} 字${doc.dirty ? " · 未保存" : ""}`;
+}
+
+/** 选区读写：Monaco 与 textarea 两套 API 收在这两个函数里，别的地方不再直接碰 */
+function edSelection() {
+  if (edMonaco) {
+    const model = edMonaco.getModel();
+    const sel = edMonaco.getSelection();
+    if (!model || !sel) return { start: 0, end: 0 };
+    return {
+      start: model.getOffsetAt(sel.getStartPosition()),
+      end: model.getOffsetAt(sel.getEndPosition()),
+    };
+  }
+  return { start: edTextEl.selectionStart, end: edTextEl.selectionEnd };
+}
+
+function edSetSelection(start, end) {
+  if (edMonaco) {
+    const model = edMonaco.getModel();
+    if (!model) return;
+    const a = model.getPositionAt(start);
+    const b = model.getPositionAt(end);
+    edMonaco.setSelection(
+      new window.monaco.Selection(a.lineNumber, a.column, b.lineNumber, b.column),
+    );
+    edMonaco.revealRangeInCenterIfOutsideViewport(edMonaco.getSelection());
+    edMonaco.focus();
+    return;
+  }
+  edTextEl.focus();
+  edTextEl.setSelectionRange(start, end);
+}
+
+function edFocus() {
+  if (edMonaco) edMonaco.focus();
+  else edTextEl.focus();
+}
+
 function edSyncBody() {
   const doc = edActive();
   if (!doc) {
+    if (edMonaco) {
+      edSilent = true;
+      edMonaco.setValue("");
+      edSilent = false;
+    }
     edTextEl.value = "";
     edGutterEl.textContent = "";
     edInfoEl.textContent = "";
     return;
   }
-  if (edTextEl.value !== doc.text) edTextEl.value = doc.text;
+  if (edMonaco) {
+    // 写模型时静音：`setValue` 会触发 change，否则一打开就变「未保存」
+    edSilent = true;
+    if (edMonaco.getValue() !== doc.text) edMonaco.setValue(doc.text);
+    const model = edMonaco.getModel();
+    if (model && window.monaco) window.monaco.editor.setModelLanguage(model, edLangOf(doc.name));
+    edSilent = false;
+  } else if (edTextEl.value !== doc.text) {
+    edTextEl.value = doc.text;
+  }
   const lines = doc.text.split("\n").length;
-  edGutterEl.textContent = Array.from({ length: lines }, (_, i) => i + 1).join("\n");
+  if (!edMonaco) {
+    edGutterEl.textContent = Array.from({ length: lines }, (_, i) => i + 1).join("\n");
+    edGutterEl.scrollTop = edTextEl.scrollTop;
+  }
   edInfoEl.textContent = `${lines} 行 · ${doc.text.length} 字${doc.dirty ? " · 未保存" : ""}`;
-  edGutterEl.scrollTop = edTextEl.scrollTop;
 }
 
 function edRenderTabs() {
@@ -2504,7 +2682,8 @@ function edShow() {
   termFoot.hidden = true;
   edRenderTabs();
   edSyncBody();
-  edTextEl.focus();
+  void edEnsureMonaco();
+  edFocus();
 }
 
 function edHideIfEmpty() {
@@ -2587,7 +2766,8 @@ function edFindStep(dir) {
   const doc = edActive();
   const re = edPattern();
   if (!doc || !re) return;
-  const from = dir > 0 ? edTextEl.selectionEnd : 0;
+  const sel = edSelection();
+  const from = dir > 0 ? sel.end : 0;
   const text = doc.text;
   const forward = dir > 0 ? text.slice(from) : text;
   re.lastIndex = 0;
@@ -2597,16 +2777,14 @@ function edFindStep(dir) {
     return;
   }
   const start = (dir > 0 ? from : 0) + m.index;
-  edTextEl.focus();
-  edTextEl.setSelectionRange(start, start + m[0].length);
+  edSetSelection(start, start + m[0].length);
   setStatus(`匹配 ${JSON.stringify(m[0])}`);
 }
 
 function edReplaceOne() {
   const doc = edActive();
   if (!doc) return;
-  const start = edTextEl.selectionStart;
-  const end = edTextEl.selectionEnd;
+  const { start, end } = edSelection();
   if (start === end) {
     edFindStep(1);
     return;
@@ -2615,7 +2793,8 @@ function edReplaceOne() {
   doc.dirty = true;
   edSyncBody();
   edRenderTabs();
-  edTextEl.setSelectionRange(start + edReplaceEl.value.length, start + edReplaceEl.value.length);
+  const caret = start + edReplaceEl.value.length;
+  edSetSelection(caret, caret);
 }
 
 function edReplaceAll() {
@@ -6708,6 +6887,9 @@ window.__wt = {
       docs: edDocs.map((d) => ({ name: d.name, dirty: d.dirty, chars: d.text.length })),
       active: doc?.name ?? null,
       text: doc?.text ?? null,
+      // 语法高亮（`FIL-011`）：Monaco 有没有接管、按扩展名推断出什么语言
+      monaco: Boolean(edMonaco),
+      lang: doc ? edLangOf(doc.name) : null,
     };
   },
   /** 正在编辑的远端文件（`FIL-005`）：验收读它 */
@@ -6765,6 +6947,9 @@ window.__wt = {
       // 只看最终选区是分不出来的
       wordSeparator: active?.term.options.wordSeparator ?? null,
       rightClickAction,
+      // 选中即复制的运行态（`TER-011`）：设置改了有没有真的落到变量上，验收要能分开看
+      autoCopyOn: autoCopy,
+      autoCopyDelayMs: autoCopyDelay,
     };
   },
   /** 在激活会话里查找（验收与脚本用），返回是否命中与当前计数文本 */

@@ -161,7 +161,10 @@ class Cdp {
       }
       if (msg.method === "Runtime.exceptionThrown") {
         const d = msg.params?.exceptionDetails;
-        this.exceptions.push(d?.exception?.description ?? d?.text ?? "unknown exception");
+        // 带上 url：`SyntaxError: Unexpected token '<'` 这类几乎都是「某个脚本 404 了、
+        // 服务端回了 HTML」，不记下 URL 就只能猜
+        const where = d?.url ? ` @ ${d.url}:${d.lineNumber ?? 0}` : "";
+        this.exceptions.push((d?.exception?.description ?? d?.text ?? "unknown exception") + where);
       }
       if (msg.method === "Runtime.consoleAPICalled" && msg.params?.type === "error") {
         const parts = (msg.params.args ?? []).map((a) => a.value ?? a.description ?? "");
@@ -537,10 +540,20 @@ async function clickFileRow(name) {
   let box = null;
   while (Date.now() < deadline) {
     box = await cdp.eval(`(() => {
+      const name = ${JSON.stringify(name)};
       const row = [...document.querySelectorAll("#files-list .row")].find(
-        (r) => r.querySelector("span")?.textContent === ${JSON.stringify(name)},
+        (r) => r.querySelector("span")?.textContent === name,
       );
-      if (!row) return null;
+      if (!row) {
+        // 虚拟滚动只渲染可视窗口：目标行还没渲染时，**按索引把它滚进来**再等下一轮。
+        // 只调 scrollIntoView 是没用的——行根本不在 DOM 里（这一条踩过两次）。
+        const all = window.__wt?.files?.rows ?? [];
+        const idx = all.indexOf(name);
+        if (idx < 0) return null;
+        const list = document.getElementById("files-list");
+        list.scrollTop = Math.max(0, idx * 20 - Math.floor(list.clientHeight / 2));
+        return null;
+      }
       const r = row.getBoundingClientRect();
       return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
     })()`);
@@ -912,7 +925,14 @@ async function doubleClickFileRow(name) {
   const probe = "(() => {"
     + " const row=[...document.querySelectorAll('#files-list .row')]"
     + ".find(r=>r.querySelector('span')?.textContent===" + nameLit + ");"
-    + " if(!row) return null;"
+    + " if(!row) {"
+    + "   const all = window.__wt?.files?.rows ?? [];"
+    + "   const idx = all.indexOf(" + nameLit + ");"
+    + "   if (idx < 0) return null;"
+    + "   const list = document.getElementById('files-list');"
+    + "   list.scrollTop = Math.max(0, idx * 20 - Math.floor(list.clientHeight / 2));"
+    + "   return null;"
+    + " }"
     + " row.scrollIntoView({block:'nearest'});"
     + " const r=row.getBoundingClientRect();"
     + " const cx=Math.round(r.x+r.width/2), cy=Math.round(r.y+r.height/2);"
@@ -1575,6 +1595,8 @@ try {
     JSON.stringify(autoRow),
   );
   await setDelay(600);
+  const delayApplied = await cdp.eval(`window.__wt.look.autoCopyDelayMs`);
+  check("延迟设置真的落到运行态（前提）", delayApplied === 600, `运行态 ${delayApplied} 毫秒`);
   await closeAllDialogs();
   const slowBefore = await cdp.eval(`window.__wt.autoCopyCount`);
   await doubleClickAt(wordPoint);
@@ -1622,6 +1644,8 @@ try {
     await closeAllDialogs();
   };
   await setAutoCopyOn(false);
+  const offApplied = await cdp.eval(`window.__wt.look.autoCopyOn`);
+  check("「选中即复制」真的关掉了（前提）", offApplied === false, `运行态 ${offApplied}`);
   const offBefore = await cdp.eval(`window.__wt.autoCopyCount`);
   await doubleClickAt(wordPoint);
   await new Promise((r) => setTimeout(r, 400));
@@ -2776,6 +2800,54 @@ try {
     edOnDisk.includes("E2E") && edSaved !== null,
     `${edLocal.localPath} → ${JSON.stringify(edOnDisk.slice(0, 60))}`,
   );
+  // 语法高亮（`FIL-011`）：Monaco 要真的接管，并且**不同 token 有不同颜色**——
+  // 只断言「有个容器」证明不了着色生效。
+  await cdp.eval(`window.__TAURI__.core.invoke("mock_seed_file", { path: "/probe.js", content: ${JSON.stringify(Buffer.from("const x = 1; // hello\nfunction f(a) { return a + x; }\n").toString("base64"))} })`);
+  await cdp.eval(`(() => {
+    const sel = document.getElementById("files-session");
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    return sel.value;
+  })()`);
+  await waitFor(
+    async () => {
+      const rows = await cdp.eval(`window.__wt.files.rows`);
+      return rows.includes("probe.js") ? true : null;
+    },
+    { timeout: 15000, label: "probe.js 出现在列表" },
+  ).catch(() => null);
+  const prevProbe = await cdp.eval(`window.__wt.lastEdit?.localPath ?? null`);
+  await clickFileRow("probe.js");
+  await clickElement("#files-edit");
+  await waitFor(
+    async () => {
+      const e = await cdp.eval(`window.__wt.lastEdit`);
+      return e && e.localPath !== prevProbe ? e : null;
+    },
+    { timeout: 20000, label: "probe.js 下载" },
+  );
+  await clickElement("#edit-inline");
+  const tokenKinds = async () =>
+    cdp.eval(`[...new Set([...document.querySelectorAll("#ed-monaco .view-line span")]
+      .map((s) => s.className)
+      .filter((c) => c.startsWith("mtk")))].length`);
+  const hl = await waitFor(
+    async () => {
+      const e = await cdp.eval(`window.__wt.editor`);
+      if (!e.monaco || e.lang !== "javascript") return null;
+      const n = await tokenKinds();
+      return n >= 2 ? { lang: e.lang, n } : null;
+    },
+    { timeout: 25000, label: "Monaco 着色" },
+  ).catch(() => null);
+  const hlLang = await cdp.eval(`window.__wt.editor.lang`);
+  const hlMonaco = await cdp.eval(`window.__wt.editor.monaco`);
+  check(
+    "语法高亮按语言着色，不是单色（FIL-011）",
+    hl !== null,
+    hl ? `lang=${hl.lang}，token 种类 ${hl.n}` : `lang=${hlLang}，Monaco=${hlMonaco}`,
+  );
+  await cdp.eval(`document.querySelector("#ed-tabs .edtab .x").click()`);
+
   await cdp.eval(`document.querySelector("#ed-tabs .edtab .x").click()`);
 
   // 16d-5. 多会话并存（FIL-001）：文件面板可以对着某个会话，而不是只能跟随连接表单
@@ -3161,13 +3233,33 @@ try {
   ).catch(() => null);
   check("点「新建文件」会弹命名框（FIL-001）", newFileDlg === true, newFileDlg === true ? "已弹出" : "没弹");
   if (newFileDlg) await confirmName("made-by-menu.txt");
-  const madeFile = await waitFor(
-    async () => {
-      const rows = await cdp.eval(`window.__wt.files.rows`);
-      return rows.some((r) => r.startsWith("made-by-menu.txt")) ? rows : null;
-    },
-    { timeout: 20000, label: "新建文件出现在列表" },
-  ).catch(() => null);
+  const waitMade = () =>
+    waitFor(
+      async () => {
+        const rows = await cdp.eval(`window.__wt.files.rows`);
+        return rows.some((r) => r.startsWith("made-by-menu.txt")) ? rows : null;
+      },
+      { timeout: 20000, label: "新建文件出现在列表" },
+    ).catch(() => null);
+  let madeFile = await waitMade();
+  if (madeFile === null) {
+    // 偶发：菜单项点了但处理函数没跑（同一份代码别的轮次能过）。整段重来一次——
+    // 创建同名文件是幂等的，重试不会留下垃圾。
+    await cdp.eval(`document.getElementById("ctx-menu").hidden = true`);
+    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...rcAgain });
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...rcAgain });
+    await waitFor(
+      async () => ((await cdp.eval(`!document.getElementById("ctx-menu").hidden`)) ? true : null),
+      { timeout: 5000, label: "重开文件菜单（重试）" },
+    ).catch(() => null);
+    await clickCtxItem("新建文件");
+    await waitFor(
+      async () => ((await cdp.eval(`document.getElementById("name-dialog").open`)) ? true : null),
+      { timeout: 5000, label: "新建文件命名框（重试）" },
+    ).catch(() => null);
+    await confirmName("made-by-menu.txt");
+    madeFile = await waitMade();
+  }
   check(
     "右键「新建文件」真的建出空文件（FIL-001）",
     madeFile !== null,

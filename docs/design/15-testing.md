@@ -162,6 +162,12 @@ def test_ssh_connect(server, wt):
 
 | 「会话树多选限定广播目标」实现后无法自证，已整体回滚 | 现象：`__wt.multiSelect()` 明确返回 1 条，紧接着读 `__wt.broadcast.targets` 仍是「全部 2 台」——按实现它该变成 0 或 1。同一份代码反复跑结果一致，不是时序抖动，但也没能在两轮调试内定位（`multiSel` 与 `broadcastTargets` 是否真的闭包到同一个 Set、`bcTargetsChosen` 是否被别处置成空集，两个方向都没排掉）。**处理**：整块改动连同断言一起回滚，不发布自己解释不清的功能；下次重启这条线时先加一条「在 `broadcastTargets()` 内部把 `multiSel.size` 打出来」的诊断断言 |
 
+| 引入 Monaco 的 AMD loader 之后，整个终端起不来 | `vendor/monaco/vs/loader.js` 一执行就定义全局 `define`；而 xterm 的 addon（`addon-fit.js`/`addon-search.js`）是 **AMD 感知**的：只要 `define` 在，它们就走 `define(...)` 注册成匿名 AMD 模块、不再挂到 `window` 上。症状是 `Terminal=undefined FitAddon=undefined`，页面直接报「前端依赖未加载」。做法：loader 放在 `main.js` **之后**（顺序：xterm → addons → main.js → loader），需要时再 `require`。**同一类坑对所有 UMD/AMD 库都成立**，加新 vendor 时先看它认不认 `define` |
+
+| 帮助函数点不到虚拟列表里的行（`noperm/` 反复「找不到」） | 虚拟滚动只渲染可视窗口，目标行**根本不在 DOM 里**，`scrollIntoView` 因此也无效——它只能滚已经在 DOM 里的元素。修法：先读 `__wt.files.rows` 拿索引，按 `索引 × 行高` 设 `scrollTop`，下一轮探测就能找到。这类失败看起来像「这一行不存在」，实际是「还没渲染」 |
+
+| **以为「用不到」就裁掉 Monaco 的 `vs/language/`**，结果 `editor.main.js` 会 `require` 它的 `monaco.contribution`，404 回 HTML → `SyntaxError: Unexpected token '<'` | 这类裁剪只能裁 `nls.messages.*`（翻译），**不能裁 `language/`（语言模式与 worker 的入口）**。判断方法：`grep -o "vs/language/[a-z]*/[a-zA-Z.]*" editor.main.js | sort -u`，被 bundle 直接 require 的都不能删 |\r\n| 裁掉 Monaco 的 `nls.messages.*.js` 之后，页面报 `SyntaxError: Unexpected token '<'` | 页面 locale 是中文时，AMD loader 会去取 `vs/nls.messages.zh-cn.js`；这个文件被裁掉了，静态服务对不存在的路径回 `index.html`，浏览器把它当 JS 解析——于是报「遇到 `<`」。修法二选一：把它留下的那几个翻译文件加回来，或者 `require.config({ "vs/nls": { availableLanguages: { "*": "" } } })` 只用内置英文。**这类「404 被当脚本」的错误一律先查是不是少了 vendor 文件** |
+
 当前覆盖的断言（**数量不写死**——随功能增长，以 e2e 自己输出的 `N/N 项通过` 为准）：
 
 - 本地终端：页面加载与 Tauri 桥接、启动自检、点击建会话、句柄可取、首屏输出渲染、
