@@ -1151,11 +1151,65 @@ const MAX_EDIT_BYTES: u64 = 2 * 1024 * 1024;
 struct LocalTextDto {
     text: String,
     size: u64,
+    /// 实际按哪个编码解出来的（unchecked 时可能是自动探测出来的那个）
+    encoding: String,
+    /// 原文件有没有 UTF-8 BOM。保存时要按原样写回去，否则别的工具会看到「变了」
+    bom: bool,
+}
+
+/// 编辑器支持的编码（`FIL-011`「编码与换行符切换」的编码那半）。
+///
+/// 与终端那套保持一致：用户在两个地方看到的是同一组名字。
+// 返回 `&'static Encoding`：编码表是全局静态的，返回值不能被输入参数的生命周期绑住
+fn editor_encoding(name: &str) -> Option<&'static encoding_rs::Encoding> {
+    match name {
+        "utf-8" => Some(encoding_rs::UTF_8),
+        "gbk" | "gb18030" => Some(encoding_rs::GB18030),
+        "big5" => Some(encoding_rs::BIG5),
+        "shift_jis" => Some(encoding_rs::SHIFT_JIS),
+        "iso-8859-1" => Some(encoding_rs::WINDOWS_1252),
+        _ => None,
+    }
+}
+
+/// 按指定编码解码；不传就「先 UTF-8、再 GB18030」。
+///
+/// 为什么允许自动退回 GB18030：中文环境里「不是 UTF-8」的文件绝大多数就是 GBK/GB18030。
+/// 但**解出来是什么就报什么**（`encoding` 字段），界面上能看见、也能改——不静默替用户决定。
+fn decode_text(bytes: &[u8], encoding: Option<&str>) -> Result<(String, &'static str, bool), String> {
+    let bom = bytes.starts_with(&[0xEF, 0xBB, 0xBF]);
+    let body = if bom { &bytes[3..] } else { bytes };
+    if let Some(name) = encoding {
+        let Some(enc) = editor_encoding(name) else {
+            return Err(format!("[FILE_BAD_ENCODING] 不支持的编码：{name}"));
+        };
+        let (text, had_errors) = enc.decode_without_bom_handling_and_without_replacement(body)
+            .map(|c| (c.into_owned(), false))
+            .unwrap_or_else(|| (enc.decode(body).0.into_owned(), true));
+        if had_errors {
+            return Err(format!(
+                "[FILE_BAD_ENCODING] 按 {name} 解不出来（有非法字节），换个编码再试"
+            ));
+        }
+        return Ok((text, enc.name(), bom));
+    }
+    // 自动：先严格 UTF-8
+    if let Ok(text) = std::str::from_utf8(body) {
+        return Ok((text.to_string(), "utf-8", bom));
+    }
+    // 再试 GB18030（GBK 的超集），仍然要求严格解码，解不干净就不认
+    if let Some(text) = encoding_rs::GB18030.decode_without_bom_handling_and_without_replacement(body) {
+        return Ok((text.into_owned(), "gb18030", bom));
+    }
+    Err("[FILE_NOT_UTF8] 这个文件既不是 UTF-8 也不像 GBK/GB18030；在编辑器顶部手动选一个编码再试".to_string())
 }
 
 /// 读一个本地文本文件给内嵌编辑器（`FIL-011`）。
 #[tauri::command]
-fn local_read_text(path: String) -> Result<LocalTextDto, String> {
+fn local_read_text(
+    path: String,
+    encoding: Option<String>,
+) -> Result<LocalTextDto, String> {
     let meta = std::fs::metadata(&path).map_err(|e| format!("[FILE_NOT_FOUND] {e}"))?;
     if meta.len() > MAX_EDIT_BYTES {
         return Err(format!(
@@ -1165,20 +1219,44 @@ fn local_read_text(path: String) -> Result<LocalTextDto, String> {
         ));
     }
     let bytes = std::fs::read(&path).map_err(|e| format!("读取失败：{e}"))?;
-    // 非 UTF-8 不猜编码：编辑器只有一个文本视图，硬转会把内容弄坏
-    let text = String::from_utf8(bytes).map_err(|_| {
-        "[FILE_NOT_UTF8] 这个文件不是 UTF-8 文本，内嵌编辑器暂时只编辑 UTF-8；用外部编辑器打开".to_string()
-    })?;
+    let (text, enc_name, bom) = decode_text(&bytes, encoding.as_deref())?;
     Ok(LocalTextDto {
         text,
         size: meta.len(),
+        encoding: enc_name.to_string(),
+        bom,
     })
 }
 
 /// 把编辑器的内容写回本地文件（`FIL-011`）。
+///
+/// `encoding` 不传就是 UTF-8；`bom` 决定要不要写回 UTF-8 BOM——原文件有就保留，
+/// 不能让用户「只是改了一个字」却把 BOM 弄丢。
 #[tauri::command]
-fn local_write_text(path: String, text: String) -> Result<u64, String> {
-    let bytes = text.into_bytes();
+fn local_write_text(
+    path: String,
+    text: String,
+    encoding: Option<String>,
+    // 用 `Option` 而不是给参数加 `#[serde(default)]`：那是结构体字段的属性，
+    // 放函数参数上根本编不过（Tauri 只要求可缺省的参数是 `Option`）
+    bom: Option<bool>,
+) -> Result<u64, String> {
+    let bom = bom.unwrap_or(false);
+    let name = encoding.as_deref().unwrap_or("utf-8");
+    let bytes = if name == "utf-8" {
+        let mut v = Vec::with_capacity(text.len() + 3);
+        if bom {
+            v.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+        }
+        v.extend_from_slice(text.as_bytes());
+        v
+    } else {
+        let Some(enc) = editor_encoding(name) else {
+            return Err(format!("[FILE_BAD_ENCODING] 不支持的编码：{name}"));
+        };
+        let (out, _, _) = enc.encode(&text);
+        out.into_owned()
+    };
     std::fs::write(&path, &bytes).map_err(|e| format!("写入 {path} 失败：{e}"))?;
     Ok(bytes.len() as u64)
 }

@@ -1241,7 +1241,15 @@
             <input id="ed-replace" placeholder="替换为" spellcheck="false" />
             <button type="button" id="ed-replace-one">替换</button>
             <button type="button" id="ed-replace-all">全部替换</button>
-            <button type="button" id="ed-save">保存</button>
+            <select id="ed-encoding" title="按哪个编码解释/保存这个文件">
+            <option value="">自动</option>
+            <option value="utf-8">UTF-8</option>
+            <option value="gb18030">GB18030/GBK</option>
+            <option value="big5">Big5</option>
+            <option value="shift_jis">Shift-JIS</option>
+            <option value="iso-8859-1">Latin-1</option>
+          </select>
+          <button type="button" id="ed-save">保存</button>
             <span id="ed-info"></span>
           </div>
           <div id="ed-body">

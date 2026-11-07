@@ -2436,6 +2436,7 @@ document.getElementById("edit-close").addEventListener("click", () => editDialog
 
 const editorEl = document.getElementById("editor");
 const edTabsEl = document.getElementById("ed-tabs");
+const edEncodingEl = document.getElementById("ed-encoding");
 const edTextEl = document.getElementById("ed-text");
 const edGutterEl = document.getElementById("ed-gutter");
 const edInfoEl = document.getElementById("ed-info");
@@ -2574,7 +2575,7 @@ function edSyncInfo() {
     return;
   }
   const lines = doc.text.split("\n").length;
-  edInfoEl.textContent = `${lines} 行 · ${doc.text.length} 字${doc.dirty ? " · 未保存" : ""}`;
+  edInfoEl.textContent = `${lines} 行 · ${doc.text.length} 字 · ${doc.encoding ?? "utf-8"}${doc.dirty ? " · 未保存" : ""}`;
 }
 
 /** 选区读写：Monaco 与 textarea 两套 API 收在这两个函数里，别的地方不再直接碰 */
@@ -2641,7 +2642,7 @@ function edSyncBody() {
     edGutterEl.textContent = Array.from({ length: lines }, (_, i) => i + 1).join("\n");
     edGutterEl.scrollTop = edTextEl.scrollTop;
   }
-  edInfoEl.textContent = `${lines} 行 · ${doc.text.length} 字${doc.dirty ? " · 未保存" : ""}`;
+  edInfoEl.textContent = `${lines} 行 · ${doc.text.length} 字 · ${doc.encoding ?? "utf-8"}${doc.dirty ? " · 未保存" : ""}`;
 }
 
 function edRenderTabs() {
@@ -2709,6 +2710,8 @@ async function openEditor(path, name) {
       name: name ?? path.split(/[\\/]/).pop(),
       text: r.text,
       dirty: false,
+      encoding: r.encoding ?? "utf-8",
+      bom: Boolean(r.bom),
     };
     edDocs.push(doc);
     edActiveId = doc.id;
@@ -2738,7 +2741,12 @@ function edSave() {
   if (!doc) return;
   void (async () => {
     try {
-      const n = await invoke("local_write_text", { path: doc.path, text: doc.text });
+      const n = await invoke("local_write_text", {
+        path: doc.path,
+        text: doc.text,
+        encoding: doc.encoding ?? "utf-8",
+        bom: Boolean(doc.bom),
+      });
       doc.dirty = false;
       edRenderTabs();
       edSyncBody();
@@ -2839,6 +2847,35 @@ edTextEl.addEventListener("keydown", (ev) => {
   if (ev.ctrlKey && (ev.key === "s" || ev.key === "S")) {
     ev.preventDefault();
     edSave();
+  }
+});
+
+// 编码切换（`FIL-011`）：重读一遍当前文件。有未保存修改先问一句，别默默丢掉。
+edEncodingEl.addEventListener("change", async () => {
+  const doc = edActive();
+  if (!doc) return;
+  if (doc.dirty) {
+    const ok = await askConfirm("有未保存的修改", `按新编码重读会丢掉 ${doc.name} 的改动，继续？`);
+    if (!ok) {
+      edEncodingEl.value = "";
+      return;
+    }
+  }
+  try {
+    const r = await invoke("local_read_text", {
+      path: doc.path,
+      encoding: edEncodingEl.value || null,
+    });
+    doc.text = r.text;
+    doc.encoding = r.encoding ?? "utf-8";
+    doc.bom = Boolean(r.bom);
+    doc.dirty = false;
+    edSyncBody();
+    edRenderTabs();
+    setStatus(`已按 ${doc.encoding} 重新读取 ${doc.name}`);
+  } catch (e) {
+    setStatus(`换编码失败：${e}`);
+    edEncodingEl.value = "";
   }
 });
 
@@ -6887,6 +6924,8 @@ window.__wt = {
       docs: edDocs.map((d) => ({ name: d.name, dirty: d.dirty, chars: d.text.length })),
       active: doc?.name ?? null,
       text: doc?.text ?? null,
+      // 编码（`FIL-011`）：实际按哪个编码解出来的
+      encoding: doc?.encoding ?? null,
       // 语法高亮（`FIL-011`）：Monaco 有没有接管、按扩展名推断出什么语言
       monaco: Boolean(edMonaco),
       lang: doc ? edLangOf(doc.name) : null,

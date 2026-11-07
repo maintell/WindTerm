@@ -2850,6 +2850,44 @@ try {
 
   await cdp.eval(`document.querySelector("#ed-tabs .edtab .x").click()`);
 
+  // 编码识别（`FIL-011`）：GBK 文件不能被当成 UTF-8 硬解，也不能悄悄显示乱码。
+  // `1tDOxA==` 是「中文」两字的 GBK 字节（D6 D0 CE C4）。
+  await cdp.eval(`window.__TAURI__.core.invoke("mock_seed_file", { path: "/gbk.txt", content: "1tDOxA==" })`);
+  await cdp.eval(`(() => {
+    const sel = document.getElementById("files-session");
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    return sel.value;
+  })()`);
+  await waitFor(
+    async () => (await cdp.eval(`window.__wt.files.rows.includes("gbk.txt")`)) ? true : null,
+    { timeout: 15000, label: "gbk.txt 出现在列表" },
+  ).catch(() => null);
+  const prevGbk = await cdp.eval(`window.__wt.lastEdit?.localPath ?? null`);
+  await clickFileRow("gbk.txt");
+  await clickElement("#files-edit");
+  await waitFor(
+    async () => {
+      const e = await cdp.eval(`window.__wt.lastEdit`);
+      return e && e.localPath !== prevGbk ? e : null;
+    },
+    { timeout: 20000, label: "gbk.txt 下载" },
+  );
+  await clickElement("#edit-inline");
+  const gbk = await waitFor(
+    async () => {
+      const e = await cdp.eval(`window.__wt.editor`);
+      return e.encoding === "gb18030" && (e.text ?? "").includes("中文") ? e : null;
+    },
+    { timeout: 20000, label: "GBK 按 GB18030 解开" },
+  ).catch(() => null);
+  check(
+    "GBK 文件按 GB18030 正确解开，不显示乱码（FIL-011）",
+    gbk !== null,
+    gbk ? `${gbk.encoding}：${JSON.stringify(gbk.text)}` : `encoding=${await cdp.eval(`window.__wt.editor.encoding`)}`,
+  );
+  // 打开失败时没有标签可关，别让收尾动作把整轮打断
+  await cdp.eval(`document.querySelector("#ed-tabs .edtab .x")?.click()`);
+
   // 16d-5. 多会话并存（FIL-001）：文件面板可以对着某个会话，而不是只能跟随连接表单
   const filesSessionId = await cdp.eval(`(async () => {
     const dto = await window.__TAURI__.core.invoke("sessions_load");
