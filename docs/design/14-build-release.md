@@ -39,7 +39,7 @@ test:
     cargo test --workspace --test e2e_local   # 不依赖外部服务端的 E2E
 
 docs:
-    pwsh ./scripts/check-docs.ps1    # ✅ 已实现：ID 闭合 + 死链 + ADR 一致 + 统计自洽
+    pwsh ./scripts/check-docs.ps1    # ✅ 已实现：ID 闭合 + 死链 + ADR 一致 + 统计自洽 + 版本一致性（9i）
     # 待实现（随对应代码落地）：
     #   scripts/check-i18n.ps1       语言文件键对齐
     #   scripts/check-ts-types.ps1   ts-rs 生成结果与提交一致
@@ -284,12 +284,12 @@ jobs:
 | 项 | 规则 |
 |---|---|
 | 版本号 | SemVer；预发布用 `-beta.1` |
-| Tag | `v1.2.3`（必须与 `Cargo.toml` 的 `version` 一致） |
-| 一致性检查 | `scripts/check-version.sh` 比对 `Cargo.toml` / `tauri.conf.json` / `CHANGELOG.md` |
-| CHANGELOG | 每个版本一个 `## [x.y.z] - YYYY-MM-DD` 小节；分类 `Added/Changed/Fixed/Removed/Security` |
+| Tag | `v1.2.3`（必须与 `Cargo.toml` 的 `[workspace.package].version` 一致） |
+| 一致性检查 | `scripts/check-version.ps1`（✅ 已实现）比对 `Cargo.toml` / `apps/wt-desktop/tauri.conf.json` / `CHANGELOG.md` 三处版本号，并要求 CHANGELOG 有该版本小节；由 `check-docs.ps1` 第 9i 条门禁在每次文档对账时调用 |
+| CHANGELOG | 每个版本一个 `## [x.y.z]` 小节（分类 `Added/Changed/Fixed/Removed/Security`）；**已发布**的版本小节带 ` - YYYY-MM-DD`，**未发布**的写 `- Unreleased` 并在首次发版前不填日期。当前 `## [0.1.0] - Unreleased（待首次发版）` |
 | 变更条目 | 必须带需求 ID（`feat(SES-024): ...`） |
 
-**`check-version.sh` 是发布前必跑项**——版本号不一致会导致「安装包版本与程序内版本不同」这种低级但致命的问题。
+**`check-version.ps1` 是发布前必跑项**——版本号不一致会导致「安装包版本与程序内版本不同」这种低级但致命的问题。runner 只编译发布，这个检查必须在本地完成（本设计 §1 的分工）；9i 门禁对「缺文件 / 版本不一致 / 缺 CHANGELOG 小节」三类均做过改坏即红、还原即绿的变异验证。
 
 ## 8. 发布后验证
 

@@ -60,6 +60,14 @@ Run-Step '文档与需求对账' {
     'check-docs PASSED'
 }
 
+Run-Step '版本一致性' {
+    # 发布前必跑项（design/14 §7）：Cargo.toml / tauri.conf.json / CHANGELOG.md 三处对账。
+    # check-docs.ps1 的 9i 门禁也会调它，这里单列一步让一键验收的汇总表看得见结果。
+    $out = & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'check-version.ps1') 2>&1
+    if ($LASTEXITCODE -ne 0) { throw ("check-version.ps1 未通过：" + (($out | Select-Object -Last 2) -join ' ')) }
+    ($out | Select-Object -Last 1)
+}
+
 if ($WithE2e) {
     Run-Step '端到端验收' {
         # 必须先构建带 `e2e-mock` 的产物：`cargo test` / `clippy` 都不会写这个二进制，

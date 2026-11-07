@@ -541,6 +541,32 @@ if (-not (Test-Path $uiProbe)) {
     }
 }
 
+# ─────────────────────────────────────────────────────────────
+# 9i. 版本一致性（发布前必跑项，见 design/14 §7）
+#     Cargo.toml / tauri.conf.json / CHANGELOG.md 三处版本必须一致、CHANGELOG
+#     必须有该版本小节。runner 只编译发布，这个检查必须在本地完成。
+#     check-version.ps1 自带「缺文件 / 版本不一致 / 缺小节」三类判红，门禁调用它，
+#     并静态守「判据里真的核了 Cargo.toml + tauri.conf.json + CHANGELOG.md 三处」，
+#     防止脚本被悄悄换成恒 PASS 的空壳。
+# ─────────────────────────────────────────────────────────────
+$versionCheck = Join-Path $PSScriptRoot 'check-version.ps1'
+if (-not (Test-Path $versionCheck)) {
+    Fail '缺少 scripts/check-version.ps1（发布前版本一致性检查）'
+} else {
+    $vcText = Get-Content -Raw -Encoding UTF8 $versionCheck
+    foreach ($needle in @('Cargo.toml', 'tauri.conf.json', 'CHANGELOG.md')) {
+        if (-not ($vcText -like ('*' + $needle + '*'))) {
+            Fail ("check-version.ps1 判据里没提到 " + $needle + "，版本一致性检查不完整")
+        }
+    }
+    $vcOut = & pwsh -NoProfile -File $versionCheck 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Fail ("版本一致性检查未通过：" + (($vcOut | Select-Object -Last 2) -join ' '))
+    } else {
+        Write-Host ("版本一致性：" + ($vcOut | Select-Object -Last 1))
+    }
+}
+
 # 12. 相对链接可达（NFR-026）
 #     用户手册会随功能增长不断加页，链接断了没人发现。
 #     只查相对路径的 .md 链接；外链不查（离线环境查不了）

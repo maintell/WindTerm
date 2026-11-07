@@ -29,7 +29,7 @@ clippy 零告警、文档对账 PASSED、端到端 `N/N 项通过`，退出码 0
 |---|---|---|
 | `GUI-015` RDP 客户端 / `SES-005` RDP 会话 | 需要真服务端联调：NLA、剪贴板重定向、图形帧都要对端配合；**用户已定「暂时不推进」** | 一台能连的 RDP 机器（主机/端口/账号），且用户解除暂缓 |
 | `GUI-018` RDP 剪贴板重定向 / `GUI-022` CredSSP/NLA | 同上，且 NLA 依赖 Windows SSPI；同样暂缓 | 同上 |
-| `SYS-008` 多平台打包 | **便携 zip 链路本地已跑通**：`scripts/verify-package.ps1` 复现 workflow 打包步骤并自校验（exe→zip→SHA256SUMS→解包字节一致→无 BOM→哈希对得上→解包出的 exe 真能启动并建起 WebView2 子进程→CDP 前端加载自检（`scripts/verify-release-ui.mjs` 连进解包 exe 读 `window.__wt.ui`=磁盘当前版本、DOM 存在，堵住「空白页/旧缓存」假绿；`check-docs.ps1` 9h 门禁守调用链与正则转义、做过变异验证），本机实测通过。仍缺：① 首次推 `v*` 标签触发 CI（仓库至今 0 个 tag、workflow 没跑过）；② 配置与产物不一致——`bundle.targets: ["nsis"]` 承诺 NSIS，但本机无 `cargo-tauri`/NSIS 工具链、CI 只做 `cargo build --release` + 便携 zip，NSIS/MSI 从未产出，需定调（让 CI 真跑 `tauri build`，或把 targets 对齐实际产物）；③ macOS 公证、Linux 包 | 首次推 `v*` 标签；定 NSIS 取舍；确认图标与多平台渠道 |
+| `SYS-008` 多平台打包 | **便携 zip 链路本地已跑通**：`scripts/verify-package.ps1` 复现 workflow 打包步骤并自校验（exe→zip→SHA256SUMS→解包字节一致→无 BOM→哈希对得上→解包出的 exe 真能启动并建起 WebView2 子进程→CDP 前端加载自检（`scripts/verify-release-ui.mjs` 连进解包 exe 读 `window.__wt.ui`=磁盘当前版本、DOM 存在，堵住「空白页/旧缓存」假绿；`check-docs.ps1` 9h 门禁守调用链与正则转义、做过变异验证），本机实测通过；发版前本地就绪度另补 `scripts/check-version.ps1`（三处版本对账 + `CHANGELOG.md` 的 `## [0.1.0] - Unreleased` 小节，9i 门禁调用、三类变异验证通过）。仍缺：① 首次推 `v*` 标签触发 CI（仓库至今 0 个 tag、workflow 没跑过）；② 配置与产物不一致——`bundle.targets: ["nsis"]` 承诺 NSIS，但本机无 `cargo-tauri`/NSIS 工具链、CI 只做 `cargo build --release` + 便携 zip，NSIS/MSI 从未产出，需定调（让 CI 真跑 `tauri build`，或把 targets 对齐实际产物）；③ macOS 公证、Linux 包 | 首次推 `v*` 标签；定 NSIS 取舍；确认图标与多平台渠道 |
 | `SET-013` MobaXterm 设置导入 | 只导会话树；配色/字体/快捷键的键名不能靠猜 | 一份真实的 `MobaXterm.ini`（删掉密码等敏感内容） |
 
 > RDP/VNC 是用户 2026-11-06 明确「暂时不推进」的一块，已记为暂缓、不当作缺陷。
