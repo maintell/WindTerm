@@ -72,6 +72,19 @@ try {
     if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
 }
 
+# CDP 前端加载自检（SYS-008）：进程活着 + WebView2 子进程只说明「建了视图」，
+# 空白页 / WebView2 旧缓存资源同样能过这一关。verify-release-ui.mjs 用 CDP 连进
+# **解包出来的这个 exe**，读 window.__wt.ui 与 DOM，确认前端真的加载了、且是磁盘
+# 上当前这一版（期望值直接读 main.js，不写死）；脚本自带全新 WT_DATA_DIR，不吃缓存。
+Write-Host '=== CDP 前端加载自检 ==='
+$uiProbe = Join-Path $repoRoot 'scripts/verify-release-ui.mjs'
+if (-not (Test-Path $uiProbe)) { throw '缺少 scripts/verify-release-ui.mjs（CDP 前端加载自检）' }
+Push-Location $repoRoot
+try {
+    & node $uiProbe $inner
+    if ($LASTEXITCODE -ne 0) { throw 'CDP 前端加载自检失败：解包出的 exe 没加载当前前端' }
+} finally { Pop-Location }
+
 Write-Host ('exe  ' + (Get-Item $exe).Length + ' 字节')
 Write-Host ('zip  ' + (Get-Item $zip).Length + ' 字节')
 Write-Host ('sha256  ' + $hash)

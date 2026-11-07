@@ -504,6 +504,43 @@ if (-not (Test-Path $lateCheck)) {
     }
 }
 
+# ─────────────────────────────────────────────────────────────
+# 9h. 便携包 CDP 前端自检（SYS-008）
+#     verify-package.ps1 只验到「进程活着 + 建起 WebView2 子进程」，空白页 /
+#     WebView2 旧缓存资源同样能过。verify-release-ui.mjs 用 CDP 连进解包出的
+#     exe，读 window.__wt.ui 与 DOM，补上「前端真加载了、且是磁盘当前这一版」。
+#     静态守：脚本存在 / 打包流程真的调用它 / 版本正则的转义没被吞。
+#     （判红判绿的实跑变异验证见脚本自身与 handover。）
+# ─────────────────────────────────────────────────────────────
+$uiProbe = Join-Path $PSScriptRoot 'verify-release-ui.mjs'
+$pkgScript = Join-Path $PSScriptRoot 'verify-package.ps1'
+if (-not (Test-Path $uiProbe)) {
+    Fail '缺少 scripts/verify-release-ui.mjs（便携包 CDP 前端自检）'
+} else {
+    $uiText = Get-Content -Raw -Encoding UTF8 $uiProbe
+    # 正则必须真带 \s*\d+：写成 /ui:s*"(wt-ui-d+)"/（反斜杠被吞）会读不到版本号。
+    if ($uiText -notmatch 'ui:\\s\*"\(wt-ui-\\d\+\)"') {
+        Fail 'verify-release-ui.mjs 的版本正则丢了转义（会把版本号读成字面量）'
+    }
+    if (-not (Test-Path $pkgScript)) {
+        Fail '缺少 scripts/verify-package.ps1'
+    } else {
+        # 只认「非注释、真的用 node 跑这个脚本、且把解包 exe 传进去」的调用行。
+        # 光用 -like 查文件名子串会被注释里的同名字样骗过（变异验证实测过的假绿）。
+        $pkgText = Get-Content -Raw -Encoding UTF8 $pkgScript
+        # 真实调用长这样：& node $uiProbe $inner（文件名在变量赋值行，不在调用行，
+        # 所以别要求同一行同时含文件名）。分别守：有非注释的 node 调用把解包 exe
+        # 传进去；且脚本文件名确实在打包流程里出现（赋值/引用）。
+        $callLine = ($pkgText -split "`n") | Where-Object {
+            $_ -match '^\s*&\s*node\s' -and $_ -match '\$uiProbe' -and $_ -match '\$inner'
+        }
+        $namePresent = $pkgText -match 'verify-release-ui\.mjs'
+        if (-not $callLine -or -not $namePresent) {
+            Fail 'verify-package.ps1 没用 node 调用 verify-release-ui.mjs 传解包 exe，便携包验证少了 CDP 前端自检'
+        }
+    }
+}
+
 # 12. 相对链接可达（NFR-026）
 #     用户手册会随功能增长不断加页，链接断了没人发现。
 #     只查相对路径的 .md 链接；外链不查（离线环境查不了）
