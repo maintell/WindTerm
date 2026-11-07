@@ -13,6 +13,8 @@
 //! - 收到数据：回 `echo:<原文>`；以 `\e[M` 开头的鼠标报文回 `MOUSE`（验鼠标上报）、
 //!   输入含 `__gbk__` 回 GBK 字节的「中文」（验编码）、
 //!   `__truecolor__` 回 24 位色序列（验 Truecolor）、`__wide__` 回两个 CJK 字符（验宽字符）、
+//!   `__color256__` / `__color16__` 回 `38;5;N` / `31` 序列（验 256/16 色降级映射）、
+//!   `__emoji__` 回 `e`+U+0301 组合音标与 U+1F600（验零宽/组合字符与 Emoji）、
 //!   `__mouseon__` 回开启鼠标上报的序列（验鼠标模式）
 //! - `exec_request`：回 `ran:<命令>\r\n`，退出码 0
 
@@ -676,6 +678,25 @@ impl russh::server::Handler for MockHandler {
         // 宽字符（`TER-025`）：两个 CJK 字符各占两列，验收读单元格宽度与光标列
         if String::from_utf8_lossy(data).contains("__wide__") {
             session.data(channel, "中文\r\n".as_bytes().to_vec())?;
+            return Ok(());
+        }
+        // 256 色降级（`TER-024`）：SGR 38;5;N 用调色板索引着色，不是 24 位 RGB。
+        // 标记 P256 后面跟一个普通字符 A，验收按行找光标、读单元格前景色是不是索引色。
+        if String::from_utf8_lossy(data).contains("__color256__") {
+            session.data(channel, b"\x1b[38;5;196mP256A\x1b[0m\r\n".to_vec())?;
+            return Ok(());
+        }
+        // 16 色降级（`TER-024`）：SGR 31（标准红），同样不该被当成 truecolor。
+        if String::from_utf8_lossy(data).contains("__color16__") {
+            session.data(channel, b"\x1b[31mP16A\x1b[0m\r\n".to_vec())?;
+            return Ok(());
+        }
+        // Emoji 组合与零宽字符（`TER-025`）：
+        // "e" + U+0301（组合尖音，零宽）应拼进同一个单元格；U+1F600 是宽字符。
+        // 前面放标记 EZ 便于按行定位。
+        if String::from_utf8_lossy(data).contains("__emoji__") {
+            session
+                .data(channel, "EZ e\u{301} \u{1F600}Z\r\n".as_bytes().to_vec())?;
             return Ok(());
         }
         // 鼠标上报（`TER-022`）：让客户端开启 1000 模式，之后的点击会变成鼠标序列

@@ -193,9 +193,13 @@ def test_ssh_connect(server, wt):
 - Truecolor（`TER-024`）与宽字符（`TER-025`）：这两条没法从屏幕文本看出来，
   所以读 xterm 的 buffer——`cellAt(row, col)` 给出文字/占用列数/前景色。
   断言：24 位色的 `isFgRGB` 为真且颜色恰为 `#123456`；CJK 首字 `width=2`、
-  次列 `width=0`（续列）、第三列起是第二个字；`TER-024` 还要求设
-  `COLORTERM=truecolor`——这条在真起的本地终端里 `echo %COLORTERM%/%TERM%`
-  读回 `truecolor/xterm-256color` 才算数（读 `pty.rs` 源码只能证明写了，不能证明注入到子进程）；
+  次列 `width=0`（续列）、第三列起是第二个字；**降级映射**：mock 回 `38;5;196`
+  （256 色）与 `31`（16 色），整行逐格扫出带色单元格，断言 `fgIsRgb=false` 且
+  `fg` 是调色板索引（196 / 1，不是 24 位 RGB）；**组合字符与 Emoji**：`e`+U+0301
+  应拼成单格 `é`（组合音标不另占格）、U+1F600 完整出现在某一格（不拆成代理对/替换符）；
+  `TER-024` 还要求设 `COLORTERM=truecolor`——这条在真起的本地终端里
+  `echo %COLORTERM%/%TERM%` 读回 `truecolor/xterm-256color` 才算数（读 `pty.rs`
+  源码只能证明写了，不能证明注入到子进程）；
 - 鼠标上报（`TER-022`）：让 mock 回 `\e[?1000h` 打开鼠标模式后在终端区点击，
   断言三件事——`__wt.inputLog` 里出现以 `\e[M` 开头的序列（前端真的发了）、
   **服务端收到后回的 `MOUSE` 出现在屏幕上**（字节真的到了远端，不是只在前端记了一笔）、

@@ -5837,6 +5837,86 @@ try {
       wideCells.second.width === 2,
     JSON.stringify(wideCells),
   );
+
+  // 降级映射（TER-024）：256 色（SGR 38;5;N）与 16 色（SGR 31）都**不是** 24 位 RGB，
+  // 走的是调色板索引。判据：标了色的那一格 fgIsRgb 为 false、fg 是有效索引（不是 -1）。
+  // 不假设标记在第几列：整行逐格扫，取带色且 text 属于标记串的那一格，避免列号猜错。
+  const colorProbe = async (trigger, marker) => {
+    await cdp.eval(`window.__TAURI__.core.invoke("term_write", {
+      handle: ${JSON.stringify(tcHandle)}, data: ${JSON.stringify(trigger)},
+    })`).catch(() => null);
+    return waitFor(
+      async () => {
+        const r = await cdp.eval(`(() => {
+          const buf = window.__wt;
+          const at = buf.findRow(${JSON.stringify(marker)});
+          if (at === null) return null;
+          const line = [];
+          for (let x = 0; x < 80; x += 1) {
+            const c = buf.cellAt(at.row, x);
+            if (c) line.push(c);
+          }
+          // 标记串里的字符、且前景色不是默认色（fg !== -1）的那一格就是被 SGR 着色的
+          const colored = line.filter((c) => ${JSON.stringify(marker)}.includes(c.text) && c.fg !== -1);
+          return colored.length ? { colored, all: line.map((c) => [c.text, c.fg, c.fgIsRgb]) } : null;
+        })()`);
+        return r || null;
+      },
+      { timeout: 15000, label: `${trigger} 输出` },
+    ).catch(() => null);
+  };
+  const c256 = await colorProbe("__color256__", "P256A");
+  const c256ok = c256 !== null &&
+    c256.colored.every((c) => c.fgIsRgb === false) &&
+    c256.colored.some((c) => c.fg >= 0 && c.fg <= 255);
+  check(
+    "256 色降级：走调色板索引而不是 24 位 RGB（TER-024）",
+    c256ok,
+    c256 ? JSON.stringify(c256.all) : "没读到带色的 P256A",
+  );
+  const c16 = await colorProbe("__color16__", "P16A");
+  const c16ok = c16 !== null &&
+    c16.colored.every((c) => c.fgIsRgb === false) &&
+    c16.colored.some((c) => c.fg >= 0 && c.fg <= 15);
+  check(
+    "16 色降级：标准 ANSI 色不是 24 位 RGB（TER-024）",
+    c16ok,
+    c16 ? JSON.stringify(c16.all) : "没读到带色的 P16A",
+  );
+
+  // Emoji 组合与零宽字符（TER-025）：实测 xterm.js 6.0.0 把 "e" + U+0301（组合尖音，
+  // 零宽）拼进**同一个**单元格 "é"，U+1F600 单独占一格。判据落在这两件事实上：
+  // 组合字符没有被拆成两格（否则表格/cursor 会错位），emoji 没变成替换符或拆成代理对。
+  await cdp.eval(`window.__TAURI__.core.invoke("term_write", {
+    handle: ${JSON.stringify(tcHandle)}, data: "__emoji__",
+  })`).catch(() => null);
+  const emo = await waitFor(
+    async () => {
+      const row = await cdp.eval(`(() => {
+        const at = window.__wt.findRow("EZ");
+        if (at === null) return null;
+        const cells = [];
+        for (let i = 0; i < 8; i += 1) cells.push(window.__wt.cellAt(at.row, at.col + i));
+        return cells;
+      })()`);
+      return row && row[0] ? row : null;
+    },
+    { timeout: 15000, label: "Emoji/组合字符输出" },
+  ).catch(() => null);
+  const emoTexts = emo ? emo.map((c) => c?.text ?? "") : [];
+  // 判据用 codePoint，避开字面量/NFC 归一化的歧义：
+  // ① 组合音标 U+0301 没有单独占格（它并进了含 e 的那一格，buffer 里是 "é"）；
+  // ② U+1F600 完整出现在某一格（codePoint > 0xFFFF，没被拆成代理对/替换符）。
+  const standaloneCombining = emoTexts.some((t) =>
+    t.length > 0 && [...t].every((ch) => ch.codePointAt(0) === 0x301),
+  );
+  const combiningMerged = emoTexts.some((t) => t.normalize("NFC") === "é") && !standaloneCombining;
+  const emojiWhole = emoTexts.some((t) => [...t].some((ch) => ch.codePointAt(0) === 0x1f600));
+  check(
+    "组合音标并入同一格、Emoji 不拆分（TER-025）",
+    combiningMerged && emojiWhole,
+    emo ? `merg=${combiningMerged} emoji=${emojiWhole}｜${JSON.stringify(emo.map((c) => (c ? `${JSON.stringify(c.text)}/w${c.width}` : "null")))}` : "没读到 EZ 行",
+  );
   await closeAllTabs();
 
   // 19m. 鼠标上报（`TER-022`）：远端开启 1000 模式后，点击应变成鼠标序列
