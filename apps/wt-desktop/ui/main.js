@@ -6884,7 +6884,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-117",
+  ui: "wt-ui-118",
   /**
    * 验收用：刷新会话树并等它**画完**。
    *
@@ -7251,9 +7251,16 @@ window.__wt = {
   screens() {
     return [...sessions.values()].map((v) => ({ label: v.label, text: screenText(v) }));
   },
-  /** 标签页：每个会话一行，标出哪个是激活的 */
+  /**
+   * 标签页：每个会话一行，标出哪个是激活的。
+   *
+   * `id` 是 `nextViewId` 赋的稳定整数：**验收要按它认标签，别按 label**——
+   * 本地 shell 起来后会用 OSC 2 标题把 label 改写（"本地 s14-18" → "pwsh.exe"），
+   * 拿建标签时的 label 快照去判「切到哪一条」会偶发假失败。
+   */
   tabs() {
     return [...sessions.values()].map((v) => ({
+      id: v.id,
       label: v.label,
       active: v === active,
       handle: v.handle,

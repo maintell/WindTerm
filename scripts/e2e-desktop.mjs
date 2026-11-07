@@ -5547,10 +5547,14 @@ try {
     return waitFor(
     async () => {
       const t = await cdp.eval(`({
+        // 身份一律用 id：label 会被 shell 的 OSC 2 标题动态改写，拿它当身份
+        // 会在「第二次 Ctrl+Tab」时偶发假失败（快照里的名字早已变了）。
         labels: window.__wt.tabs().map((x) => x.label),
+        ids: window.__wt.tabs().map((x) => x.id),
         boxes: [...document.querySelectorAll("#tabs .tab")].map((el) => {
           const r = el.getBoundingClientRect();
           return {
+            id: el.dataset.id,
             label: el.querySelector(".label")?.textContent ?? "",
             x: Math.round(r.x + r.width / 2),
             y: Math.round(r.y + r.height / 2),
@@ -5587,40 +5591,38 @@ try {
           // 反而把「到底卡在哪」的诊断信息淹没。看上面三项足够区分「起不来/慢」。
         }),
   );
+  // 用稳定 id 认标签：tabLabels 只用于人类可读的诊断，绝不参与相等判定。
+  const tabIds = tabReady?.ids ?? [];
   const tabLabels = tabReady?.labels ?? [];
-  const boxOf = (label) => tabReady?.boxes.find((b) => b.label === label) ?? null;
-  if (boxOf(tabLabels[0])) {
-    await clickAt(boxOf(tabLabels[0]));
+  const boxOfId = (id) => tabReady?.boxes.find((b) => b.id === String(id)) ?? null;
+  const activeId = () => cdp.eval(`window.__wt.tabs().find((t) => t.active)?.id ?? null`);
+  if (boxOfId(tabIds[0])) {
+    await clickAt(boxOfId(tabIds[0]));
     await waitFor(
-      async () =>
-        (await cdp.eval(`window.__wt.tabs().find((t) => t.active)?.label ?? null`)) === tabLabels[0]
-          ? true
-          : null,
+      async () => (await activeId()) === tabIds[0] ? true : null,
       { timeout: 5000, label: "激活第一条标签" },
     );
   }
   await pressChord(2, "Tab", "Tab", 9);
   const mruFirst = await waitFor(
-    async () => {
-      const a = await cdp.eval(`window.__wt.tabs().find((t) => t.active)?.label ?? null`);
-      return a === tabLabels[2] ? a : null;
-    },
+    async () => (await activeId()) === tabIds[2] ? true : null,
     { timeout: 4000, label: "Ctrl+Tab 跳到上一条用过的" },
   ).catch(() => null);
   check(
     "Ctrl+Tab 按最近使用切，不是按标签位置（TER-001）",
-    mruFirst === tabLabels[2],
-    `${mruFirst ?? "没切"}（位置上的是 ${tabLabels[1]}；当前激活 ${await cdp.eval(`window.__wt.tabs().find((t) => t.active)?.label ?? null`)}）`,
+    mruFirst === true,
+    `${mruFirst ? "切对了" : "没切"}（当前激活 id=${await activeId()}；期望 ${tabIds[2]}；位置上的第二条 id=${tabIds[1]}；标签名 ${JSON.stringify(tabLabels)}）`,
   );
   await pressChord(2, "Tab", "Tab", 9);
   const mruDeeper = await waitFor(
-    async () => {
-      const a = await cdp.eval(`window.__wt.tabs().find((t) => t.active)?.label ?? null`);
-      return a === tabLabels[1] ? a : null;
-    },
+    async () => (await activeId()) === tabIds[1] ? true : null,
     { timeout: 4000, label: "再按一次沿最近顺序往下" },
   ).catch(() => null);
-  check("再按一次沿最近顺序继续往下（TER-001）", mruDeeper === tabLabels[1], `${mruDeeper ?? "没切"}`);
+  check(
+    "再按一次沿最近顺序继续往下（TER-001）",
+    mruDeeper === true,
+    `${mruDeeper ? "切对了" : "没切"}（当前激活 id=${await activeId()}；期望 ${tabIds[1]}）`,
+  );
   await closeAllTabs();
 
   // `Ctrl+W` 的绑定已撤掉：连续两轮实测按下去什么都不发生（原因未查清，怀疑被宿主截获），
