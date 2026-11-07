@@ -986,19 +986,54 @@ function afterOpen(view, statusText) {
 }
 
 /**
- * 带死线的 `invoke`。
+ * 带死线的 `invoke`，超时后还能**回收迟到的会话**。
  *
  * 后端命令卡住时 `await` 永远不返回：界面上表现为「点了没反应」，既不报错也不亮
  * 灯（验收里则是一次莫名其妙的 20 秒超时）。给它一条死线，超时就明确说出来。
- * 注意：超时之后后台**可能**已经把会话建起来了，所以提示里要写清怎么收拾。
+ *
+ * 关键在「超时之后后台可能已经把会话建起来了」：`Promise.race` 只让前端放弃等待，
+ * 底层 `invoke` 仍在跑；`local_open` / `ssh_open` 是同步命令，稍后仍会往 registry
+ * 里注册一个会话。前端这个 view 已经标成「打开失败」、handle=null，永远不会去 close 它
+ * ——于是 shell / conhost / 读泵线程常驻。连跑多轮越积越多、启动越来越慢，正好是
+ * `handover` 里记了很久的「连跑多轮后打开失败、根因未定位」。
+ *
+ * 做法：超时后继续盯着底层 Promise，若它最终成功且带回了 handle，就 `term_close`
+ * 把它关掉。失败就忽略——会话没建起来，没什么可回收的。
+ *
+ * 只有「成功返回值里带 handle」的建连类命令有这个效果；其它命令（返回结果不带
+ * handle）超时后即便迟到也自然什么都不做，不影响原语义。
  */
 function invokeWithTimeout(cmd, args, ms, what) {
   let timer = null;
+  let timedOut = false;
+  const call = invoke(cmd, args).then(
+    (value) => {
+      clearTimeout(timer);
+      if (timedOut) {
+        const h = typeof value === "string" ? value : value?.handle;
+        if (typeof h === "string" && h) {
+          invoke("term_close", { handle: h }).catch(() => {});
+        }
+      }
+      return value;
+    },
+    (err) => {
+      clearTimeout(timer);
+      // 超时后 race 已经用超时错误 settle 了，这里再 throw 会变成一个没人接的
+      // unhandled rejection（控制台报错、还会触发「页面无未捕获异常」断言）。
+      // 前端早已按超时收场，这个迟到的失败只需静默丢弃。
+      if (!timedOut) throw err;
+      return undefined;
+    },
+  );
   return Promise.race([
-    invoke(cmd, args).finally(() => clearTimeout(timer)),
+    call,
     new Promise((_, reject) => {
       timer = setTimeout(
-        () => reject(new Error(`${what}超时（${Math.round(ms / 1000)} 秒没有响应）`)),
+        () => {
+          timedOut = true;
+          reject(new Error(`${what}超时（${Math.round(ms / 1000)} 秒没有响应）`));
+        },
         ms,
       );
     }),
@@ -6897,7 +6932,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-119",
+  ui: "wt-ui-120",
   /**
    * 验收用：刷新会话树并等它**画完**。
    *

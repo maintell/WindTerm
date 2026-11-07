@@ -485,6 +485,23 @@ if (-not (Test-Path $statusTplCheck)) {
     }
 }
 
+# ─────────────────────────────────────────────────────────────
+# 9g. 超时后游离会话回收（连跑多轮打开失败的兜底）
+#     invokeWithTimeout 超时后底层 invoke 仍可能注册会话（conhost 累积）。
+#     check-late-session.mjs 从真源码抠出函数、注入假 invoke 跑 5 个场景。
+# ─────────────────────────────────────────────────────────────
+$lateCheck = Join-Path $PSScriptRoot 'check-late-session.mjs'
+if (-not (Test-Path $lateCheck)) {
+    Fail '缺少 scripts/check-late-session.mjs（超时后游离会话回收自测）'
+} else {
+    $lateOut = & node $lateCheck 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Fail ("超时后游离会话回收自测未通过：" + (($lateOut | Select-Object -Last 2) -join ' '))
+    } else {
+        Write-Host ("超时会话回收：" + ($lateOut | Select-Object -Last 1))
+    }
+}
+
 # 12. 相对链接可达（NFR-026）
 #     用户手册会随功能增长不断加页，链接断了没人发现。
 #     只查相对路径的 .md 链接；外链不查（离线环境查不了）

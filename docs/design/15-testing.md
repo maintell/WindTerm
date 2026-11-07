@@ -162,6 +162,7 @@ def test_ssh_connect(server, wt):
 | 以为 `Shift+Alt+↓` 是列选择键 | 这个 Monaco 构建里它绑给「复制行」：按两下会把首行复制成两行，再键入就多出一行。Monaco 原生可用的第二条路是 **`Shift+Alt+拖拽`**（鼠标，已按真事件验收）；方向键那条不要写进文档 |
 | 拖拽重排的落点压在标签中线上，逐次运行来回翻 | 拖动语义是「插到目标**之前**」，把落点算成目标标签的正中，就正好压在有判定意义的分界线上：一次插到前、一次插到后，表现成这条用例一轮红一轮绿。做法：落点取目标标签的左四分之一，含义确定 |
 | 环境慢导致的超时补点，不能连真实失败一起重试 | 首次建连偶发超时（conhost 堆积）时补点一次是对的；但把「打开失败」也重试，就等于把真实缺陷掩盖成通过。补点只在**超时**这一条分支上做，其它错误立刻抛 |
+| 「连跑多轮后 `local_open` 打开失败/变慢」根因：`Promise.race` 超时后底层会话没人关 | `invokeWithTimeout` 超时只让前端放弃等待，底层 `invoke` 仍在跑；`local_open`/`ssh_open` 是同步命令，稍后仍把会话注册进 registry，而前端那个 view 已标「打开失败」、`handle=null`，永远不 `term_close`——shell/conhost/读泵常驻，越积越多、启动越慢、正反馈成更多超时。修法：超时后继续盯底层 Promise，迟到成功且带 handle 就 `term_close` 回收，迟到失败静默丢弃（否则是 unhandled rejection）。`scripts/check-late-session.mjs` 从**真源码**抠出函数、注入假 invoke/`setTimeout` 跑 5 场景（正常不回收 / string handle 回收 / `{handle}` 回收 / 迟到失败不炸 / 无 handle 不误关），`check-docs.ps1` 9g 门禁调用，做过删回收即红、还原即绿的变异验证。教训：**加「超时」时要想清楚被放弃的那个 Promise 后台会产生什么副作用** |
 
 | 「会话树多选限定广播目标」实现后无法自证，已整体回滚 | 现象：`__wt.multiSelect()` 明确返回 1 条，紧接着读 `__wt.broadcast.targets` 仍是「全部 2 台」——按实现它该变成 0 或 1。同一份代码反复跑结果一致，不是时序抖动，但也没能在两轮调试内定位（`multiSel` 与 `broadcastTargets` 是否真的闭包到同一个 Set、`bcTargetsChosen` 是否被别处置成空集，两个方向都没排掉）。**处理**：整块改动连同断言一起回滚，不发布自己解释不清的功能；下次重启这条线时先加一条「在 `broadcastTargets()` 内部把 `multiSel.size` 打出来」的诊断断言 |
 
