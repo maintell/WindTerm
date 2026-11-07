@@ -2888,6 +2888,61 @@ try {
   // 打开失败时没有标签可关，别让收尾动作把整轮打断
   await cdp.eval(`document.querySelector("#ed-tabs .edtab .x")?.click()`);
 
+  // 换行符（`FIL-011`）：CRLF 文件要识别成 crlf，切成 LF 后正文里不能再有 CR。
+  // `YQ0KYg0K` 是 "a\r\nb\r\n" 的 base64。
+  await cdp.eval(`window.__TAURI__.core.invoke("mock_seed_file", { path: "/crlf.txt", content: "YQ0KYg0K" })`);
+  await cdp.eval(`(() => {
+    const sel = document.getElementById("files-session");
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    return sel.value;
+  })()`);
+  await waitFor(
+    async () => (await cdp.eval(`window.__wt.files.rows.includes("crlf.txt")`)) ? true : null,
+    { timeout: 15000, label: "crlf.txt 出现在列表" },
+  ).catch(() => null);
+  const prevCrlf = await cdp.eval(`window.__wt.lastEdit?.localPath ?? null`);
+  await clickFileRow("crlf.txt");
+  await clickElement("#files-edit");
+  await waitFor(
+    async () => {
+      const e = await cdp.eval(`window.__wt.lastEdit`);
+      return e && e.localPath !== prevCrlf ? e : null;
+    },
+    { timeout: 20000, label: "crlf.txt 下载" },
+  );
+  await clickElement("#edit-inline");
+  const crlf = await waitFor(
+    async () => {
+      const e = await cdp.eval(`window.__wt.editor`);
+      return e.eol === "crlf" ? e : null;
+    },
+    { timeout: 20000, label: "CRLF 识别" },
+  ).catch(() => null);
+  check(
+    "CRLF 文件被识别为 crlf，不会静默改成 LF（FIL-011）",
+    crlf !== null,
+    crlf ? `eol=${crlf.eol}` : `eol=${await cdp.eval(`window.__wt.editor.eol`)}`,
+  );
+  await cdp.eval(`(() => {
+    const el = document.getElementById("ed-eol");
+    el.value = "lf";
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return el.value;
+  })()`);
+  const toLf = await cdp.eval(`window.__wt.editor`);
+  check(
+    "切成 LF 后正文里没有 CR（FIL-011）",
+    toLf.eol === "lf" && !String(toLf.text ?? "").includes("\r"),
+    `eol=${toLf.eol} 含CR=${String(toLf.text ?? "").includes("\r")}`,
+  );
+  // 这一步改了内容（未保存），关标签会弹确认——顺手把「未保存确认」也走一遍
+  await cdp.eval(`document.querySelector("#ed-tabs .edtab .x")?.click()`);
+  const discard = await waitFor(
+    async () => ((await cdp.eval(`document.getElementById("ask-dialog").open`)) ? true : null),
+    { timeout: 5000, label: "未保存确认框" },
+  ).catch(() => null);
+  if (discard) await clickDialogButton("ask-ok", "yes");
+
   // 16d-5. 多会话并存（FIL-001）：文件面板可以对着某个会话，而不是只能跟随连接表单
   const filesSessionId = await cdp.eval(`(async () => {
     const dto = await window.__TAURI__.core.invoke("sessions_load");

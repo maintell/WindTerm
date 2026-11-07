@@ -2437,6 +2437,7 @@ document.getElementById("edit-close").addEventListener("click", () => editDialog
 const editorEl = document.getElementById("editor");
 const edTabsEl = document.getElementById("ed-tabs");
 const edEncodingEl = document.getElementById("ed-encoding");
+const edEolEl = document.getElementById("ed-eol");
 const edTextEl = document.getElementById("ed-text");
 const edGutterEl = document.getElementById("ed-gutter");
 const edInfoEl = document.getElementById("ed-info");
@@ -2556,6 +2557,8 @@ async function edEnsureMonaco() {
     const doc = edActive();
     if (!doc) return;
     doc.text = edMonaco.getValue();
+    // EOL 跟着模型走：用户可能在编辑器里就把换行改了
+    doc.eol = edMonaco.getModel()?.getEOL() === "\r\n" ? "crlf" : "lf";
     doc.dirty = true;
     edRenderTabs();
     edSyncInfo();
@@ -2575,7 +2578,7 @@ function edSyncInfo() {
     return;
   }
   const lines = doc.text.split("\n").length;
-  edInfoEl.textContent = `${lines} 行 · ${doc.text.length} 字 · ${doc.encoding ?? "utf-8"}${doc.dirty ? " · 未保存" : ""}`;
+  edInfoEl.textContent = `${lines} 行 · ${doc.text.length} 字 · ${doc.encoding ?? "utf-8"} · ${(doc.eol ?? "lf").toUpperCase()}${doc.dirty ? " · 未保存" : ""}`;
 }
 
 /** 选区读写：Monaco 与 textarea 两套 API 收在这两个函数里，别的地方不再直接碰 */
@@ -2632,7 +2635,20 @@ function edSyncBody() {
     edSilent = true;
     if (edMonaco.getValue() !== doc.text) edMonaco.setValue(doc.text);
     const model = edMonaco.getModel();
-    if (model && window.monaco) window.monaco.editor.setModelLanguage(model, edLangOf(doc.name));
+    if (model && window.monaco) {
+      window.monaco.editor.setModelLanguage(model, edLangOf(doc.name));
+      // Monaco 的 `setValue` 会按 model 当前 EOL 重排换行：不显式设回来，
+      // CRLF 文件一打开就被静默改成 LF，保存后整份文件的换行全变——
+      // 用户只改了一个字，diff 却是整篇。
+      const wantEol = doc.eol === "crlf" ? "\r\n" : "\n";
+      if (model.getEOL() !== wantEol) {
+        model.setEOL(
+          doc.eol === "crlf"
+            ? window.monaco.editor.EndOfLineSequence.CRLF
+            : window.monaco.editor.EndOfLineSequence.LF,
+        );
+      }
+    }
     edSilent = false;
   } else if (edTextEl.value !== doc.text) {
     edTextEl.value = doc.text;
@@ -2642,7 +2658,7 @@ function edSyncBody() {
     edGutterEl.textContent = Array.from({ length: lines }, (_, i) => i + 1).join("\n");
     edGutterEl.scrollTop = edTextEl.scrollTop;
   }
-  edInfoEl.textContent = `${lines} 行 · ${doc.text.length} 字 · ${doc.encoding ?? "utf-8"}${doc.dirty ? " · 未保存" : ""}`;
+  edInfoEl.textContent = `${lines} 行 · ${doc.text.length} 字 · ${doc.encoding ?? "utf-8"} · ${(doc.eol ?? "lf").toUpperCase()}${doc.dirty ? " · 未保存" : ""}`;
 }
 
 function edRenderTabs() {
@@ -2712,6 +2728,8 @@ async function openEditor(path, name) {
       dirty: false,
       encoding: r.encoding ?? "utf-8",
       bom: Boolean(r.bom),
+      // 原文件的换行符（`FIL-011`）：保存时按它写回，别把 Windows 文件悄悄改成 LF
+      eol: /\r\n/.test(r.text ?? "") ? "crlf" : "lf",
     };
     edDocs.push(doc);
     edActiveId = doc.id;
@@ -2877,6 +2895,27 @@ edEncodingEl.addEventListener("change", async () => {
     setStatus(`换编码失败：${e}`);
     edEncodingEl.value = "";
   }
+});
+
+// 换行符切换（`FIL-011`）：就地转换正文，不重读文件。
+// 「自动」= 保持现状（保存按当前内容写），不猜也不改。
+edEolEl.addEventListener("change", () => {
+  const doc = edActive();
+  if (!doc) return;
+  const want = edEolEl.value;
+  if (!want) return;
+  const lf = doc.text.split("\r\n").join("\n");
+  const next = want === "crlf" ? lf.split("\n").join("\r\n") : lf;
+  if (next === doc.text) {
+    setStatus(`换行符已经是 ${want.toUpperCase()}`);
+    return;
+  }
+  doc.text = next;
+  doc.eol = want;
+  doc.dirty = true;
+  edSyncBody();
+  edRenderTabs();
+  setStatus(`换行符已改成 ${want.toUpperCase()}（记得保存）`);
 });
 
 document.getElementById("ed-save").addEventListener("click", edSave);
@@ -6926,6 +6965,8 @@ window.__wt = {
       text: doc?.text ?? null,
       // 编码（`FIL-011`）：实际按哪个编码解出来的
       encoding: doc?.encoding ?? null,
+      // 换行符（`FIL-011`）：`crlf` / `lf`
+      eol: doc?.eol ?? null,
       // 语法高亮（`FIL-011`）：Monaco 有没有接管、按扩展名推断出什么语言
       monaco: Boolean(edMonaco),
       lang: doc ? edLangOf(doc.name) : null,
