@@ -564,6 +564,41 @@ async function clickFileRow(name) {
   await clickAt(box);
 }
 
+/**
+ * 点选一行，并**确认真的选中了**。
+ *
+ * 单击行由列表上的事件委托处理；那一下如果落在空处（列表刚滚动、行被重渲染），
+ * 选中会被清掉，而「改权限 / 重命名 / 删除」在没选中时是 **disabled**——点下去
+ * 静默无反应，后面的断言只表现为「改了权限却没变」，极难定位。把「选中」做成显式
+ * 前提：没选中就重试，最后仍不成立就带着当前值报错。
+ */
+async function selectFileRow(name) {
+  for (let i = 0; i < 4; i += 1) {
+    await cdp.eval(`(() => {
+      const name = ${JSON.stringify(name)};
+      const all = window.__wt?.files?.rows ?? [];
+      const idx = all.indexOf(name);
+      if (idx >= 0) {
+        const list = document.getElementById("files-list");
+        list.scrollTop = Math.max(0, idx * 20 - Math.floor(list.clientHeight / 2));
+      }
+      return true;
+    })()`);
+    await clickFileRow(name);
+    const sel = await waitFor(
+      async () => {
+        const s = await cdp.eval(`window.__wt.files.selected`);
+        return s === name ? s : null;
+      },
+      { timeout: 2500, label: `选中 ${name}` },
+    ).catch(() => null);
+    if (sel === name) return;
+  }
+  throw new Error(
+    `点选 ${name} 后仍未选中（当前 selected=${await cdp.eval(`window.__wt.files.selected`)}）`,
+  );
+}
+
 /** 当前面板里有哪些行（失败时用来定位）。 */
 async function rowTexts() {
   const f = await cdp.eval(`window.__wt?.files ?? null`);
@@ -2942,6 +2977,232 @@ try {
     { timeout: 5000, label: "未保存确认框" },
   ).catch(() => null);
   if (discard) await clickDialogButton("ask-ok", "yes");
+
+  // 16d-4e. 列编辑（`FIL-011`）：矩形框选后一次改多行同列。
+  // 判据必须落在「三行真的都改了」——只断言开关状态，等于只验了自己设的变量。
+  await cdp.eval(`window.__TAURI__.core.invoke("mock_seed_file", { path: "/col.txt", content: ${JSON.stringify(Buffer.from("aaa\nbbb\nccc\n").toString("base64"))} })`);
+  await cdp.eval(`(() => {
+    const sel = document.getElementById("files-session");
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    return sel.value;
+  })()`);
+  await waitFor(
+    async () => (await cdp.eval(`window.__wt.files.rows.includes("col.txt")`)) ? true : null,
+    { timeout: 15000, label: "col.txt 出现在列表" },
+  ).catch(() => null);
+  const prevColFile = await cdp.eval(`window.__wt.lastEdit?.localPath ?? null`);
+  await clickFileRow("col.txt");
+  await clickElement("#files-edit");
+  await waitFor(
+    async () => {
+      const e = await cdp.eval(`window.__wt.lastEdit`);
+      return e && e.localPath !== prevColFile ? e : null;
+    },
+    { timeout: 20000, label: "col.txt 下载" },
+  );
+  await clickElement("#edit-inline");
+  const colOpen = await waitFor(
+    async () => {
+      const e = await cdp.eval(`window.__wt.editor`);
+      return e.open && e.monaco && e.text === "aaa\nbbb\nccc\n" ? e : null;
+    },
+    { timeout: 20000, label: "col.txt 进编辑器" },
+  ).catch(() => null);
+  const lineNos = await cdp.eval(`[...document.querySelectorAll("#ed-monaco .line-numbers")].map((n) => n.textContent)`);
+  check(
+    "编辑器显示行号（FIL-011）",
+    colOpen !== null && lineNos.includes("1") && lineNos.includes("3"),
+    `行号 ${JSON.stringify(lineNos)}`,
+  );
+  const langN = await cdp.eval(`window.__wt.editor.languages`);
+  check(
+    "语法高亮覆盖 ≥ 30 种语言（FIL-011）",
+    typeof langN === "number" && langN >= 30,
+    `${langN} 种`,
+  );
+
+  // 打开列选择开关，并用 Monaco 自己的 option 值确认不是只改了个变量
+  await clickElement("#ed-col");
+  const colOpt = await cdp.eval(`(() => {
+    const m = window.monaco?.editor?.getEditors?.()[0];
+    if (!m) return null;
+    return {
+      on: window.__wt.editor.columnSelection,
+      option: m.getOption(window.monaco.editor.EditorOption.columnSelection),
+    };
+  })()`);
+  check(
+    "列选择开关生效（FIL-011）",
+    colOpt?.on === true && colOpt?.option === true,
+    `state=${colOpt?.on} option=${colOpt?.option}`,
+  );
+
+  // 拖拽前必须只有一个光标：否则「一次键入改三行」可能被当成之前就有的多光标。
+  // （不读 DOM 的选区高亮：Monaco 是下一帧才画全的，mouseup 后同步读只有 1 行。）
+  const caretBefore = await cdp.eval(`window.__wt.editor.selections`);
+  check("拖拽前只有一个光标（前提）", caretBefore === 1, `selections=${caretBefore}`);
+
+  // 真鼠标从第 1 行第 1 列拖到第 3 行第 2 列 → 三行同列、宽一格的矩形框
+  const colBox = await cdp.eval(`(() => {
+    const m = window.monaco.editor.getEditors()[0];
+    m.setScrollTop(0);
+    const r = m.getDomNode().getBoundingClientRect();
+    const a = m.getScrolledVisiblePosition({ lineNumber: 1, column: 1 });
+    const b = m.getScrolledVisiblePosition({ lineNumber: 3, column: 2 });
+    if (!a || !b) return null;
+    return {
+      x: r.left + a.left + 2,
+      x2: r.left + b.left + 2,
+      y1: r.top + a.top + a.height / 2,
+      y2: r.top + b.top + b.height / 2,
+    };
+  })()`);
+  if (!colBox) throw new Error("量不到 Monaco 的行坐标");
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mousePressed", x: colBox.x, y: colBox.y1, button: "left", buttons: 1, clickCount: 1,
+  });
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mouseMoved", x: colBox.x2, y: colBox.y2, button: "left", buttons: 1,
+  });
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased", x: colBox.x2, y: colBox.y2, button: "left", buttons: 0, clickCount: 1,
+  });
+
+  const txKey = { key: "x", code: "KeyX", windowsVirtualKeyCode: 88, nativeVirtualKeyCode: 88 };
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", ...txKey, text: "x", unmodifiedText: "x" });
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...txKey });
+  const colTyped = await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.editor.text`);
+      return t === "xaa\nxbb\nxcc\n" ? t : null;
+    },
+    { timeout: 6000, label: "矩形框选后输入" },
+  ).catch(() => null);
+  check(
+    "列选择下一次输入改到三行同列（FIL-011）",
+    colTyped !== null,
+    JSON.stringify(await cdp.eval(`window.__wt.editor.text`)),
+  );
+
+  // 关掉开关后，Monaco 原生的 `Shift+Alt+拖拽` 仍能框选：这是文档里写明的第二条路。
+  // （`Shift+Alt+↓` 不行——这个构建里它绑给「复制行」了，实测按两下会把首行复制出来，
+  //  所以别把它写进文档。）
+  await clickElement("#ed-col");
+  const boxBox = await cdp.eval(`(() => {
+    const m = window.monaco.editor.getEditors()[0];
+    m.setScrollTop(0);
+    const r = m.getDomNode().getBoundingClientRect();
+    const a = m.getScrolledVisiblePosition({ lineNumber: 1, column: 1 });
+    const b = m.getScrolledVisiblePosition({ lineNumber: 3, column: 2 });
+    if (!a || !b) return null;
+    return {
+      x: r.left + a.left + 2,
+      x2: r.left + b.left + 2,
+      y1: r.top + a.top + a.height / 2,
+      y2: r.top + b.top + b.height / 2,
+    };
+  })()`);
+  if (!boxBox) throw new Error("量不到 Shift+Alt 框选的坐标");
+  // Shift+Alt+拖拽是「从当前光标往外扩」，上一步的矩形框留下了三行光标——不先收回
+  // 单光标，扩出来的就不是你要的那个框（实测会落在第 2 列）。
+  await cdp.eval(`(() => {
+    const m = window.monaco.editor.getEditors()[0];
+    m.setPosition({ lineNumber: 1, column: 1 });
+    m.focus();
+    return true;
+  })()`);
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mousePressed", x: boxBox.x, y: boxBox.y1, button: "left", buttons: 1, modifiers: 9, clickCount: 1,
+  });
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mouseMoved", x: boxBox.x2, y: boxBox.y2, button: "left", buttons: 1, modifiers: 9,
+  });
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased", x: boxBox.x2, y: boxBox.y2, button: "left", buttons: 0, modifiers: 9, clickCount: 1,
+  });
+  const tyKey = { key: "y", code: "KeyY", windowsVirtualKeyCode: 89, nativeVirtualKeyCode: 89 };
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", ...tyKey, text: "y", unmodifiedText: "y" });
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...tyKey });
+  const colKeyed = await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.editor.text`);
+      return t === "yaa\nybb\nycc\n" ? t : null;
+    },
+    { timeout: 6000, label: "Shift+Alt 框选后输入" },
+  ).catch(() => null);
+  check(
+    "Shift+Alt+拖拽也能框选多行同列（FIL-011）",
+    colKeyed !== null && (await cdp.eval(`window.__wt.editor.columnSelection`)) === false,
+    JSON.stringify(await cdp.eval(`window.__wt.editor.text`)),
+  );
+  // 这一步改了内容（未保存），关标签会弹确认
+  await cdp.eval(`document.querySelector("#ed-tabs .edtab .x")?.click()`);
+  const colDiscard = await waitFor(
+    async () => ((await cdp.eval(`document.getElementById("ask-dialog").open`)) ? true : null),
+    { timeout: 5000, label: "列编辑未保存确认" },
+  ).catch(() => null);
+  if (colDiscard) await clickDialogButton("ask-ok", "yes");
+
+  // 自动缩进（`FIL-011`）：在 `{` 后回车，下一行要缩进。这是 Monaco 的语言级
+  // onEnterRules，不真按一次回车就没法说「自动缩进可用」。
+  await cdp.eval(`window.__TAURI__.core.invoke("mock_seed_file", { path: "/ind.js", content: ${JSON.stringify(Buffer.from("function f() {\n}\n").toString("base64"))} })`);
+  await cdp.eval(`(() => {
+    const sel = document.getElementById("files-session");
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    return sel.value;
+  })()`);
+  await waitFor(
+    async () => (await cdp.eval(`window.__wt.files.rows.includes("ind.js")`)) ? true : null,
+    { timeout: 15000, label: "ind.js 出现在列表" },
+  ).catch(() => null);
+  const prevIndFile = await cdp.eval(`window.__wt.lastEdit?.localPath ?? null`);
+  await clickFileRow("ind.js");
+  await clickElement("#files-edit");
+  await waitFor(
+    async () => {
+      const e = await cdp.eval(`window.__wt.lastEdit`);
+      return e && e.localPath !== prevIndFile ? e : null;
+    },
+    { timeout: 20000, label: "ind.js 下载" },
+  );
+  await clickElement("#edit-inline");
+  await waitFor(
+    async () => {
+      const e = await cdp.eval(`window.__wt.editor`);
+      return e.monaco && e.lang === "javascript" && e.text === "function f() {\n}\n" ? e : null;
+    },
+    { timeout: 20000, label: "ind.js 进编辑器" },
+  ).catch(() => null);
+  await cdp.eval(`(() => {
+    const m = window.monaco.editor.getEditors()[0];
+    m.focus();
+    m.setPosition({ lineNumber: 1, column: 15 });
+    return m.getPosition();
+  })()`);
+  const enterKey = { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 };
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", ...enterKey, text: "\r" });
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...enterKey });
+  const ixKey = { key: "x", code: "KeyX", windowsVirtualKeyCode: 88, nativeVirtualKeyCode: 88 };
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", ...ixKey, text: "x", unmodifiedText: "x" });
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...ixKey });
+  const indented = await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.editor.text`);
+      return typeof t === "string" && t.startsWith("function f() {\n  x") ? t : null;
+    },
+    { timeout: 6000, label: "自动缩进" },
+  ).catch(() => null);
+  check(
+    "在 { 后回车自动缩进（FIL-011）",
+    indented !== null,
+    JSON.stringify(await cdp.eval(`window.__wt.editor.text`)),
+  );
+  await cdp.eval(`document.querySelector("#ed-tabs .edtab .x")?.click()`);
+  const indDiscard = await waitFor(
+    async () => ((await cdp.eval(`document.getElementById("ask-dialog").open`)) ? true : null),
+    { timeout: 5000, label: "缩进用例未保存确认" },
+  ).catch(() => null);
+  if (indDiscard) await clickDialogButton("ask-ok", "yes");
 
   // 16d-5. 多会话并存（FIL-001）：文件面板可以对着某个会话，而不是只能跟随连接表单
   const filesSessionId = await cdp.eval(`(async () => {
@@ -7008,16 +7269,43 @@ try {
   );
 
   // 改权限（`FIL-002` 的 SETSTAT）：644 → 600，列表里要立刻反映出来
-  await clickFileRow("notes.txt");
+  await selectFileRow("notes.txt");
   await clickElement("#files-chmod");
   await confirmName("600");
+  // 诊断快照：这条失败过两轮，只留「没变」等于让人猜。把面板当时的真实状态一起带出来。
+  const chmodSnap = async () =>
+    cdp.eval(`(() => {
+      const f = window.__wt.files;
+      return {
+        path: f.path,
+        error: f.error,
+        msg: f.msg,
+        total: f.total,
+        selected: f.selected,
+        rows: f.rows.slice(0, 6),
+        status: window.__wt.status?.shown ?? "",
+      };
+    })()`).catch(() => null);
+  const chmodAfter = await chmodSnap();
   const changedMode = await waitFor(
     async () => {
+      // 读 DOM 前先确认这一行**被渲染出来**：列表是虚拟滚动的，行不在窗口里就查不到。
+      // 这条用例曾因此读到 null，看着像「权限没变」，实际只是行被挤出了视口。
       const m = await cdp.eval(`(() => {
-        const row = [...document.querySelectorAll("#files-list .row")].find((r) =>
-          r.textContent.startsWith("notes.txt"),
+        const name = "notes.txt";
+        const row = [...document.querySelectorAll("#files-list .row")].find(
+          (r) => r.querySelector("span")?.textContent === name,
         );
-        return row?.querySelector("span.mode")?.textContent ?? null;
+        if (!row) {
+          const all = window.__wt?.files?.rows ?? [];
+          const idx = all.indexOf(name);
+          if (idx >= 0) {
+            const list = document.getElementById("files-list");
+            list.scrollTop = Math.max(0, idx * 20 - Math.floor(list.clientHeight / 2));
+          }
+          return null;
+        }
+        return row.querySelector("span.mode")?.textContent ?? null;
       })()`);
       return m === "-rw-------" ? m : null;
     },
@@ -7026,7 +7314,7 @@ try {
   check(
     "改权限后列表里的权限位真的变了（FIL-002 SETSTAT）",
     changedMode === "-rw-------",
-    `${changedMode ?? "没变"}`,
+    changedMode ?? `没变｜${JSON.stringify(chmodAfter)}`,
   );
 
   // 19u. 字体缺失回退提示（`TER-005`）

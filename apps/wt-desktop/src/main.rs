@@ -4056,3 +4056,34 @@ mod data_dir_tests {
     }
 }
 
+/// 内嵌编辑器的大文件保护（`FIL-011`）。
+///
+/// 超过上限必须**明确拒绝**：把几个 GB 读进内存再塞给 textarea/Monaco，
+/// 界面会直接假死——用户只会看到「点了没反应」，比报错糟得多。
+#[cfg(test)]
+mod editor_limits_tests {
+    use super::*;
+
+    #[test]
+    fn refuses_files_over_the_editor_limit() {
+        let dir = std::env::temp_dir().join(format!("wt-editor-limit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let big = dir.join("big.txt");
+        std::fs::write(&big, vec![b'a'; (MAX_EDIT_BYTES + 1) as usize]).unwrap();
+        let err = match local_read_text(big.to_string_lossy().into_owned(), None) {
+            Err(e) => e,
+            Ok(_) => panic!("超过上限的文件不该被读进来"),
+        };
+        assert!(err.contains("FILE_TOO_LARGE"), "实际错误：{err}");
+
+        // 上限之内的照样能读，编码也要如实回报（别把成功的路径也一起拦掉）
+        let ok = dir.join("ok.txt");
+        std::fs::write(&ok, "hello").unwrap();
+        let dto = local_read_text(ok.to_string_lossy().into_owned(), None)
+            .unwrap_or_else(|e| panic!("小文件读取失败：{e}"));
+        assert_eq!(dto.text, "hello");
+        assert_eq!(dto.encoding, "utf-8");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+

@@ -2444,6 +2444,7 @@ const edInfoEl = document.getElementById("ed-info");
 const edFindEl = document.getElementById("ed-find");
 const edReplaceEl = document.getElementById("ed-replace");
 const edReEl = document.getElementById("ed-re");
+const edColEl = document.getElementById("ed-col");
 
 /** 打开的文档（每个一个标签）；`dirty` 表示有未保存修改 */
 let edDocs = [];
@@ -2461,32 +2462,62 @@ let edMonacoLoading = null;
 let edSilent = false;
 
 /**
- * 按扩展名猜语言（`FIL-011` 语法高亮）。
+ * 列选择模式（`FIL-011`）：开着时拖拽就是矩形框选，一次改多行同列。
+ *
+ * Monaco 自带这个能力，这里只加一个**看得见、可验**的开关。
+ * 没有 Monaco 时按钮不显示——textarea 不做矩形框选，摆一个点了没反应的开关
+ * 比没有更糟（用户会以为点坏了）。
+ */
+let edColumnSelection = false;
+
+function edApplyColumnSelection(on) {
+  edColumnSelection = Boolean(on);
+  if (edMonaco) edMonaco.updateOptions({ columnSelection: edColumnSelection });
+  edColEl.setAttribute("aria-pressed", String(edColumnSelection));
+  // 点按钮会把焦点拿走：不还给编辑器，接下来的键入就掉在地上了
+  edFocus();
+}
+
+edColEl.addEventListener("click", () => {
+  if (!edMonaco) return;
+  edApplyColumnSelection(!edColumnSelection);
+});
+
+/**
+ * 扩展名（或整名）→ Monaco 语言 id（`FIL-011` 要求 ≥ 30 种）。
  *
  * 猜不到就是 `plaintext`——**不猜**。乱着色比不着色更误导人。
+ * 这张表同时是「支持多少种语言」的唯一来源：`__wt.editor.languages` 报的是它
+ * 去重后的数量，悄悄删掉几种会被 e2e 的 ≥30 断言拦住。
  */
+const ED_LANG_BY_EXT = {
+  dockerfile: "dockerfile", makefile: "makefile",
+  js: "javascript", mjs: "javascript", cjs: "javascript", jsx: "javascript",
+  ts: "typescript", tsx: "typescript",
+  json: "json", jsonc: "json",
+  md: "markdown", markdown: "markdown",
+  css: "css", scss: "scss", less: "less",
+  html: "html", htm: "html", xml: "xml", svg: "xml",
+  yaml: "yaml", yml: "yaml", toml: "ini", ini: "ini", conf: "ini", cfg: "ini",
+  sh: "shell", bash: "shell", zsh: "shell", ksh: "shell",
+  ps1: "powershell", psm1: "powershell",
+  py: "python", rs: "rust", go: "go", java: "java", kt: "kotlin",
+  c: "c", h: "c", cpp: "cpp", cc: "cpp", hpp: "cpp",
+  cs: "csharp", php: "php", rb: "ruby", pl: "perl", lua: "lua",
+  sql: "sql", graphql: "graphql", proto: "proto",
+  bat: "bat", cmd: "bat", diff: "diff", patch: "diff",
+};
+
+/** 去重后的语言数：多个扩展名可能指向同一种语言（mjs/cjs 都是 javascript） */
+const ED_LANG_COUNT = new Set(Object.values(ED_LANG_BY_EXT)).size;
+
 function edLangOf(name) {
   const base = String(name || "").toLowerCase();
-  if (base === "dockerfile") return "dockerfile";
-  if (base === "makefile") return "makefile";
+  // 整名匹配排前面：Dockerfile / Makefile 没有扩展名
+  const byName = ED_LANG_BY_EXT[base];
+  if (byName) return byName;
   const ext = base.includes(".") ? base.slice(base.lastIndexOf(".") + 1) : "";
-  const map = {
-    js: "javascript", mjs: "javascript", cjs: "javascript", jsx: "javascript",
-    ts: "typescript", tsx: "typescript",
-    json: "json", jsonc: "json",
-    md: "markdown", markdown: "markdown",
-    css: "css", scss: "scss", less: "less",
-    html: "html", htm: "html", xml: "xml", svg: "xml",
-    yaml: "yaml", yml: "yaml", toml: "ini", ini: "ini", conf: "ini", cfg: "ini",
-    sh: "shell", bash: "shell", zsh: "shell", ksh: "shell",
-    ps1: "powershell", psm1: "powershell",
-    py: "python", rs: "rust", go: "go", java: "java", kt: "kotlin",
-    c: "c", h: "c", cpp: "cpp", cc: "cpp", hpp: "cpp",
-    cs: "csharp", php: "php", rb: "ruby", pl: "perl", lua: "lua",
-    sql: "sql", graphql: "graphql", proto: "proto",
-    bat: "bat", cmd: "bat", diff: "diff", patch: "diff",
-  };
-  return map[ext] ?? "plaintext";
+  return ED_LANG_BY_EXT[ext] ?? "plaintext";
 }
 
 /**
@@ -2566,6 +2597,8 @@ async function edEnsureMonaco() {
   edMonacoEl.hidden = false;
   edGutterEl.hidden = true;
   edTextEl.hidden = true;
+  // 只有 Monaco 起来了才给这个开关：它靠 Monaco 的矩形框选，退路没有对应能力
+  edColEl.hidden = false;
   edSyncBody();
   return edMonaco;
 }
@@ -6970,6 +7003,12 @@ window.__wt = {
       // 语法高亮（`FIL-011`）：Monaco 有没有接管、按扩展名推断出什么语言
       monaco: Boolean(edMonaco),
       lang: doc ? edLangOf(doc.name) : null,
+      // 列选择（`FIL-011`）：开关是否按下；`selections` 是当前选区/光标个数
+      //（矩形框选算 1 个，多光标才是 >1）
+      columnSelection: Boolean(edMonaco) && edColumnSelection,
+      selections: edMonaco ? (edMonaco.getSelections()?.length ?? 0) : 0,
+      // 语法高亮覆盖的语言数（规格要求 ≥ 30）
+      languages: ED_LANG_COUNT,
     };
   },
   /** 正在编辑的远端文件（`FIL-005`）：验收读它 */

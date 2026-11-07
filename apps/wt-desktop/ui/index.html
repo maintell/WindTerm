@@ -413,6 +413,8 @@
         cursor: pointer;
       }
       #ed-bar #ed-save { border-color: var(--accent); }
+      /* 列选择开关（`FIL-011`）：按下时拖拽即矩形框选，多行同列一起改 */
+      #ed-bar #ed-col[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
       #ed-re-row { display: flex; align-items: center; gap: 4px; }
       #ed-body { flex: 1; min-height: 0; display: flex; overflow: hidden; }
       /* Monaco 容器（`FIL-011`）：加载失败时保持 hidden，退回原来的 textarea */
@@ -1254,6 +1256,7 @@
             <option value="shift_jis">Shift-JIS</option>
             <option value="iso-8859-1">Latin-1</option>
           </select>
+          <button type="button" id="ed-col" hidden aria-pressed="false" title="列选择：拖拽即矩形框选，多行同列一起改（也可 Shift+Alt 拖拽临时框选）">列选</button>
           <button type="button" id="ed-save">保存</button>
             <span id="ed-info"></span>
           </div>

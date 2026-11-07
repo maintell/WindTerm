@@ -157,6 +157,8 @@ def test_ssh_connect(server, wt):
 | 点完确认框立刻打字，头几个键会漏掉 | `askConfirm` 是 `await` 对话框 `close` 事件后才把状态置真的（例如 `liveBroadcast.on = true`）。点完 `ask-ok` 马上 `typeText`，前几个字符既没进缓冲也没被镜像，症状是「危险命令拦截不生效」（`blocked=0`、开关还是 `on`）。做法：点完确认**先等目标状态真置上**（`waitFor` 读 `__wt.broadcast.live.on`）再操作 |
 | 给可滚动列表加 `tabindex` 后，双击文件「没反应」 | 键盘导航要求列表能拿焦点，于是 `selectEntry` 里调 `filesList.focus()`。**聚焦一个可滚动容器会把它滚一下**，双击的第二次点击就落到别的位置，`dblclick` 不再触发——表现成「双击打不开目录」，而事件明明绑着。修法：`focus({ preventScroll: true })` |
 
+| 列选择读 `getSelection()` / 选区 DOM 都看着「只框住一行」 | 两个坑叠在一起：① 列选择下 `getSelection()` 只报**主光标**那一段，实测 `endLine` 恒等于 `startLine`；② 就算去看 DOM，Monaco 的选区片段（`.cslr`）是**下一帧**才画全的，`mouseup` 之后同步读同样只拿到 1 行。判据别放在「刚拖完的瞬间」：要么等一帧，要么直接用行为证明（拖拽前确定只有一个光标，键入一次、三行同列都变） |
+| 以为 `Shift+Alt+↓` 是列选择键 | 这个 Monaco 构建里它绑给「复制行」：按两下会把首行复制成两行，再键入就多出一行。Monaco 原生可用的第二条路是 **`Shift+Alt+拖拽`**（鼠标，已按真事件验收）；方向键那条不要写进文档 |
 | 拖拽重排的落点压在标签中线上，逐次运行来回翻 | 拖动语义是「插到目标**之前**」，把落点算成目标标签的正中，就正好压在有判定意义的分界线上：一次插到前、一次插到后，表现成这条用例一轮红一轮绿。做法：落点取目标标签的左四分之一，含义确定 |
 | 环境慢导致的超时补点，不能连真实失败一起重试 | 首次建连偶发超时（conhost 堆积）时补点一次是对的；但把「打开失败」也重试，就等于把真实缺陷掩盖成通过。补点只在**超时**这一条分支上做，其它错误立刻抛 |
 
@@ -166,7 +168,8 @@ def test_ssh_connect(server, wt):
 
 | 帮助函数点不到虚拟列表里的行（`noperm/` 反复「找不到」） | 虚拟滚动只渲染可视窗口，目标行**根本不在 DOM 里**，`scrollIntoView` 因此也无效——它只能滚已经在 DOM 里的元素。修法：先读 `__wt.files.rows` 拿索引，按 `索引 × 行高` 设 `scrollTop`，下一轮探测就能找到。这类失败看起来像「这一行不存在」，实际是「还没渲染」 |
 
-| **以为「用不到」就裁掉 Monaco 的 `vs/language/`**，结果 `editor.main.js` 会 `require` 它的 `monaco.contribution`，404 回 HTML → `SyntaxError: Unexpected token '<'` | 这类裁剪只能裁 `nls.messages.*`（翻译），**不能裁 `language/`（语言模式与 worker 的入口）**。判断方法：`grep -o "vs/language/[a-z]*/[a-zA-Z.]*" editor.main.js | sort -u`，被 bundle 直接 require 的都不能删 |\r\n| 裁掉 Monaco 的 `nls.messages.*.js` 之后，页面报 `SyntaxError: Unexpected token '<'` | 页面 locale 是中文时，AMD loader 会去取 `vs/nls.messages.zh-cn.js`；这个文件被裁掉了，静态服务对不存在的路径回 `index.html`，浏览器把它当 JS 解析——于是报「遇到 `<`」。修法二选一：把它留下的那几个翻译文件加回来，或者 `require.config({ "vs/nls": { availableLanguages: { "*": "" } } })` 只用内置英文。**这类「404 被当脚本」的错误一律先查是不是少了 vendor 文件** |
+| **以为「用不到」就裁掉 Monaco 的 `vs/language/`**，结果 `editor.main.js` 会 `require` 它的 `monaco.contribution`，404 回 HTML → `SyntaxError: Unexpected token '<'` | 这类裁剪只能裁 `nls.messages.*`（翻译），**不能裁 `language/`（语言模式与 worker 的入口）**。判断方法：`grep -o "vs/language/[a-z]*/[a-zA-Z.]*" editor.main.js | sort -u`，被 bundle 直接 require 的都不能删 |
+| 裁掉 Monaco 的 `nls.messages.*.js` 之后，页面报 `SyntaxError: Unexpected token '<'` | 页面 locale 是中文时，AMD loader 会去取 `vs/nls.messages.zh-cn.js`；这个文件被裁掉了，静态服务对不存在的路径回 `index.html`，浏览器把它当 JS 解析——于是报「遇到 `<`」。修法二选一：把它留下的那几个翻译文件加回来，或者 `require.config({ "vs/nls": { availableLanguages: { "*": "" } } })` 只用内置英文。**这类「404 被当脚本」的错误一律先查是不是少了 vendor 文件** |
 
 当前覆盖的断言（**数量不写死**——随功能增长，以 e2e 自己输出的 `N/N 项通过` 为准）：
 
@@ -226,7 +229,15 @@ def test_ssh_connect(server, wt):
 - 左右分屏（`G6`）：点「分屏」后两个 pane 各有一个会话（读 `#term-a` / `#term-b` 里的
   `.term-view` 数量，不靠视觉判断）、再点一次所有会话回到左 pane 且右 pane 隐藏；
 - 内嵌编辑器（`FIL-011`）：打开后显示文件内容、全部替换能改到内容并标记未保存、
-  保存后**回读本地文件**确认内容真的变了（只看状态栏等于没验）；
+  保存后**回读本地文件**确认内容真的变了（只看状态栏等于没验）；**语法高亮**要真的出现
+  两种以上 token 颜色，并断言映射表覆盖 ≥ 30 种语言（读 `__wt.editor.languages`，
+  防止映射被悄悄裁掉）；**编码**：GBK 字节的文件被识别成 `gb18030` 并解出「中文」；
+  **换行符**：CRLF 文件识别成 `crlf`、切 LF 后正文里没有 CR；**行号**槽里能读到 1 与 3；
+  **自动缩进**：在 `{` 后真按一次回车再键入，第二行以缩进开头；**列编辑**：打开「列选」
+  （并用 Monaco 自己的 `EditorOption.columnSelection` 确认不是只改了本地变量），用真鼠标
+  拖出跨三行的矩形框——判据是**拖拽前只有一个光标**（前提）+ **键入一个字符后三行同列
+  都变**（选区高亮要等 Monaco 下一帧才画全，不能 mouseup 后同步读 DOM）；
+  关掉开关后 `Shift+Alt+拖拽` 也能框选（原生通路）；
 - 权限不足（`FIL-001` AC-4）：mock 的 `/noperm` 一律返回 `PermissionDenied`；进去之后
   `__wt.files.error` 含「权限不足」、`rows` 为 0、DOM 里**不是**「（空目录）」占位而是错误行；
   返回上一层后错误清除、列表恢复；
