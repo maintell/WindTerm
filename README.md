@@ -132,7 +132,7 @@ cargo run -p wt-cli -- session list
 | `SET-001` 剩余 | 规格要 8 个分组，现在 7 组（缺「图形」「扩展」——那两个分组的设置项本身还没做） | 分组、搜索、命中高亮、分组路径、回车跳转、默认值与是否需重启的标注都有了 |
 | `SET-012` 国际化 | zh-CN / en-US 完整覆盖、可切换不重启 | 机制已可用：`data-i18n` + 中英词表 + 设置里的语言选择，覆盖 **45 个键 / 48 处**（主按钮、设置项名、对话框标题与按钮）+ 状态栏 37 条字面量 + 右键菜单（四套 25 条）+ **带变量状态栏模板 51 条**，缺口已做成门禁——缺词条、「没人用的死词条」、骨架正则改错都判红（含变异验证）。**其余文案仍是中文**——错误消息、失败/异常类状态栏模板约 40 条未翻（后端错误串是中文，翻前半句会中英混排，等后端错误码也英文化再一起做） |
 | `SET-013` MobaXterm 设置导入 | 与 `SES-020` 同入口，导入配色/字体/快捷键/全局开关 | 只导会话树 |
-| `SYS-008` 多平台打包 | Windows（MSI/便携 zip）、macOS（DMG，公证）、Linux（AppImage/deb/rpm） | **便携 zip 链路本地已验证**：`scripts/verify-package.ps1` 复现 release 编译→zip→SHA256SUMS 并自校验（解包字节一致、哈希对得上、无 BOM）；`.github/workflows/release.yml` 已接（推 `v*` 标签才跑，一条 runner，同样的步骤 + 发 Release），但仓库至今 0 个 tag、CI 没真跑过。NSIS/MSI 未产出：`bundle.targets` 配了 nsis，本机无 `cargo-tauri`/NSIS 工具链、CI 也只做便携 zip（`cargo build --release`），配置与产物不一致待定调；macOS 公证与 Linux 包还没有 |
+| `SYS-008` 多平台打包 | Windows（MSI/便携 zip）、macOS（DMG，公证）、Linux（AppImage/deb/rpm） | **便携 zip 链路本地已验证**：`scripts/verify-package.ps1` 复现 release 编译→zip→SHA256SUMS 并自校验（解包字节一致、哈希对得上、无 BOM、解包出的 exe 真能启动并建起 WebView2 子进程）；`.github/workflows/release.yml` 已接（推 `v*` 标签才跑，一条 runner，同样的步骤 + 发 Release），但仓库至今 0 个 tag、CI 没真跑过。NSIS/MSI 未产出：`bundle.targets` 配了 nsis，本机无 `cargo-tauri`/NSIS 工具链、CI 也只做便携 zip（`cargo build --release`），配置与产物不一致待定调；macOS 公证与 Linux 包还没有 |
 
 `GUI-015` / `GUI-018` / `GUI-022`（RDP）与 VNC 同样未做，单列在进度表的「其余协议」行。
 

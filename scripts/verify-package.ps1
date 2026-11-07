@@ -56,6 +56,22 @@ $srcHash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
 $inHash = (Get-FileHash $inner -Algorithm SHA256).Hash.ToLower()
 if ($srcHash -ne $inHash) { throw 'zip 里的 exe 与 release 产物字节不一致' }
 
+# 启动自检：字节对得上还不够，要证明这个包能真的跑起来、webview 真加载了前端。
+# 判据是「进程活着 + 建起 WebView2 子进程」——只看进程活着会放过「空白页」，
+# 而 WebView2 子进程起来才说明 Tauri 真的建了视图。跑完立刻收掉，不留后台进程。
+Write-Host '=== 启动自检 ==='
+$proc = Start-Process -FilePath $inner -PassThru
+Start-Sleep -Seconds 6
+try {
+    if ($proc.HasExited) { throw 'WindTerm.exe 启动后立即退出，便携包可能是空壳' }
+    $kids = @(Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq $proc.Id })
+    $wv = @($kids | Where-Object { $_.Name -match 'msedgewebview2|WebView' })
+    if ($wv.Count -eq 0) { throw '没建起 WebView2 子进程，前端资源可能没嵌进去' }
+    Write-Host ('启动正常：pid=' + $proc.Id + '，WebView2 子进程 ' + $wv.Count + ' 个')
+} finally {
+    if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+}
+
 Write-Host ('exe  ' + (Get-Item $exe).Length + ' 字节')
 Write-Host ('zip  ' + (Get-Item $zip).Length + ' 字节')
 Write-Host ('sha256  ' + $hash)
