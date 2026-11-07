@@ -390,7 +390,9 @@ if (-not (Test-Path $statusPath)) {
 #      12b 只保证「每条 P0 都在表里」。这张表还要能当证据用，所以再查三条：
 #      ① 每行必须是 6 段（首尾空 + id + 状态 + 依据 + 缺什么）：内联代码里的竖线不转义
 #         会把整行截断，渲染出来列就错位——肉眼极容易漏；
-#      ② 标 ✅ 的行不许再写「未做 / 未实现 / 没做」，那等于自己承认没做完；
+#      ② 标 ✅ 的行不许在「缺什么」里承认还有没做的子项——「未做/未实现/没做」只是
+#         一部分说法，独立复核抓到过用「不做/不可配/还没有/尚未/未支持」绕开正则、
+#         把规格明文 P0 子项包装成「刻意不做」而仍标 ✅ 的过度声明，这里一并盯住；
 #      ③ 标 🟡/⬜ 的行必须写清缺什么，空着或写「—」等于把缺口藏起来。
 # ─────────────────────────────────────────────────────────────
 $statusRows = @($statusText -split [char]10 | Where-Object { $_ -match '^[|].*`[A-Z][A-Z]+-[0-9]+`' })
@@ -404,8 +406,8 @@ foreach ($line in $statusRows) {
     $rowId = $cells[1].Trim()
     $rowStatus = $cells[2].Trim()
     $rowGap = $cells[4].Trim()
-    if ($rowStatus -match '✅' -and $rowGap -match '未做|未实现|没做') {
-        Fail ("{0} 标了 ✅，却在「缺什么」里承认没做完：{1}" -f $rowId, $rowGap)
+    if ($rowStatus -match '✅' -and $rowGap -match '未做|未实现|没做|不做|不可配|尚未|未支持') {
+        Fail ("{0} 标了 ✅，却在「缺什么」里承认还有没做的子项：{1}" -f $rowId, $rowGap)
     }
     if ($rowStatus -match '🟡|⬜' -and ($rowGap -eq '' -or $rowGap -eq '—' -or $rowGap -eq '-')) {
         Fail ("{0} 标了未完成，却没写清缺什么" -f $rowId)
