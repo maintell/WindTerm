@@ -468,6 +468,23 @@ if (-not $i18nBlock.Success) {
 }
 
 # ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# 9f. 带变量状态栏模板的英文骨架（SET-012）：逐条要有中文样例对照
+#     STATUS_TPL_EN 是「正则 → 英文」的活代码，写错了用户看到的是半句中英混排，
+#     光靠肉眼查不出来。把这个离线自测接进门禁：改错骨架立即红。
+# ─────────────────────────────────────────────────────────────
+$statusTplCheck = Join-Path $PSScriptRoot 'check-status-tpl.mjs'
+if (-not (Test-Path $statusTplCheck)) {
+    Fail '缺少 scripts/check-status-tpl.mjs（状态栏模板骨架自测）'
+} else {
+    $nodeOut = & node $statusTplCheck 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Fail ("状态栏模板骨架自测未通过：" + (($nodeOut | Select-Object -Last 3) -join ' '))
+    } else {
+        Write-Host ("状态栏模板：" + ($nodeOut | Select-Object -Last 1))
+    }
+}
+
 # 12. 相对链接可达（NFR-026）
 #     用户手册会随功能增长不断加页，链接断了没人发现。
 #     只查相对路径的 .md 链接；外链不查（离线环境查不了）

@@ -162,14 +162,97 @@ const STATUS_EN = {
   "就绪（点击「新建本地终端」开始）": "Ready (click New local terminal to start)",
 };
 
+/**
+ * 带变量状态栏模板的中文→英文骨架（`SET-012`）。
+ *
+ * `STATUS_EN` 只认「整句相等」的字面量，而状态栏里绝大多数是
+ * `已保存会话 ${name}` 这种模板——英文界面下它们仍是中文，是 `SET-012` 的主要缺口。
+ * 这里用「中文骨架正则 → 英文骨架」做精确匹配：固定文字翻掉，捕获组（名字/数字/
+ * 路径/编码名）原样带回，不碰数据本身。
+ *
+ * **失败/异常类模板故意不列**：`${e}` 展开的是后端错误串（`[CODE] 中文说明`），
+ * 翻了前半句会得到「Failed: …中文…」这种中英混排，比全中文更糟。那批如实记在
+ * README 的缺口里，等后端错误码也英文化再一起做。
+ *
+ * 门禁：`check-docs.ps1` 核对「每条骨架都能在源码里匹配到至少一个 setStatus 调用」
+ * 且「没有永远匹配不到的死骨架」；e2e 逐条在英文下验 `shown` 真的等于英文。
+ */
+const STATUS_TPL_EN = [
+  [/^标签已改名为：(.+)$/, "Tab renamed: $1"],
+  [/^标签顺序：(.+)$/, "Tab order: $1"],
+  [/^已填入 (.+) 的密码（本次运行记住的）$/, "Filled password for $1 (this run only)"],
+  [/^已从保险库填入 (.+) 的密码$/, "Filled password for $1 from vault"],
+  [/^(.+) 是 (.+) 会话，暂不支持$/, "$1 is a $2 session, not supported yet"],
+  [/^已重命名：(.+)$/, "Renamed: $1"],
+  [/^已复制：(.+)$/, "Copied: $1"],
+  [/^已导出：(.+)$/, "Exported: $1"],
+  [/^已选 (\d+) 个会话（Ctrl\+点击增减，右键可批量移动）$/, "$1 sessions selected (Ctrl+click to toggle, right-click for bulk move)"],
+  [/^已移动 (\d+) 个会话$/, "Moved $1 sessions"],
+  [/^已删除 (\d+) 个会话$/, "Deleted $1 sessions"],
+  [/^已新建文件夹：(.+)$/, "Folder created: $1"],
+  [/^已重命名文件夹：(.+)$/, "Folder renamed: $1"],
+  [/^已保存会话 (.+)$/, "Session saved: $1"],
+  [/^已删除会话 (.+)$/, "Session deleted: $1"],
+  [/^已删除保险库条目 (.+)$/, "Vault entry deleted: $1"],
+  [/^已复制 (\d+) 字符$/, "Copied $1 chars"],
+  [/^已粘贴 (\d+) 字符$/, "Pasted $1 chars"],
+  [/^已下载到本地：(.+)$/, "Downloaded to: $1"],
+  [/^已打开 (.+)（(\d+) 字节）$/, "Opened $1 ($2 bytes)"],
+  [/^已保存 (.+)（(\d+) 字节）$/, "Saved $1 ($2 bytes)"],
+  [/^匹配 (.+)$/, "Match: $1"],
+  [/^已按 (.+) 重新读取 (.+)$/, "Re-read $2 as $1"],
+  [/^换行符已经是 (.+)$/, "Line endings already $1"],
+  [/^换行符已改成 (.+)（记得保存）$/, "Line endings changed to $1 (remember to save)"],
+  [/^已生成 (.+) 密钥$/, "Generated $1 key"],
+  [/^键位冲突：(.+) 已被「(.+)」占用$/, "Key conflict: $1 is already used by $2"],
+  [/^已绑定 (.+)$/, "Bound: $1"],
+  [/^键位方案已导出：(.+)$/, "Keymap exported: $1"],
+  [/^自动刷新目录（(.+)）$/, "Auto-refreshed directory ($1)"],
+  [/^文件列表按 (.+) 排序$/, "File list sorted by $1"],
+  [/^权限位要 0~777 的八进制数，收到「(.+)」$/, "Permission must be octal 0-777, got $1"],
+  [/^已把 (.+) 的权限改成 (.+)$/, "Changed $1 permissions to $2"],
+  [/^已在当前终端切到 (.+)$/, "Changed to $1 in current terminal"],
+  [/^已复制路径：(.+)$/, "Path copied: $1"],
+  [/^复制失败，路径是：(.+)$/, "Copy failed, path is: $1"],
+  [/^已下载到 (.+)$/, "Downloaded to $1"],
+  [/^已广播到 (\d+) 个会话$/, "Broadcast to $1 sessions"],
+  [/^已导出广播结果：(.+)$/, "Broadcast results exported: $1"],
+  [/^右侧显示：(.+)$/, "Right pane: $1"],
+  [/^自定义危险规则：(\d+) 条$/, "Custom danger rules: $1"],
+  [/^密钥已轮换（(\d+) 条，保险库仍解锁）$/, "Key rotated ($1 entries, vault still unlocked)"],
+  [/^已忘掉 (.+)$/, "Forgot: $1"],
+  [/^已导入 (\d+) 套配色$/, "Imported $1 color schemes"],
+  [/^本地终端 shell：(.+)（新建终端生效）$/, "Local shell: $1 (applies to new terminals)"],
+  [/^显示列：大小(.+)$/, "Columns: size $1"],
+  [/^显示列：权限(.+)$/, "Columns: permissions $1"],
+  [/^连接超时：(\d+) 秒（下一次建连生效）$/, "Connect timeout: $1 s (applies to next connection)"],
+  [/^keepalive 最多丢失：(\d+) 次$/, "keepalive max missed: $1"],
+  [/^已跳到「(.+)」$/, "Jumped to $1"],
+  [/^终端编码：(.+)$/, "Terminal encoding: $1"],
+];
+
 let lastStatus = "";
 
 function setStatus(text) {
   // 存原文而不是成品：切到 English 时能把当前这条也重刷一遍，
   // 不然「已关闭」会一直挂到下一次状态变化才变英文
   lastStatus = text;
-  statusEl.textContent =
-    uiLang === "en" && Object.hasOwn(STATUS_EN, text) ? STATUS_EN[text] : text;
+  let shown = text;
+  if (uiLang === "en") {
+    if (Object.hasOwn(STATUS_EN, text)) {
+      shown = STATUS_EN[text];
+    } else {
+      // 带变量模板：逐条试骨架正则，命中就翻固定文字、把捕获组（数据）原样带回
+      for (const [re, en] of STATUS_TPL_EN) {
+        const m = re.exec(text);
+        if (m) {
+          shown = en.replace(/\$(\d)/g, (_, n) => m[Number(n)] ?? "");
+          break;
+        }
+      }
+    }
+  }
+  statusEl.textContent = shown;
 }
 
 /** 打开/关闭按钮的可用状态：多会话后开新会话不该被禁用 */
@@ -6801,7 +6884,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-116",
+  ui: "wt-ui-117",
   /**
    * 验收用：刷新会话树并等它**画完**。
    *

@@ -8341,6 +8341,35 @@ try {
   const stEn = await cdp.eval(`window.__wt._setStatus("已关闭")`);
   check("英文下状态栏字面量也翻译（SET-012）", stEn.shown === "Closed", `${stEn.raw} → ${stEn.shown}`);
 
+  // 带变量的状态栏模板：走一遍真的 setStatus，逐条验英文界面下显示的是英文骨架、
+  // 变量（名字/数字/字节数）原样带回。离线自测（check-status-tpl.mjs）只保证正则对，
+  // 这里保证它真的接进了 setStatus、作用到 DOM 上。
+  const tplCases = [
+    ["已保存会话 prod-db", "Session saved: prod-db"],
+    ["已选 3 个会话（Ctrl+点击增减，右键可批量移动）", "3 sessions selected (Ctrl+click to toggle, right-click for bulk move)"],
+    ["已打开 a.js（340 字节）", "Opened a.js (340 bytes)"],
+    ["已按 gb18030 重新读取 gbk.txt", "Re-read gbk.txt as gb18030"],
+    ["键位冲突：Ctrl+K 已被「清屏」占用", "Key conflict: Ctrl+K is already used by 清屏"],
+    ["连接超时：30 秒（下一次建连生效）", "Connect timeout: 30 s (applies to next connection)"],
+    ["已把 notes.txt 的权限改成 600", "Changed notes.txt permissions to 600"],
+    ["已广播到 2 个会话", "Broadcast to 2 sessions"],
+  ];
+  let tplBad = 0;
+  const tplDetails = [];
+  for (const [zh, want] of tplCases) {
+    const got = await cdp.eval(`window.__wt._setStatus(${JSON.stringify(zh)}).shown`);
+    if (got !== want) {
+      tplBad += 1;
+      tplDetails.push(`${zh} → ${JSON.stringify(got)}（期望 ${JSON.stringify(want)}）`);
+    }
+  }
+  check(
+    "英文下带变量的状态栏模板也翻成英文、变量原样保留（SET-012）",
+    tplBad === 0,
+    tplBad === 0 ? `${tplCases.length} 条模板全部生效` : tplDetails.join("；"),
+  );
+
+
   // 右键菜单也走词表（`SET-012`）：菜单文案是代码里拼的，页面元素那条门禁看不见它。
   // 必须先把设置对话框关掉——`<dialog>.showModal()` 会让页面其余部分失效，
   // 不关的话右键根本落不到标签上。
@@ -8392,6 +8421,9 @@ try {
   check("切回中文也生效（SET-012）", backToChinese !== null, `${backToChinese ?? "没变"}`);
   const stZh = await cdp.eval(`window.__wt._setStatus("已关闭")`);
   check("中文下状态栏保持原文（SET-012）", stZh.shown === "已关闭", `${stZh.shown}`);
+  // 带变量模板在中文界面下必须原样：证明英文翻译没污染默认语言路径
+  const stTplZh = await cdp.eval(`window.__wt._setStatus("已保存会话 prod-db").shown`);
+  check("中文下带变量模板保持原文（SET-012）", stTplZh === "已保存会话 prod-db", `${stTplZh}`);
 
   // 词表缺口门禁：页面里用到的键必须在两份词表里都存在——漏翻一处就红，
   // 而不是等到用户把界面切成英文才发现某处还是中文
