@@ -14,7 +14,7 @@
 //   WT_DESKTOP_EXE=path/to/wt-desktop.exe WT_E2E_PORT=9333 node scripts/e2e-desktop.mjs
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer, connect as netConnect } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -2741,9 +2741,42 @@ try {
     `${editDl.localPath}（${editDl.size} 字节）`,
   );
 
+  // 自动检测本地保存（FIL-005）：下载完开始盯 mtime，此刻还没改动
+  const watch0 = await waitFor(
+    async () => {
+      const w = await cdp.eval(`window.__wt.editWatch`);
+      return w.active && w.base > 0 && !w.changed ? w : null;
+    },
+    { timeout: 6000, label: "编辑监视启动" },
+  ).catch(() => null);
+  check(
+    "下载后开始监视本地副本的修改时间（FIL-005）",
+    watch0 !== null,
+    watch0 ? `base=${watch0.base} polls=${watch0.polls}` : JSON.stringify(await cdp.eval(`window.__wt.editWatch`)),
+  );
+
   // 改本地副本再写回：远端内容必须真的变了（重新下载一次对照）
   const editedText = "edited by e2e";
   writeFileSync(editDl.localPath, editedText);
+  // 把 mtime 明确往后推：避开文件系统时间戳分辨率导致的「改了却没变」偶发
+  const bump = new Date(Date.now() + 3000);
+  utimesSync(editDl.localPath, bump, bump);
+  const watchHit = await waitFor(
+    async () => {
+      const w = await cdp.eval(`window.__wt.editWatch`);
+      return w.changed && w.current > w.base ? w : null;
+    },
+    { timeout: 8000, label: "检测到本地保存" },
+  ).catch(() => null);
+  const hintShown = await cdp.eval(`(() => ({
+    hint: !document.getElementById("edit-hint").hidden,
+    ready: document.getElementById("edit-save").classList.contains("ready"),
+  }))()`);
+  check(
+    "外部改了本地副本会被自动检测到并给出可写回提示（FIL-005）",
+    watchHit !== null && hintShown.hint && hintShown.ready,
+    watchHit ? `mtime ${watchHit.base} → ${watchHit.current}` : `changed=${(await cdp.eval(`window.__wt.editWatch`)).changed}`,
+  );
   await clickElement("#edit-save");
   const saveStatus = await waitFor(
     async () => {
@@ -2755,6 +2788,23 @@ try {
   // `FIL-002` 的关键约束：保存远端文件必须「写临时文件 + rename」，不能就地截断
   check("写回远端走的是原子替换（FIL-002）", saveStatus.includes("原子替换"), saveStatus);
   await clickElement("#edit-close");
+  // 关掉对话框后监视必须立即停：不验源码里有没有 clearInterval，验运行时——
+  // 等超过两个轮询周期，polls 不再增长、active 为 false 才算数。
+  const stopped = await waitFor(
+    async () => {
+      const w = await cdp.eval(`window.__wt.editWatch`);
+      return w.active === false ? w : null;
+    },
+    { timeout: 4000, label: "编辑监视停止" },
+  ).catch(() => null);
+  const pollsAtStop = stopped?.polls ?? -1;
+  await new Promise((r) => setTimeout(r, 1700));
+  const pollsLater = await cdp.eval(`window.__wt.editWatch.polls`);
+  check(
+    "关闭编辑对话框后停止轮询，不留后台定时器（FIL-005）",
+    stopped !== null && pollsLater === pollsAtStop,
+    `停时 polls=${pollsAtStop} → 1.7 秒后 polls=${pollsLater}`,
+  );
   // 重新下载一次，确认远端真的被改了
   await clickFileRow("notes.txt");
   await doubleClickFileRow("notes.txt");
@@ -3103,23 +3153,31 @@ try {
     };
   })()`);
   if (!boxBox) throw new Error("量不到 Shift+Alt 框选的坐标");
-  // Shift+Alt+拖拽是「从当前光标往外扩」，上一步的矩形框留下了三行光标——不先收回
-  // 单光标，扩出来的就不是你要的那个框（实测会落在第 2 列）。
-  await cdp.eval(`(() => {
-    const m = window.monaco.editor.getEditors()[0];
-    m.setPosition({ lineNumber: 1, column: 1 });
-    m.focus();
-    return true;
-  })()`);
-  await cdp.send("Input.dispatchMouseEvent", {
-    type: "mousePressed", x: boxBox.x, y: boxBox.y1, button: "left", buttons: 1, modifiers: 9, clickCount: 1,
-  });
-  await cdp.send("Input.dispatchMouseEvent", {
-    type: "mouseMoved", x: boxBox.x2, y: boxBox.y2, button: "left", buttons: 1, modifiers: 9,
-  });
-  await cdp.send("Input.dispatchMouseEvent", {
-    type: "mouseReleased", x: boxBox.x2, y: boxBox.y2, button: "left", buttons: 0, modifiers: 9, clickCount: 1,
-  });
+  // CDP 合成事件偶发会吞掉第一个 mousedown（WebView2 老问题）：拖拽后先看 Monaco
+  // 是不是真成了多行光标，没成就收单光标重拖，最多三次。判据用 getSelections()——
+  // 矩形框选会产生三行各一个光标，比「键入后看结果」更早暴露失败，也不会假绿。
+  const boxDrag = async () => {
+    await cdp.eval(`(() => {
+      const m = window.monaco.editor.getEditors()[0];
+      m.setPosition({ lineNumber: 1, column: 1 });
+      m.focus();
+      return true;
+    })()`);
+    await cdp.send("Input.dispatchMouseEvent", {
+      type: "mousePressed", x: boxBox.x, y: boxBox.y1, button: "left", buttons: 1, modifiers: 9, clickCount: 1,
+    });
+    await cdp.send("Input.dispatchMouseEvent", {
+      type: "mouseMoved", x: boxBox.x2, y: boxBox.y2, button: "left", buttons: 1, modifiers: 9,
+    });
+    await cdp.send("Input.dispatchMouseEvent", {
+      type: "mouseReleased", x: boxBox.x2, y: boxBox.y2, button: "left", buttons: 0, modifiers: 9, clickCount: 1,
+    });
+    return cdp.eval(`window.monaco.editor.getEditors()[0].getSelections().length`);
+  };
+  let boxSels = 0;
+  for (let attempt = 0; attempt < 3 && boxSels < 3; attempt += 1) {
+    boxSels = await boxDrag();
+  }
   const tyKey = { key: "y", code: "KeyY", windowsVirtualKeyCode: 89, nativeVirtualKeyCode: 89 };
   await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", ...tyKey, text: "y", unmodifiedText: "y" });
   await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...tyKey });
@@ -3130,10 +3188,12 @@ try {
     },
     { timeout: 6000, label: "Shift+Alt 框选后输入" },
   ).catch(() => null);
+  const colText = await cdp.eval(`window.__wt.editor.text`);
+  const colOff = await cdp.eval(`window.__wt.editor.columnSelection`);
   check(
     "Shift+Alt+拖拽也能框选多行同列（FIL-011）",
-    colKeyed !== null && (await cdp.eval(`window.__wt.editor.columnSelection`)) === false,
-    JSON.stringify(await cdp.eval(`window.__wt.editor.text`)),
+    boxSels >= 3 && colKeyed !== null && colOff === false,
+    `矩形光标 ${boxSels} 行｜${JSON.stringify(colText)}`,
   );
   // 这一步改了内容（未保存），关标签会弹确认
   await cdp.eval(`document.querySelector("#ed-tabs .edtab .x")?.click()`);

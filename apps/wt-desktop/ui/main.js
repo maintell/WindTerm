@@ -2360,9 +2360,69 @@ function runAction(action) {
 const editDialog = document.getElementById("edit-dialog");
 const editInfo = document.getElementById("edit-info");
 const filesEdit = document.getElementById("files-edit");
+const editHintEl = document.getElementById("edit-hint");
+const editSaveEl = document.getElementById("edit-save");
 
 /** 当前正在编辑的远端文件（验收读它） */
 let lastEdit = null;
+
+/*
+ * 自动检测本地保存（FIL-005）：外部编辑器把副本存了，界面上要看得见。
+ *
+ * 判据是 mtime 变大，不是文件大小——改一个字符大小可能不变，但保存一定会动 mtime。
+ * 轮询绑在对话框「开着」这件事上：一关就 clearInterval，绝不留后台定时器。
+ */
+let editWatchTimer = null;
+let editWatch = { active: false, base: 0, current: 0, changed: false, polls: 0 };
+
+function editHintReset() {
+  editHintEl.hidden = true;
+  editSaveEl.classList.remove("ready");
+}
+
+function stopEditWatch() {
+  if (editWatchTimer !== null) {
+    clearInterval(editWatchTimer);
+    editWatchTimer = null;
+  }
+  editWatch.active = false;
+}
+
+async function startEditWatch(localPath) {
+  stopEditWatch();
+  editHintReset();
+  editWatch = { active: true, base: 0, current: 0, changed: false, polls: 0 };
+  try {
+    editWatch.base = await invoke("local_mtime", { path: localPath });
+    editWatch.current = editWatch.base;
+  } catch {
+    stopEditWatch();
+    return;
+  }
+  editWatchTimer = setInterval(async () => {
+    if (!editWatch.active) return;
+    try {
+      const m = await invoke("local_mtime", { path: localPath });
+      editWatch.polls += 1;
+      editWatch.current = m;
+      // 有些编辑器（vim 等）是「写临时文件 + rename」原子保存，中间有一瞬间
+      // 原路径不存在，local_mtime 会报 FILE_NOT_FOUND——忽略它，下一轮就能看到新 mtime。
+      if (m > editWatch.base && !editWatch.changed) {
+        editWatch.changed = true;
+        editHintEl.hidden = false;
+        editSaveEl.classList.add("ready");
+      }
+    } catch {
+      /* 原子保存的窗口期：什么都不做，等下一轮 */
+    }
+  }, 700);
+}
+
+// 对话框一关就停：close 事件是「开着」这个事实本身，比在定时器里自检更即时
+editDialog.addEventListener("close", () => {
+  stopEditWatch();
+  editHintReset();
+});
 
 function editReq() {
   return { req: filesReq(), jump: jumpReq() };
@@ -2381,6 +2441,8 @@ filesEdit.addEventListener("click", async () => {
       `本地副本：${d.localPath}`,
     ].join("\n");
     setStatus(`已下载到本地：${d.localPath}`);
+    // 下载完成的这一刻记下基准，之后外部编辑器保存了副本就能看出来
+    void startEditWatch(d.localPath);
   } catch (e) {
     lastEdit = null;
     editInfo.textContent = `下载失败：${e}`;
@@ -2413,6 +2475,17 @@ document.getElementById("edit-save").addEventListener("click", async () => {
     });
     // 写回之后远端大小变了，下次写回要按新的算，否则第二次必然误报冲突
     lastEdit.size = r.bytes;
+    // 基准要跟着刷新：不然用户再改一次本地副本，提示会一直亮着不复位
+    if (editWatch.active) {
+      try {
+        editWatch.base = await invoke("local_mtime", { path: lastEdit.localPath });
+        editWatch.current = editWatch.base;
+        editWatch.changed = false;
+        editHintReset();
+      } catch {
+        /* 副本刚被外部程序换掉：下一轮轮询会重新看见 */
+      }
+    }
     // 原子与否必须说出来：降级路径中间有一瞬间文件是不存在的，
     // 用户正在盯 inotify 或跑构建的话，那是要命的信息
     setStatus(
@@ -6728,7 +6801,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-115",
+  ui: "wt-ui-116",
   /**
    * 验收用：刷新会话树并等它**画完**。
    *
@@ -7014,6 +7087,10 @@ window.__wt = {
   /** 正在编辑的远端文件（`FIL-005`）：验收读它 */
   get lastEdit() {
     return lastEdit ? { ...lastEdit } : null;
+  },
+  /** 自动检测本地保存（`FIL-005`）：验收读它，别去解析提示文案 */
+  get editWatch() {
+    return { ...editWatch };
   },
   /** 最近生成的密钥（`LOC-014`）：验收读它，别去解析对话框里的文本 */
   get lastKey() {

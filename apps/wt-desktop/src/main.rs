@@ -1261,6 +1261,22 @@ fn local_write_text(
     Ok(bytes.len() as u64)
 }
 
+/// 本地文件的修改时间（毫秒时间戳）。
+///
+/// `FIL-005` 的「自动检测本地保存」靠它：下载时记下基准，之后轮询这个值——
+/// 变了就说明用户在外部编辑器里保存过，界面上提示可以写回。
+/// 不用文件大小判断：改一个字符大小就可能不变，而 mtime 一定会动。
+#[tauri::command]
+fn local_mtime(path: String) -> Result<u64, String> {
+    let meta = std::fs::metadata(&path).map_err(|e| format!("[FILE_NOT_FOUND] {e}"))?;
+    let t = meta
+        .modified()
+        .map_err(|e| format!("[FILE_MTIME_UNSUPPORTED] {e}"))?;
+    Ok(t.duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0))
+}
+
 /// 用系统默认程序打开一个本地文件（`FIL-005` 的「打开编辑器」）。
 #[tauri::command]
 fn open_in_system(path: String) -> Result<(), String> {
@@ -3938,6 +3954,7 @@ fn main() {
             sftp_edit_save,
             local_read_text,
             local_write_text,
+            local_mtime,
             open_in_system
         ])
         .run(tauri::generate_context!())
@@ -4053,6 +4070,38 @@ mod data_dir_tests {
     #[test]
     fn portable_without_exe_dir_is_an_error() {
         assert!(parse_data_dir_arg(args(&["--portable"]).into_iter(), None).is_err());
+    }
+}
+
+/// 本地文件辅助（`FIL-005` 的「自动检测本地保存」）。
+#[cfg(test)]
+mod local_file_tests {
+    use super::*;
+
+    #[test]
+    fn mtime_moves_forward_and_missing_file_is_an_error() {
+        let dir = std::env::temp_dir().join(format!("wt-mtime-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("a.txt");
+        std::fs::write(&f, "one").unwrap();
+        let t1 = local_mtime(f.to_string_lossy().into_owned()).unwrap();
+        assert!(t1 > 0, "mtime 应该是个真实时间戳");
+
+        // 手工把 mtime 推到未来 5 秒：比 sleep 稳，也不会拖慢测试
+        let fh = std::fs::OpenOptions::new().write(true).open(&f).unwrap();
+        fh.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
+            .unwrap();
+        drop(fh);
+        let t2 = local_mtime(f.to_string_lossy().into_owned()).unwrap();
+        assert!(t2 > t1, "改动之后 mtime 必须变大：{t1} → {t2}");
+
+        let missing = dir.join("nope.txt");
+        let err = match local_mtime(missing.to_string_lossy().into_owned()) {
+            Err(e) => e,
+            Ok(_) => panic!("不存在的文件不该返回时间戳"),
+        };
+        assert!(err.contains("FILE_NOT_FOUND"), "实际错误：{err}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
 

@@ -579,6 +579,10 @@
         cursor: pointer;
       }
       #edit-dialog menu { display: flex; justify-content: flex-end; padding: 0; margin: 0; }
+      /* 自动检测本地保存（FIL-005）：外部编辑器保存了副本就亮一句提示，不喧哗 */
+      #edit-dialog .edit-hint { color: #ffd479; font-size: 12px; margin: 0 0 10px; }
+      #edit-dialog .edit-hint[hidden] { display: none; }
+      #edit-dialog button.ready { border-color: var(--accent); color: var(--accent); }
       #key-dialog {
         background: #24242a;
         color: var(--fg);
@@ -1283,6 +1287,7 @@
     <dialog id="edit-dialog">
       <p id="edit-title" data-i18n="dlg.editTitle">编辑远端文件</p>
       <pre id="edit-info"></pre>
+      <p id="edit-hint" class="edit-hint" hidden>本地副本已修改，可写回远端</p>
       <div class="key-row">
         <button type="button" id="edit-open">用系统程序打开</button>
         <button type="button" id="edit-inline">在内嵌编辑器打开</button>
