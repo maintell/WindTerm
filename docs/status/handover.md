@@ -92,15 +92,20 @@ clippy 零告警、文档对账 PASSED、端到端 `N/N 项通过`，退出码 0
 3. **证据强度不一**：`p0-coverage.md` 里标了哪些是 mock 侧证据、哪些有真机证据。
    尤其 `SES-024` 的 AC-1（`ss -tnp` 看到两条连接）目前**没有真机观测**。
 4. **端到端偶发**：标签拖拽落点（已把落点从正中改到左四分之一）、CDP 合成拖拽
-   偶发被吞（`Shift+Alt` 框选已加真实选区前提与重拖）。根因未完全定位。
-   **「连跑多轮后 `local_open` 偶发打开失败/变慢」已定位并加了兜底**：`invokeWithTimeout`
-   用裸 `Promise.race`，超时只让前端放弃等待、底层 `invoke` 仍在跑；`local_open`/`ssh_open`
-   是同步命令，稍后仍会把会话注册进 registry，前端那个 view 却标成「打开失败」、
-   `handle=null`，永远不 close——于是 shell/conhost/读泵常驻，越积越多、启动越慢，
-   正反馈成更多超时。现超时后继续盯底层 Promise，若它迟到成功且带 handle 就
-   `term_close` 回收；迟到失败静默丢弃（不产生 unhandled rejection）。
-   `scripts/check-late-session.mjs` 从真源码抠函数、注入假 invoke 跑 5 场景，由
-   `check-docs.ps1` 9g 门禁盯着（做过删回收即红、还原即绿的变异验证）。
+   偶发被吞（`Shift+Alt` 框选已加真实选区前提与重拖）、连跑多轮后 `local_open`
+   偶发「打开失败」/ SSH 建连超时（失败点每轮漂移，重跑常能过）。**根因未完全定位**。
+   2026-11-07 做过一次只读归因排查：一度怀疑「超时后游离会话 → conhost 累积 →
+   正反馈成更多超时」，但逐 PID 核 conhost 归属后**否掉了这个因果**——当时 28 个
+   conhost 中只有 7 个是孤儿，且启动时间全在 10-26 / 11-02，没有一个是当天 e2e 跑
+   出来的；`cleanup()` 的 `taskkill /F /T /PID` 确实带走了每轮进程树，连跑时的
+   「28→33」只是进程退出中的瞬时峰值、会自然回落，不是泄漏。
+   **超时后回收迟到会话仍做、且保留**（防御性正确、无副作用）：`invokeWithTimeout`
+   用裸 `Promise.race`，超时后底层 `invoke` 仍在跑、稍后可能注册一个前端已放弃的
+   会话；现超时后继续盯底层 Promise，迟到成功且带 handle 就 `term_close` 回收，
+   迟到失败静默丢弃（避免 unhandled rejection）。`scripts/check-late-session.mjs`
+   从真源码抠函数、注入假 invoke 跑 5 场景，`check-docs.ps1` 9g 门禁盯着（做过删回收
+   即红、还原即绿的变异验证）。**但别再把它写成「连跑偶发的根因」**——根因未定位，
+   这条只是堵住一个理论上存在的资源缺口。
    首次建连超时仍保留「只对超时补点一次」。
    **`Ctrl+Tab` MRU 的「再按一次没切」已定位并修复**：那不是产品 bug，是验收用
    `__wt.tabs()` 的 `label` 当标签身份——本地 shell 起来后会用 OSC 2 标题把 label 改写
