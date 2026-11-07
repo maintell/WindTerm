@@ -286,6 +286,39 @@ else {
     if ([int]$mState.Groups[3].Value -ne $p0None) { Fail ("README P0 未做数写 {0}，实际 {1}" -f $mState.Groups[3].Value, $p0None) }
 }
 
+# 9b-2. 交接文档（handover.md）的 P0 状态数也必须跟真值表一致。
+#      它之前把 22/16/6 写成 21/17/6、把单测写死成 314 项，都是「文档与代码不同步」
+#      的典型——这次把状态数纳入门禁，改了真值表却忘了交接文档会当场判红。
+$handoverPath = Join-Path $docsRoot 'status/handover.md'
+if (Test-Path $handoverPath) {
+    $handoverText = Get-Content -Raw -Encoding UTF8 $handoverPath
+    $hState = [regex]::Match($handoverText, "([0-9]+)[ \t]*条完成[ \t]*/[ \t]*([0-9]+)[ \t]*条部分[ \t]*/[ \t]*([0-9]+)[ \t]*条未做")
+    if (-not $hState.Success) {
+        Fail "handover.md 里找不到 P0 状态数（完成/部分/未做）——不得删掉，应对齐 p0-coverage.md"
+    } else {
+        if ([int]$hState.Groups[1].Value -ne $p0Ok -or
+            [int]$hState.Groups[2].Value -ne $p0Wip -or
+            [int]$hState.Groups[3].Value -ne $p0None) {
+            Fail ("handover.md 的 P0 状态数写 {0}/{1}/{2}，真值表实际 {3}/{4}/{5}" -f `
+                $hState.Groups[1].Value, $hState.Groups[2].Value, $hState.Groups[3].Value, `
+                $p0Ok, $p0Wip, $p0None)
+        }
+    }
+    # 标题里「N 条部分完成」同样会漂，跟着一起盯
+    $hWipTitle = [regex]::Match($handoverText, "([0-9]+)[ \t]*条部分完成")
+    if ($hWipTitle.Success -and ([int]$hWipTitle.Groups[1].Value -ne $p0Wip)) {
+        Fail ("handover.md 标题写「{0} 条部分完成」，真值表实际 {1} 条" -f $hWipTitle.Groups[1].Value, $p0Wip)
+    }
+    # 单测项数不写死：项目在长，写死的数字必然过时。只要求「不出现具体项数」。
+    if ($handoverText -match "单测[ \t]*[0-9]+[ \t]*项") {
+        Fail "handover.md 把单测项数写死了——数量随用例增长，应写「单测全绿」而不是具体数字"
+    }
+    # 已过时的断言：CI 工作流与 bundle.active 早就接上了，不能还写「没有」
+    if ($handoverText -match "仓库没有 CI 工作流|bundle[.]active=false") {
+        Fail "handover.md 仍写着「没有 CI 工作流 / bundle.active=false」，与现状矛盾（见 SYS-008 与 release.yml）"
+    }
+}
+
 # 9c. 可重绑动作数：KEYMAP_DEFAULT 的键数
 $kmMatch = [regex]::Match($mainText, "const KEYMAP_DEFAULT = [{].*?[}];", [System.Text.RegularExpressions.RegexOptions]::Singleline)
 $kmKeys = [regex]::Matches($kmMatch.Value, "[ \t]{2}([A-Za-z][A-Za-z0-9]*):[ \t]*[{][ \t]*label:").Count
