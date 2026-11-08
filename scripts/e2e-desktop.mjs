@@ -1070,6 +1070,7 @@ async function closeAllTabs() {
         closeDisabled: document.getElementById("close").disabled,
         dialog: document.querySelector("dialog[open]")?.id ?? null,
         status: document.getElementById("status").textContent,
+        closeStep: window.__wt.closeTrace(),
       })`)
       .catch(() => null);
     throw new Error(`关闭所有标签页超时：${JSON.stringify(st)}`);
@@ -7464,14 +7465,24 @@ try {
     `剩 ${afterMid ?? "?"} 个；drag=${JSON.stringify(midDrag)}`,
   );
 
-  // 拖拽排序：补回第三个，把第一个拖到最后一个的位置
-  await clickUntil(
-    () => clickElement("#open"),
-    async () => (await cdp.eval(`document.querySelectorAll("#tabs .tab").length`)) >= 3,
-    { timeout: 10000, tries: 4, label: "拖拽用例补标签" },
-  );
+  // 拖拽排序：先清干净，再**固定**开三个。
+  //
+  // 这条用例断言的是「第一个拖到最后一个位置之后的具体次序」，标签数不同结果就不同：
+  // 3 个时落到索引 1，4 个时落到索引 2。原来只等「>= 3」，残留的第 4 个标签会把断言带偏
+  // ——这就是它偶发红的真正原因（不是 CDP 拖拽被吞）。
+  await closeAllTabs();
+  for (let i = 0; i < 3; i += 1) {
+    await clickUntil(
+      () => clickElement("#open"),
+      async () => (await cdp.eval(`document.querySelectorAll("#tabs .tab").length`)) >= i + 1,
+      { timeout: 10000, tries: 4, label: `拖拽用例第 ${i + 1} 个标签` },
+    );
+  }
+  // 用 `dataset.id` 而不是标签文字：本地 shell 会用 OSC 2 把标签名改成窗口标题，
+  // 拖动前后两次快照的文字可能已经不同——「顺序真的变了」会被读成「没变」。
+  // （同一个坑在 `Ctrl+Tab` MRU 那条已经踩过一次：断言的身份要用稳定键。）
   const tabOrderBefore = await cdp.eval(`
-    [...document.querySelectorAll("#tabs .tab .label")].map((e) => e.textContent)
+    [...document.querySelectorAll("#tabs .tab")].map((e) => e.dataset.id)
   `);
   const dragBoxes = await cdp.eval(`(() => {
     const ts = [...document.querySelectorAll("#tabs .tab")];
@@ -7495,7 +7506,7 @@ try {
   const tabOrderAfter = await waitFor(
     async () => {
       const l = await cdp.eval(`
-        [...document.querySelectorAll("#tabs .tab .label")].map((e) => e.textContent)
+        [...document.querySelectorAll("#tabs .tab")].map((e) => e.dataset.id)
       `);
       return l[0] === tabOrderBefore[1] ? l : null;
     },

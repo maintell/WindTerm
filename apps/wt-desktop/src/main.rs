@@ -412,12 +412,16 @@ fn window_set_fullscreen(window: tauri::WebviewWindow, on: bool) -> Result<bool,
 /// 数不清（权限不足、进程刚退出）时一律返回 `false`：宁可少弹一次确认，
 /// 也不要每次关标签都拦一下。
 #[tauri::command]
-fn term_busy(state: State<'_, AppState>, handle: String) -> bool {
+async fn term_busy(state: State<'_, AppState>, handle: String) -> Result<bool, String> {
     let h = SessionHandle::from(handle.as_str());
     let Some(pid) = state.registry.child_pid(&h) else {
-        return false;
+        return Ok(false);
     };
-    has_child_process(pid)
+    // 扫一遍进程表要读每个进程的可执行文件/命令行，几百个进程时是几十到几百毫秒。
+    // 这是个同步活儿：放在命令线程上会卡住其它命令，连点几下「关标签」就会排成一队。
+    Ok(tauri::async_runtime::spawn_blocking(move || has_child_process(pid))
+        .await
+        .unwrap_or(false))
 }
 
 /// `pid` 是否还有子进程。用 `sysinfo` 而不是自己写平台代码：

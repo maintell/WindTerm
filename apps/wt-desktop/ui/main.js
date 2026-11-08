@@ -876,7 +876,14 @@ async function busyViews(views) {
   const busy = [];
   for (const v of views) {
     if (!v || !v.handle || !v.running) continue;
-    const b = await invoke("term_busy", { handle: v.handle }).catch(() => false);
+    // 给它一条死线：这一步只是「关之前问一句」，算不出来就当不忙——
+    // 宁可少弹一次确认，也不能让关标签卡在一个不返回的探测上
+    // （连点几下「关标签」时，同步的进程表扫描会排成队，实测能把 20 秒预算吃光）。
+    const b = await withDeadline(
+      invoke("term_busy", { handle: v.handle }),
+      1500,
+      "检查前台命令",
+    ).catch(() => false);
     if (b) busy.push(v);
   }
   return busy;
@@ -1284,13 +1291,16 @@ async function duplicateTab(view) {
 }
 
 async function closeView(view) {
+  closeStage("enter");
   view.running = false;
   if (view.handle) {
     await ackView(view, true);
+    closeStage("acked");
     const h = view.handle;
     view.handle = null;
     try {
       await invoke("term_close", { handle: h });
+      closeStage("term-closed");
     } catch {
       /* 关闭失败不阻塞界面 */
     }
@@ -1314,11 +1324,13 @@ async function closeView(view) {
   if (splitMode() !== "none" || slot >= 0) syncSplit();
   const next = sessions.values().next().value ?? null;
   setActive(next);
+  closeStage("done");
 }
 
 async function closeTerm() {
   // 先把当前标签抓住：确认框是异步的，await 回来时 active 可能已经是 null
   const v = active;
+  closeStage("closeTerm", v?.id ?? null);
   if (v && (await confirmCloseIfBusy([v]))) await closeView(v);
 }
 
@@ -7304,6 +7316,19 @@ let cmdShown = [];
 let cmdIndex = 0;
 /** 验收用：`runPaletteItem` 被调用了几次（分清「回车没到」与「到了但没执行」） */
 let cmdRuns = 0;
+/**
+ * 验收用：关标签卡在哪一步。
+ *
+ * `#close` 点了没反应可能是「等在一个永不返回的 await 上」，也可能是「抛了但被 void 吞了」——
+ * 两者从界面上看一模一样。记下最后一步就能分开。
+ */
+let closeStep = null;
+function closeStage(stage, id = null) {
+  closeStep = { stage, id, at: Date.now() };
+}
+/** 验收用：上一次执行的结果（`{ title, ok }` 或 `{ title, error }`）——
+ * 「面板关了但什么都没发生」和「执行时抛异常」是两种完全不同的病，得分得开 */
+let cmdLastRun = null;
 
 /**
  * 收集全部可搜的东西。
@@ -7513,11 +7538,22 @@ function setPaletteIndex(i) {
 function runPaletteItem(i) {
   cmdRuns += 1;
   const item = cmdShown[i];
-  if (!item) return;
+  if (!item) {
+    cmdLastRun = { title: null, ok: false };
+    return;
+  }
   // 先关面板再执行：动作可能自己开一个对话框（设置/键位/密钥），两个模态叠在一起时
   // Esc 只关掉上面那个，用户会以为卡住了
   cmdDialog.close();
-  if (item.run() === false) setStatus(`「${item.title}」现在没有可作用的对象`);
+  try {
+    const r = item.run();
+    cmdLastRun = { title: item.title, ok: r !== false };
+    if (r === false) setStatus(`「${item.title}」现在没有可作用的对象`);
+  } catch (e) {
+    // 记下来再抛：页面会把它当未捕获异常，但这里多给一条「哪个动作炸的」
+    cmdLastRun = { title: item.title, error: String(e) };
+    throw e;
+  }
 }
 
 function openPalette() {
@@ -7599,7 +7635,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-127",
+  ui: "wt-ui-130",
   /** 验收用：主窗口当前是否全屏（`TER-020`） */
   get fullscreen() {
     return isFullscreen;
@@ -7631,6 +7667,7 @@ window.__wt = {
       index: cmdIndex,
       total: cmdItems.length,
       runs: cmdRuns,
+      lastRun: cmdLastRun,
       shown: [...cmdList.children].map((el) => ({
         kind: el.dataset.kind,
         title: el.querySelector(".cmd-title")?.textContent ?? "",
@@ -8049,6 +8086,10 @@ window.__wt = {
    * 本地 shell 起来后会用 OSC 2 标题把 label 改写（"本地 s14-18" → "pwsh.exe"），
    * 拿建标签时的 label 快照去判「切到哪一条」会偶发假失败。
    */
+  /** 验收用：关标签卡在哪一步（见 `closeStage`） */
+  closeTrace() {
+    return closeStep;
+  },
   tabs() {
     return [...sessions.values()].map((v) => ({
       id: v.id,
