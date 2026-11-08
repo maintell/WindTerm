@@ -1044,6 +1044,14 @@ async function closeAllTabs() {
     async () => {
       const n = await cdp.eval(`window.__wt.tabs().length`);
       if (n === 0) return true;
+      // 有前台命令在跑时会弹「有命令正在运行」确认（`TER-018`）。
+      // 清场时一律确认，否则循环会卡在模态框上直到超时。
+      await cdp.eval(`(() => {
+        const d = document.getElementById("ask-dialog");
+        if (!d || !d.open) return false;
+        document.getElementById("ask-ok").click();
+        return true;
+      })()`);
       await cdp.eval(`document.getElementById("close").click()`);
       await new Promise((r) => setTimeout(r, 300));
       return null;
@@ -8800,6 +8808,54 @@ try {
     folderDone.result,
   );
   await closeAllTabs();
+  // 19y. 关标签前的前台命令确认（`TER-018`）：本地 shell 里跑着 ping 时，关标签要先问一句。
+  // 判据是「shell 还有没有子进程」——`Start-Sleep` 是 cmdlet、不产生子进程，所以这里用
+  // 外部程序 `ping`，否则测的是一个永远不会弹的确认框。
+  await closeAllTabs();
+  await clickUntil(
+    () => pressChord(2, "t", "KeyT", 84),
+    async () => (await cdp.eval(`document.querySelectorAll("#tabs .tab").length`)) >= 1,
+    { timeout: 15000, tries: 3, label: "为 TER-018 开一个本地终端" },
+  );
+  await new Promise((r) => setTimeout(r, 1200));
+  await typeText("ping -n 60 127.0.0.1");
+  await new Promise((r) => setTimeout(r, 1500));
+
+  await clickElement("#close");
+  const busyAsk = await waitFor(
+    async () => {
+      const st = await cdp.eval(`(() => {
+        const d = document.getElementById("ask-dialog");
+        return { open: Boolean(d && d.open), title: document.getElementById("ask-title").textContent };
+      })()`);
+      return st.open ? st : null;
+    },
+    { timeout: 10000, label: "关标签前的运行确认" },
+  );
+  check(
+    "有前台命令时关标签会先确认（TER-018）",
+    busyAsk.title.includes("有命令正在运行"),
+    busyAsk.title,
+  );
+
+  await clickElement("#ask-cancel");
+  await waitFor(
+    async () => ((await cdp.eval(`window.__wt.tabs().length`)) === 1 ? true : null),
+    { timeout: 8000, label: "取消后标签仍在" },
+  );
+  check("取消后标签没被关掉（TER-018）", true, "1 个标签仍在");
+
+  await clickElement("#close");
+  await waitFor(
+    async () => ((await cdp.eval(`document.getElementById("ask-dialog").open`)) ? true : null),
+    { timeout: 8000, label: "再次弹出确认" },
+  );
+  await clickElement("#ask-ok");
+  await waitFor(
+    async () => ((await cdp.eval(`window.__wt.tabs().length`)) === 0 ? true : null),
+    { timeout: 15000, label: "确认后标签关闭" },
+  );
+  check("确认后标签才真的关掉（TER-018）", true, "0 个标签");
   // 连接被拒且状态栏点名「主机密钥变了」，以及 known_hosts 里那条记录没被改写。
   await closeAllDialogs();
   await closeAllTabs();

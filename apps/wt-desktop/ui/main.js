@@ -729,7 +729,9 @@ function renderTabs() {
     x.title = "关闭";
     x.addEventListener("click", (ev) => {
       ev.stopPropagation();
-      void closeView(view);
+      void (async () => {
+        if (await confirmCloseIfBusy([view])) await closeView(view);
+      })();
     });
 
     tab.append(label, x);
@@ -743,7 +745,9 @@ function renderTabs() {
     tab.addEventListener("mousedown", (ev) => {
       if (ev.button === 1) {
         ev.preventDefault();
-        void closeView(view);
+        void (async () => {
+          if (await confirmCloseIfBusy([view])) await closeView(view);
+        })();
         return;
       }
       if (ev.button === 0) startTabDrag(view.id, ev.clientX);
@@ -821,9 +825,9 @@ async function renameTab(view) {
 
 /** 关掉除这一条之外的所有标签 */
 async function closeTabsExcept(keep) {
-  for (const v of [...sessions.values()]) {
-    if (v.id !== keep.id) await closeView(v);
-  }
+  const targets = [...sessions.values()].filter((v) => v.id !== keep.id);
+  if (!(await confirmCloseIfBusy(targets))) return;
+  for (const v of targets) await closeView(v);
   if (sessions.has(keep.id)) setActive(keep);
 }
 
@@ -832,7 +836,43 @@ async function closeTabsRight(view) {
   const order = [...sessions.values()];
   const at = order.findIndex((v) => v.id === view.id);
   if (at < 0) return;
-  for (const v of order.slice(at + 1)) await closeView(v);
+  const targets = order.slice(at + 1);
+  if (!(await confirmCloseIfBusy(targets))) return;
+  for (const v of targets) await closeView(v);
+}
+
+/**
+ * 这些标签里，哪些还有**前台命令**在跑（`TER-018`）。
+ *
+ * 只有本地会话问得出结果：远端有没有东西在跑，客户端无法知道，
+ * 所以 `term_busy` 对远端恒为 false，这里也就不假装知道。
+ */
+async function busyViews(views) {
+  const busy = [];
+  for (const v of views) {
+    if (!v || !v.handle || !v.running) continue;
+    const b = await invoke("term_busy", { handle: v.handle }).catch(() => false);
+    if (b) busy.push(v);
+  }
+  return busy;
+}
+
+/** 关之前问一句：有前台命令在跑就确认（`TER-018`）。返回 true 表示可以关。 */
+async function confirmCloseIfBusy(views) {
+  const busy = await busyViews(views);
+  if (!busy.length) return true;
+  if (busy.length === 1) {
+    return askConfirm(
+      "有命令正在运行",
+      `${busy[0].label} 里还有前台命令在跑，关掉会中断它。`,
+      "仍然关闭",
+    );
+  }
+  return askConfirm(
+    "有命令正在运行",
+    `${busy.length} 个标签里还有前台命令在跑，关掉会中断它们。`,
+    "仍然关闭",
+  );
 }
 
 /** 标签的右键菜单（`TER-001`）。关不掉的项（比如右边没有标签）就不显示数字。 */
@@ -1215,7 +1255,9 @@ async function closeView(view) {
 }
 
 async function closeTerm() {
-  if (active) await closeView(active);
+  // 先把当前标签抓住：确认框是异步的，await 回来时 active 可能已经是 null
+  const v = active;
+  if (v && (await confirmCloseIfBusy([v]))) await closeView(v);
 }
 
 // 低流量时也定期确认，避免 pending 长期挂账（对所有会话生效）
@@ -2429,10 +2471,15 @@ function runAction(action) {
     case "splitToggle":
       document.getElementById("split-toggle").click();
       return true;
-    case "closeTab":
-      if (!active) return false;
-      void closeView(active);
+    case "closeTab": {
+      // 同上：确认框是异步的，闭包里必须用抓下来的引用，不能回头再读 active
+      const v = active;
+      if (!v) return false;
+      void (async () => {
+        if (await confirmCloseIfBusy([v])) await closeView(v);
+      })();
       return true;
+    }
     case "duplicateTab":
       if (!active) return false;
       void duplicateTab(active);

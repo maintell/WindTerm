@@ -128,6 +128,15 @@ impl SessionRegistry {
         s.resize(cols, rows)
     }
 
+    /// 本地 shell 的进程号；远端会话或已释放的子进程返回 `None`。
+    ///
+    /// 只用于「关标签时确认」（`TER-018`）：调用方拿它去数子孙进程，
+    /// 有前台命令在跑才弹确认框。
+    pub fn child_pid(&self, h: &SessionHandle) -> Option<u32> {
+        let map = self.sessions.lock().ok()?;
+        map.get(h.as_str())?.child_pid()
+    }
+
     pub fn stats(&self, h: &SessionHandle) -> Result<SessionStats, WtError> {
         let map = self.sessions.lock().unwrap();
         let s = map.get(h.as_str()).ok_or_else(|| unknown(h))?;

@@ -467,6 +467,14 @@ impl PtySession {
         self.child.take();
     }
 
+    /// 本地 shell 的进程号（`TER-018` 用它判断有没有前台命令在跑）。
+    ///
+    /// 子进程已经释放/退出时返回 `None`——调用方应当把它当成「没有东西在跑」，
+    /// 而不是「未知所以拦一下」：后者会让每次关标签都弹确认框。
+    pub fn child_pid(&self) -> Option<u32> {
+        self.child.as_ref()?.process_id()
+    }
+
     /// 释放 ConPTY master。
     ///
     /// # 曾经的坑（G4）

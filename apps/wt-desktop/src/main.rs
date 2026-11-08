@@ -228,6 +228,32 @@ fn term_resize(
         .map_err(|e| e.to_string())
 }
 
+/// 本地会话里有没有**前台命令**在跑（`TER-018`：关标签前确认）。
+///
+/// 判据是「本地 shell 还有没有子孙进程」：shell 自己空闲时没有子进程，
+/// 一旦执行命令就会出现。远端会话没有本地子进程，恒为 `false`——
+/// 远端有没有东西在跑，客户端无法知道，也不该假装知道。
+///
+/// 数不清（权限不足、进程刚退出）时一律返回 `false`：宁可少弹一次确认，
+/// 也不要每次关标签都拦一下。
+#[tauri::command]
+fn term_busy(state: State<'_, AppState>, handle: String) -> bool {
+    let h = SessionHandle::from(handle.as_str());
+    let Some(pid) = state.registry.child_pid(&h) else {
+        return false;
+    };
+    has_child_process(pid)
+}
+
+/// `pid` 是否还有子进程。用 `sysinfo` 而不是自己写平台代码：
+/// 三平台一套逻辑，且不必在本仓库引入 `unsafe`。
+fn has_child_process(pid: u32) -> bool {
+    let mut sys = sysinfo::System::new();
+    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+    let parent = sysinfo::Pid::from_u32(pid);
+    sys.processes().values().any(|p| p.parent() == Some(parent))
+}
+
 #[tauri::command]
 fn term_stats(state: State<'_, AppState>, handle: String) -> Result<StatsDto, String> {
     let h = SessionHandle::from(handle.as_str());
@@ -3907,6 +3933,7 @@ fn main() {
             term_write_bytes,
             term_resize,
             term_stats,
+            term_busy,
             term_close,
             ssh_open,
             sessions_load,

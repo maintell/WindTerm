@@ -28,6 +28,9 @@ zeroize = { workspace = true }
 tokio = { workspace = true }
 # 内嵌编辑器的编码识别/切换（`FIL-011`）：与终端共用同一套编码库
 encoding_rs = "0.8"
+# 数本地 shell 的子孙进程，判断「有没有前台命令在跑」（`TER-018` 关标签确认）。
+# 选它而不是自己写 Win32/procfs：三平台一套代码，且我们的 crate 都是 forbid(unsafe_code)。
+sysinfo = "0.32"
 
 [features]
 # 端到端验收用：在应用内起一个进程内 SSH 服务端，让界面真的去连一台「服务器」。

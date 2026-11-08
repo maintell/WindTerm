@@ -53,6 +53,14 @@ pub trait TerminalSession: Send {
 
     /// 关闭。必须幂等且不阻塞。
     fn close(&mut self);
+
+    /// 本地 shell 的进程号；SSH 等远端会话没有本地子进程，返回 `None`。
+    ///
+    /// 用途单一：关标签时判断「有没有前台命令在跑」（`TER-018`）。
+    /// 默认 `None` 是刻意的——远端会话由服务端负责，客户端不该去猜。
+    fn child_pid(&self) -> Option<u32> {
+        None
+    }
 }
 
 impl TerminalSession for TermSession {
@@ -85,6 +93,9 @@ impl TerminalSession for TermSession {
     }
     fn close(&mut self) {
         TermSession::close(self)
+    }
+    fn child_pid(&self) -> Option<u32> {
+        TermSession::child_pid(self)
     }
 }
 /// 一次本地终端会话。
@@ -158,6 +169,11 @@ impl TermSession {
 
     pub fn size(&self) -> (u16, u16) {
         self.pty.size()
+    }
+
+    /// 本地 shell 的进程号（见 trait 上的说明）。
+    pub fn child_pid(&self) -> Option<u32> {
+        self.pty.child_pid()
     }
 
     /// 子进程退出码（未退出返回 `None`）。
