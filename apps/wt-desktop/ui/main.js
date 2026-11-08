@@ -78,11 +78,15 @@ let selectedSession = null;
 const termHost = document.getElementById("term");
 const paneA = document.getElementById("term-a");
 const paneB = document.getElementById("term-b");
+const paneC = document.getElementById("term-c");
+const paneD = document.getElementById("term-d");
+/** 四个 pane，按 A/B/C/D 排（B 右上、C 左下、D 右下） */
+const panes = [paneA, paneB, paneC, paneD];
 const splitToggle = document.getElementById("split-toggle");
-// 分屏的两个槽位（声明放这里而不是挨着 syncSplit：`setActive` 会用到它们，
-// 放在文件中部会落进暂时性死区）
-/** 右侧 pane 显示哪个会话（null = 没分屏） */
-let splitViewId = null;
+// 分屏的槽位声明放这里而不是挨着 syncSplit：`setActive` 会用到它们，
+// 放在文件中部会落进暂时性死区
+/** B/C/D 三个格子各放哪个会话（null = 那个格子不显示） */
+const splitIds = [null, null, null];
 /** 左 pane 固定显示哪个会话（null = 跟随当前标签） */
 let splitLeftId = null;
 const tabsEl = document.getElementById("tabs");
@@ -161,7 +165,6 @@ const STATUS_EN = {
   "显示修改时间列：关": "Modified time column off",
   "实时广播已关闭": "Live broadcast off",
   "已关闭分屏": "Split view closed",
-  "分屏需要至少两个已连接的会话": "Split view needs at least two connected sessions",
   "已更换主密码": "Master password changed",
   "保险库已移除": "Vault removed",
   "请输入主密码": "Enter the master password",
@@ -724,7 +727,7 @@ function createView(label) {
     term.focus();
     // 分屏时点右半边只是「焦点换边」：`active` 跟过去（复制/查找/保存输出按它走），
     // 但左右两个槽不动——否则用户一点右边，左边就空了
-    if (splitView() && active !== view) setActive(view);
+    if (splitMode() !== "none" && active !== view) setActive(view);
   });
 
   sessions.set(view.id, view);
@@ -1013,13 +1016,9 @@ function activateByUser(view) {
   for (const v of sessions.values()) {
     if (v !== view && !v.running) v.focusOnReady = false;
   }
-  if (splitView() && splitLeftView() !== view) {
-    // 左 pane 跟着标签走；用户选中的正好是右槽那个，就左右对调——
-    // 别让两个 pane 显示同一个会话（那等于右边凭空消失一块）
-    const prevLeft = splitLeftView();
-    splitLeftId = view.id;
-    if (splitViewId === view.id) splitViewId = prevLeft?.id ?? null;
-  }
+  // 左 pane 跟着标签走；但如果选中的会话本来就在某个格子里，左槽就别动——
+  // 动了两边会显示同一个会话（等于凭空少一块），不动则「格子里的会话被选中」也合理
+  if (splitMode() !== "none" && !splitIds.includes(view.id)) splitLeftId = view.id;
   setActive(view);
 }
 
@@ -1044,6 +1043,7 @@ function openTermMenu(x, y, view) {
       { label: t("ctx.find"), run: () => openFind() },
       { label: t("ctx.clear"), run: () => view.term.clear() },
       { label: t("ctx.split"), run: () => runAction("splitToggle") },
+      { label: t("ctx.quad"), run: () => runAction("splitQuad") },
     ],
     "terminal",
   );
@@ -1293,9 +1293,10 @@ async function closeView(view) {
   const mruAt = mruViews.indexOf(view);
   if (mruAt >= 0) mruViews.splice(mruAt, 1);
   view.el.remove();
-  // 关掉的正是右侧那个：分屏跟着取消，别留一个空 pane
-  if (splitViewId === view.id) {
-    splitViewId = null;
+  // 关掉的会话在哪个格子里就腾空哪个格子：留一个空 pane 比少一个格子更难看懂
+  const slot = splitIds.indexOf(view.id);
+  if (slot >= 0) {
+    splitIds[slot] = null;
     syncSplit();
   }
   // 关掉的是左槽那个：左槽回到「跟随当前标签」
@@ -2388,6 +2389,7 @@ const KEYMAP_DEFAULT = {
   // 左右分屏原来占着 Ctrl+Shift+S，和规格里「保存终端输出」的键位撞了。
   // 规格优先：分屏让到 Ctrl+Shift+E（与「分屏」语义一致），Ctrl+Shift+S 还给保存输出。
   splitToggle: { label: "左右分屏", chords: ["Ctrl+Shift+E"] },
+  splitQuad: { label: "四宫格分屏", chords: ["Ctrl+Shift+G"] },
   saveOutput: { label: "保存终端输出", chords: ["Ctrl+Shift+S"] },
   fullscreen: { label: "全屏", chords: ["F11"] },
   // 第二批量：标签管理、滚动、清屏、全选、侧栏。**每一条都有真行为**——
@@ -2543,6 +2545,9 @@ function runAction(action) {
       })();
       return true;
     }
+    case "splitQuad":
+      setSplitMode(splitMode() === "quad" ? "none" : "quad");
+      return true;
     case "splitToggle":
       document.getElementById("split-toggle").click();
       return true;
@@ -5708,25 +5713,41 @@ function syncTunnelKind() {
  */
 // ── 左右分屏（`G6`）──────────────────────────────────────
 //
-// 只做两个 pane：Terminal 的尺寸由各自的 pane 决定，fit 按容器算，
-// 所以分屏后两边行列数会各自重算（远端 stty size 也跟着变）。
+// 分屏（`TER-002`）：左 pane（A）+ 最多三个格子（B 右上 / C 左下 / D 右下）。
+// 只做**一级**：格子里的会话不能再分（嵌套还没做）。
+// Terminal 的尺寸由各自 pane 决定，fit 按容器算，所以每个格子的行列数各自重算
+// （远端 `stty size` 也跟着变）。
 
+/** 当前模式：none / h（左右两格）/ quad（四宫格） */
+function splitMode() {
+  const n = splitIds.filter((id) => id !== null).length;
+  if (n === 0) return "none";
+  return n >= 3 ? "quad" : "h";
+}
 
-function splitView() {
-  return splitViewId === null ? null : (sessions.get(splitViewId) ?? null);
+function splitView(i) {
+  const id = splitIds[i] ?? null;
+  return id === null ? null : (sessions.get(id) ?? null);
 }
 
 /** 左槽：没分屏时就是当前标签；分屏时是开分屏那一刻的那个会话，直到用户自己切标签 */
 function splitLeftView() {
-  if (splitViewId === null) return active;
+  if (splitMode() === "none") return active;
   return (splitLeftId === null ? active : sessions.get(splitLeftId)) ?? active;
 }
 
 function syncSplit() {
-  const right = splitView();
-  paneB.hidden = right === null;
-  splitToggle.classList.toggle("on", right !== null);
-  if (!right) {
+  const mode = splitMode();
+  const slots = mode === "quad" ? 3 : mode === "h" ? 1 : 0;
+  // 多出来的槽位一律清空：关掉四宫格里的一格后会退回左右两格，剩下的那个 id
+  // 如果留着，`splitMode()` 会一直把它算进去，模式就再也回不到「左右」
+  for (let i = slots; i < splitIds.length; i += 1) splitIds[i] = null;
+  termHost.classList.toggle("quad", mode === "quad");
+  paneB.hidden = slots < 1;
+  paneC.hidden = slots < 2;
+  paneD.hidden = slots < 3;
+  splitToggle.classList.toggle("on", slots > 0);
+  if (slots === 0) {
     // 关掉分屏：所有会话回左 pane，左槽也取消（回到「跟随当前标签」）
     splitLeftId = null;
     for (const v of sessions.values()) {
@@ -5738,34 +5759,57 @@ function syncSplit() {
   }
   const left = splitLeftView();
   splitLeftId = left?.id ?? null;
-  // 左右两个槽各就各位，其余会话都回左 pane（不显示，只是等着被切成当前标签）
+  // 每个格子放自己的会话，其余会话都回左 pane（不显示，只是等着被切成当前标签）
+  const target = new Map();
+  for (let i = 0; i < slots; i += 1) {
+    const v = splitView(i);
+    if (v) target.set(v, panes[i + 1]);
+  }
   for (const v of sessions.values()) {
-    const to = v === right ? paneB : paneA;
+    const to = target.get(v) ?? paneA;
     if (v.el.parentElement !== to) to.appendChild(v.el);
     v.el.classList.toggle("pane-shown", left !== null && v === left);
   }
   left?.fit.fit();
-  right.fit.fit();
+  for (let i = 0; i < slots; i += 1) splitView(i)?.fit.fit();
 }
 
-splitToggle.addEventListener("click", () => {
-  if (splitView()) {
-    splitViewId = null;
+/**
+ * 开/关分屏。
+ *
+ * 会话不够时**如实说差几个**，不要退化成「只分能分的」：用户点四宫格就是想要四格，
+ * 悄悄给他两格比直接说「还差 2 个」更让人困惑。
+ */
+function setSplitMode(want) {
+  if (want === "none") {
+    splitIds.fill(null);
     syncSplit();
     setStatus("已关闭分屏");
     return;
   }
-  const other = [...sessions.values()].find((v) => v !== active && v.handle);
-  if (!other) {
-    // 只有一个会话时分屏没有意义，直接说清楚，别让按钮看起来坏了
-    setStatus("分屏需要至少两个已连接的会话");
+  const need = want === "quad" ? 4 : 2;
+  const name = want === "quad" ? "四宫格" : "左右分屏";
+  const connected = [...sessions.values()].filter((v) => v.handle);
+  if (!active?.handle || connected.length < need) {
+    setStatus(`${name}需要 ${need} 个已连接会话，当前 ${connected.length} 个`);
     return;
   }
-  // 左槽钉住当前标签：之后点右边那个终端只换焦点，左边不会变空
-  splitLeftId = active?.id ?? null;
-  splitViewId = other.id;
+  const others = connected.filter((v) => v !== active).slice(0, need - 1);
+  splitLeftId = active.id;
+  splitIds.fill(null);
+  others.forEach((v, i) => {
+    splitIds[i] = v.id;
+  });
   syncSplit();
-  setStatus(`右侧显示：${other.label}`);
+  setStatus(
+    want === "quad"
+      ? `四宫格：${[active, ...others].map((v) => v.label).join(" / ")}`
+      : `右侧显示：${others[0].label}`,
+  );
+}
+
+splitToggle.addEventListener("click", () => {
+  setSplitMode(splitMode() === "none" ? "h" : "none");
 });
 
 function syncTunnelPersistable() {
@@ -6873,6 +6917,7 @@ const I18N = {
     "ctx.find": "查找…",
     "ctx.clear": "清屏",
     "ctx.split": "左右分屏",
+    "ctx.quad": "四宫格分屏",
     "ctx.moveTo": "移动到…",
     "ctx.broadcastFolder": "多执行到此文件夹（{n} 个 SSH）",
     "ctx.broadcastSelected": "多执行到选中会话（{n} 个）",
@@ -6950,6 +6995,7 @@ const I18N = {
     "ctx.find": "Find…",
     "ctx.clear": "Clear",
     "ctx.split": "Split view",
+    "ctx.quad": "Quad view",
     "ctx.moveTo": "Move to…",
     "ctx.broadcastFolder": "Broadcast to this folder ({n} SSH)",
     "ctx.broadcastSelected": "Broadcast to selected sessions ({n})",
@@ -7525,7 +7571,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-124",
+  ui: "wt-ui-125",
   /** 验收用：主窗口当前是否全屏（`TER-020`） */
   get fullscreen() {
     return isFullscreen;
@@ -7827,20 +7873,30 @@ window.__wt = {
    * 「节点在、屏幕空白」曾经真的发生过。所以这里顺带量一下两边的实际宽高。
    */
   get split() {
-    const right = splitView();
+    const mode = splitMode();
+    const right = splitView(0);
     const left = splitLeftView();
     const box = (v) => {
       if (!v) return null;
       const r = v.el.getBoundingClientRect();
       return { w: Math.round(r.width), h: Math.round(r.height) };
     };
+    // 四宫格时四格都要能核对：只报左右两格的话，下面两格是空是满根本看不出来
+    const slots = mode === "quad" ? 3 : mode === "h" ? 1 : 0;
+    const cells = [{ id: left?.id ?? null, label: left?.label ?? null, box: box(left) }];
+    for (let i = 0; i < slots; i += 1) {
+      const v = splitView(i);
+      cells.push({ id: v?.id ?? null, label: v?.label ?? null, box: box(v) });
+    }
     return {
-      on: right !== null,
+      mode,
+      on: mode !== "none",
       right: right?.label ?? null,
       left: left?.label ?? null,
       leftBox: box(left),
       rightBox: box(right),
       active: active?.label ?? null,
+      cells,
     };
   },
   /** 内嵌编辑器（`FIL-011`）：打开的文档与当前内容 */

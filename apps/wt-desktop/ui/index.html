@@ -346,10 +346,19 @@
       .tab .x { color: #8a8a92; }
       .tab .x:hover { color: #e8e8ea; }
       #term { flex: 1; min-width: 0; min-height: 0; display: flex; }
-      /* 分屏（G6）：两个 pane 各占一半，会话元素仍按 absolute 铺满各自 pane */
+      /* 分屏（`TER-002`）：左右两格，或四宫格；会话元素仍按 absolute 铺满各自 pane */
       #term .pane { flex: 1; min-width: 0; min-height: 0; position: relative; }
       #term .pane[hidden] { display: none; }
       #term .pane + .pane { border-left: 1px solid #33333a; }
+      /* 四宫格：2×2 网格。B 右上、C 左下、D 右下，A 在左上。
+         边框用 outline 而不是 border，免得每格尺寸被边框吃掉、xterm 的 fit 算歪 */
+      #term.quad { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+      #term.quad .pane { flex: none; }
+      #term.quad .pane + .pane { border-left: 0; }
+      #term.quad #term-b,
+      #term.quad #term-d { border-left: 1px solid #33333a; }
+      #term.quad #term-c,
+      #term.quad #term-d { border-top: 1px solid #33333a; }
       #editor {
         flex: 1;
         min-width: 0;
@@ -1138,7 +1147,9 @@
       /* 分屏时两个 pane 里各有一个会话，但「当前标签」只有一个——只按 .active 显隐，
          另一半就永远是空白（DOM 里明明有一个 view，屏幕上一个字都没有）。
          所以：右 pane 里的会话一律显示；左 pane 除 .active 外，左槽那个（.pane-shown）也显示。 */
-      #term-b .term-view { display: block; }
+      #term-b .term-view,
+      #term-c .term-view,
+      #term-d .term-view { display: block; }
       #term-a .term-view.pane-shown { display: block; }
     </style>
   </head>
@@ -1338,6 +1349,9 @@
         <div id="term">
           <div id="term-a" class="pane"></div>
           <div id="term-b" class="pane" hidden></div>
+          <!-- 四宫格的下排两格（`TER-002`）：只有 quad 模式才显示 -->
+          <div id="term-c" class="pane" hidden></div>
+          <div id="term-d" class="pane" hidden></div>
         </div>
       </div>
     </div>

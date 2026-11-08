@@ -5838,6 +5838,56 @@ try {
     splitOff?.a === 2,
     splitOff ? `左 ${splitOff.a} 个` : "前提没连上，跳过",
   );
+
+  // 四宫格（`TER-002`）：再补两个本地终端凑够四个已连接会话。
+  // 用本地终端而不是再开两条 SSH——这一条验的是**布局**，不是建连。
+  await clickElement("#open");
+  await clickElement("#open");
+  // 要等的是「四个**已连接**的会话」，不是「四个标签」：刚点开的本地终端 handle 还是空的，
+  // 四宫格会如实拒绝（需要 4 个已连接会话），表现为「按了没反应」
+  const fourTabs = await waitFor(
+    async () => {
+      const list = await cdp.eval(`window.__wt.tabs()`);
+      const ready = list.filter((t) => t.handle).length;
+      return ready >= 4 ? ready : null;
+    },
+    { timeout: 40000, label: "凑够四个已连接的会话" },
+  ).catch(() => 0);
+  // 真按键：Ctrl+Shift+G（CDP 修饰键位掩码 Ctrl=2、Shift=8）
+  if (fourTabs >= 4) await pressChord(10, "G", "KeyG", 71);
+  const quad = fourTabs >= 4
+    ? await waitFor(
+        async () => {
+          const s = await cdp.eval(`window.__wt.split`);
+          const ok =
+            s.mode === "quad" &&
+            s.cells.length === 4 &&
+            s.cells.every((c) => c.box && c.box.w > 0 && c.box.h > 0);
+          return ok ? s : null;
+        },
+        { timeout: 10000, label: "四宫格生效" },
+      ).catch(() => null)
+    : null;
+  check(
+    "四宫格：四块都真的画出来了（不是只有 DOM 节点）",
+    quad !== null,
+    quad
+      ? quad.cells.map((c) => `${c.label}:${c.box.w}×${c.box.h}`).join(" | ")
+      : `${JSON.stringify(await cdp.eval(`window.__wt.split`))}；状态栏：${await cdp.eval(`document.getElementById("status").textContent`)}`
+  );
+  check(
+    "四宫格里是四个不同的会话",
+    quad !== null && new Set(quad.cells.map((c) => c.id)).size === 4,
+    quad ? quad.cells.map((c) => c.id).join(",") : "没进四宫格",
+  );
+  // 关掉：同一个键再按一次，四块都回左 pane
+  if (quad) await pressChord(10, "G", "KeyG", 71);
+  const quadOff = quad ? await cdp.eval(`window.__wt.split`) : null;
+  check(
+    "再按一次退出四宫格，会话都回左 pane",
+    quadOff === null || quadOff.mode === "none",
+    quadOff ? `模式=${quadOff.mode}` : "没进四宫格，跳过",
+  );
   await closeAllTabs();
 
   // 19l. Truecolor 与宽字符（`TER-024` / `TER-025`）：从 buffer 里读颜色与单元格宽度
