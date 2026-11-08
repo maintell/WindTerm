@@ -1586,6 +1586,14 @@
           <tbody id="net-rows"></tbody>
         </table>
         <p id="net-summary"></p>
+        <h4>程序自身会连什么</h4>
+        <ul id="net-allow">
+          <li><b>会话与隧道</b>：只连你指定的主机与端口——这是唯一会主动发起的出站。</li>
+          <li><b>自动更新</b>：本版本未实现，不联网。</li>
+          <li><b>插件仓库</b>：本版本未实现，不联网。</li>
+          <li><b>共享会话拉取</b>：本版本未实现，不联网。</li>
+          <li><b>页面网络策略</b>：只允许 <code>self</code> 与 <code>ipc</code>（CSP <code>connect-src</code>），页面里也没有任何外部地址。</li>
+        </ul>
         <menu><button value="yes">关闭</button></menu>
       </form>
     </dialog>

@@ -8963,6 +8963,15 @@ try {
     net.summary.includes("非用户发起的出站连接 0 条"),
     net.summary,
   );
+  const allow = await cdp.eval(`(() => {
+    const items = [...document.querySelectorAll("#net-allow li")].map((li) => li.textContent);
+    return { count: items.length, text: items.join(" / ") };
+  })()`);
+  check(
+    "面板列出「程序自身会连什么」的白名单（SEC-015）",
+    allow.count >= 4 && allow.text.includes("自动更新") && allow.text.includes("插件仓库"),
+    `${allow.count} 条：${allow.text.slice(0, 80)}`,
+  );
   await cdp.eval(`document.getElementById("net-dialog").close()`);
   await closeAllTabs();
   // 连接被拒且状态栏点名「主机密钥变了」，以及 known_hosts 里那条记录没被改写。
