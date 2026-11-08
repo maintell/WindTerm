@@ -1051,6 +1051,9 @@ function openTermMenu(x, y, view) {
       { label: t("ctx.selectAll"), run: () => view.term.selectAll() },
       { label: t("ctx.find"), run: () => openFind() },
       { label: t("ctx.clear"), run: () => view.term.clear() },
+      // 保存/打印放右键菜单里：用户找它们先想到的是这里，不是命令面板
+      { label: t("ctx.saveOutput"), run: () => runAction("saveOutput") },
+      { label: t("ctx.print"), run: () => runAction("printTerminal") },
       { label: t("ctx.split"), run: () => runAction("splitToggle") },
       { label: t("ctx.vsplit"), run: () => runAction("splitVertical") },
       { label: t("ctx.quad"), run: () => runAction("splitQuad") },
@@ -6958,6 +6961,8 @@ const I18N = {
     "ctx.clear": "清屏",
     "ctx.split": "左右分屏",
     "ctx.vsplit": "上下分屏",
+    "ctx.saveOutput": "保存输出…",
+    "ctx.print": "打印…",
     "ctx.quad": "四宫格分屏",
     "ctx.moveTo": "移动到…",
     "ctx.broadcastFolder": "多执行到此文件夹（{n} 个 SSH）",
@@ -7037,6 +7042,8 @@ const I18N = {
     "ctx.clear": "Clear",
     "ctx.split": "Split view",
     "ctx.vsplit": "Split view (vertical)",
+    "ctx.saveOutput": "Save output…",
+    "ctx.print": "Print…",
     "ctx.quad": "Quad view",
     "ctx.moveTo": "Move to…",
     "ctx.broadcastFolder": "Broadcast to this folder ({n} SSH)",
@@ -7678,7 +7685,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-131",
+  ui: "wt-ui-132",
   /** 验收用：主窗口当前是否全屏（`TER-020`） */
   get fullscreen() {
     return isFullscreen;

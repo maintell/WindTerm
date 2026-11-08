@@ -1815,7 +1815,12 @@ try {
   ).catch(() => null);
   check(
     "右键默认弹菜单（不是直接粘贴，TER-011）",
-    termMenu !== null && termMenu.items.includes("粘贴") && termMenu.items.includes("复制"),
+    termMenu !== null &&
+      termMenu.items.includes("粘贴") &&
+      termMenu.items.includes("复制") &&
+      // 保存输出/打印也在这里：只在命令面板里能搜到的话，用户不会去那儿找
+      termMenu.items.includes("保存输出…") &&
+      termMenu.items.includes("打印…"),
     termMenu ? JSON.stringify(termMenu.items) : "没弹菜单",
   );
   const rightBefore = await cdp.eval(`window.__wt.pasteCount`);
