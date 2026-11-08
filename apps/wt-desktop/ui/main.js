@@ -229,6 +229,10 @@ const STATUS_TPL_EN = [
   [/^keepalive 最多丢失：(\d+) 次$/, "keepalive max missed: $1"],
   [/^已跳到「(.+)」$/, "Jumped to $1"],
   [/^终端编码：(.+)$/, "Terminal encoding: $1"],
+  // 会话树批量多执行（`TER-004`）
+  [/^正在打开 (\d+) 个会话…$/, "Opening $1 sessions…"],
+  [/^广播目标 (\d+) 台$/, "Broadcast targets: $1"],
+  [/^广播目标 (\d+) 台（跳过 (\d+) 个非 SSH 会话）$/, "Broadcast targets: $1 (skipped $2 non-SSH session(s))"],
 ];
 
 let lastStatus = "";
@@ -1793,6 +1797,10 @@ treeBody.addEventListener("contextmenu", (ev) => {
     showCtxMenu(ev.clientX, ev.clientY, [
       ...(multiSel.size > 1
         ? [
+            {
+              label: tf("ctx.broadcastSelected", { n: multiSel.size }),
+              run: () => void broadcastToSavedSessions([...multiSel], "选中的会话"),
+            },
             { label: tf("ctx.moveSelected", { n: multiSel.size }), run: () => moveSelectedSessions() },
             { label: tf("ctx.deleteSelected", { n: multiSel.size }), run: () => deleteSelectedSessions() },
           ]
@@ -1804,7 +1812,20 @@ treeBody.addEventListener("contextmenu", (ev) => {
   } else if (folderId) {
     const f = (lastTree?.folders ?? []).find((x) => x.id === folderId);
     if (!f) return;
+    const ids = folderSessionIds(f.id);
+    const sshCount = ids.filter(
+      (id) => (lastTree?.sessions ?? []).find((s) => s.id === id)?.kind === "ssh",
+    ).length;
     showCtxMenu(ev.clientX, ev.clientY, [
+      // 文件夹批量多执行（`TER-004`）：空文件夹或没有 SSH 会话时不出现，避免点了没反应
+      ...(sshCount
+        ? [
+            {
+              label: tf("ctx.broadcastFolder", { n: sshCount }),
+              run: () => void broadcastToSavedSessions(ids, f.name),
+            },
+          ]
+        : []),
       { label: t("ctx.rename"), run: () => renameFolder(f) },
       { label: t("ctx.newSubfolder"), run: () => newSubFolder(f.id) },
     ]);
@@ -4694,6 +4715,72 @@ function pruneBcTargets() {
   if (dropped && !bcTargetsChosen.size) bcTargetsChosen = null;
 }
 
+/** 文件夹子树（含子文件夹）里的会话 id，顺序与树里一致 */
+function folderSessionIds(folderId) {
+  const ids = [];
+  const walk = (fid) => {
+    for (const s of lastTree?.sessions ?? []) {
+      if ((s.folder_id ?? "") === fid) ids.push(s.id);
+    }
+    for (const f of lastTree?.folders ?? []) {
+      if ((f.parent_id ?? "") === fid) walk(f.id);
+    }
+  };
+  walk(folderId);
+  return ids;
+}
+
+/**
+ * 把一批**已存会话**打开并设为广播目标（`TER-004`：规格要的「多选会话树节点 / 整个文件夹」）。
+ *
+ * 顺序打开而不是并发：连接参数走的是同一套表单（主机/口令/跳板机），
+ * 并发会把这些串到别的会话上——表现为「明明选了 A，连上的是 B」。
+ *
+ * 只处理 `ssh` 会话；其余类型（sftp 等）如实跳过并说明，不假装支持。
+ */
+async function broadcastToSavedSessions(ids, what) {
+  const saved = ids
+    .map((id) => (lastTree?.sessions ?? []).find((s) => s.id === id))
+    .filter(Boolean);
+  const sshOnes = saved.filter((s) => s.kind === "ssh");
+  const skipped = saved.length - sshOnes.length;
+  if (!sshOnes.length) {
+    setStatus("没有可广播的会话");
+    return;
+  }
+
+  const before = new Set([...sessions.values()].map((v) => v.id));
+  setStatus(`正在打开 ${sshOnes.length} 个会话…`);
+  for (const s of sshOnes) {
+    await selectSession(s);
+    await openSsh();
+  }
+
+  const added = [...sessions.values()]
+    .filter((v) => !before.has(v.id))
+    .map((v) => v.id);
+  const all = bcConnected().map((v) => v.id);
+  const chosen = added.filter((id) => all.includes(id));
+  if (!chosen.length) {
+    setStatus("没有可广播的会话");
+    return;
+  }
+
+  // 目标正好是全部时用 null（「全部」是默认语义），否则记显式集合
+  bcTargetsChosen = chosen.length === all.length ? null : new Set(chosen);
+  bcBar.hidden = false;
+  bcToggle.classList.add("on");
+  renderBcTargets();
+  bcInput.focus();
+  // 一条消息说清「设了几台 + 跳过了几个」：连发两条会被后者立刻覆盖，
+  // 用户永远看不到目标数（目标数只在「非全部」时显示在按钮上）
+  setStatus(
+    skipped
+      ? `广播目标 ${chosen.length} 台（跳过 ${skipped} 个非 SSH 会话）`
+      : `广播目标 ${chosen.length} 台`,
+  );
+}
+
 /** 刷新「目标」按钮上的计数（浮层内容打开时才重建） */
 function renderBcTargets() {
   if (!bcTargetsBtn) return;
@@ -6587,6 +6674,8 @@ const I18N = {
     "ctx.clear": "清屏",
     "ctx.split": "左右分屏",
     "ctx.moveTo": "移动到…",
+    "ctx.broadcastFolder": "多执行到此文件夹（{n} 个 SSH）",
+    "ctx.broadcastSelected": "多执行到选中会话（{n} 个）",
     "ctx.moveSelected": "移动 {n} 项到…",
     "ctx.deleteSelected": "删除 {n} 项…",
     "ctx.rename": "重命名",
@@ -6662,6 +6751,8 @@ const I18N = {
     "ctx.clear": "Clear",
     "ctx.split": "Split view",
     "ctx.moveTo": "Move to…",
+    "ctx.broadcastFolder": "Broadcast to this folder ({n} SSH)",
+    "ctx.broadcastSelected": "Broadcast to selected sessions ({n})",
     "ctx.moveSelected": "Move {n} items to…",
     "ctx.deleteSelected": "Delete {n} items…",
     "ctx.rename": "Rename",

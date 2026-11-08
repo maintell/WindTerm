@@ -8739,6 +8739,67 @@ try {
   //
   // 这一条是安全底线：把「变了」判成「第一次见」，界面就会把已信任的指纹换成
   // 对方给的指纹再连一次——中间人换一次密钥就拿到信任。所以断言两件事：
+  // 19z. 会话树批量多执行（`TER-004`）：右键文件夹一次把它的会话设成广播目标。
+  // 这是规格要的「多选会话树节点 / 整个文件夹」——之前只能从标签页里勾选。
+  // 自建一个专用文件夹：不依赖前面用例是否改过 `Lab` 的名字/内容，结果可重复。
+  await closeAllTabs();
+  const bcLabId = await cdp.eval(
+    `window.__TAURI__.core.invoke("folder_save", { req: { name: "bc-lab" } })`,
+  );
+  const mockId = await cdp.eval(`(async () => {
+    const dto = await window.__TAURI__.core.invoke("sessions_load");
+    return dto.sessions.find((s) => s.name === "mock-ssh")?.id ?? null;
+  })()`);
+  check("找得到 mock-ssh 会话", Boolean(mockId), mockId ?? "没有");
+  await cdp.eval(`window.__TAURI__.core.invoke("session_move", {
+    sessionId: ${JSON.stringify(mockId)}, folderId: ${JSON.stringify(bcLabId)},
+  })`);
+  const bcSecondId = await cdp.eval(`window.__TAURI__.core.invoke("session_save", {
+    req: { name: "mock-ssh-2", host: "127.0.0.1", port: ${sshPort}, user: "tester", kind: "ssh" },
+  })`);
+  await cdp.eval(`window.__TAURI__.core.invoke("session_move", {
+    sessionId: ${JSON.stringify(bcSecondId)}, folderId: ${JSON.stringify(bcLabId)},
+  })`);
+  await cdp.eval(`window.__wt.refreshTree()`);
+  await waitFor(
+    async () => {
+      const names = await cdp.eval(`window.__wt.sessions()`);
+      return names.includes("mock-ssh-2") ? names : null;
+    },
+    { timeout: 10000, label: "第二个会话进树" },
+  );
+
+  await rightClickNode("bc-lab");
+  const folderMenu = await cdp.eval(
+    `[...document.querySelectorAll("#ctx-menu button")].map((b) => b.textContent)`,
+  );
+  const bcFolderItem = folderMenu.find((x) => x.startsWith("多执行到此文件夹"));
+  check("文件夹右键有「多执行到此文件夹」", Boolean(bcFolderItem), folderMenu.join(" / "));
+  await clickCtxItem(bcFolderItem);
+  const folderBc = await waitFor(
+    async () => {
+      const b = await cdp.eval(`window.__wt.broadcast`);
+      return b.open && b.targets === 2 ? b : null;
+    },
+    { timeout: 60000, label: "文件夹批量多执行" },
+  );
+  check("文件夹批量多执行设了 2 台目标", folderBc.targets === 2, `${folderBc.targets} 台`);
+
+  await fillInput("#bc-input", "echo folder-bc");
+  await clickElement("#bc-send");
+  const folderDone = await waitFor(
+    async () => {
+      const b = await cdp.eval(`window.__wt.broadcast`);
+      return b.last && !b.last.cancelled && b.last.sent === 2 ? b : null;
+    },
+    { timeout: 30000, label: "文件夹批量广播完成" },
+  );
+  check(
+    "文件夹批量多执行两台都收到",
+    folderDone.last.groups.length === 1 && folderDone.last.groups[0].labels.length === 2,
+    folderDone.result,
+  );
+  await closeAllTabs();
   // 连接被拒且状态栏点名「主机密钥变了」，以及 known_hosts 里那条记录没被改写。
   await closeAllDialogs();
   await closeAllTabs();

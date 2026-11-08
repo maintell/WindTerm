@@ -61,6 +61,9 @@ const cases = [
   ["keepalive 最多丢失：3 次", "keepalive max missed: 3"],
   ["已跳到「终端编码」", "Jumped to 终端编码"],
   ["终端编码：GBK", "Terminal encoding: GBK"],
+  ["正在打开 2 个会话…", "Opening 2 sessions…"],
+  ["广播目标 2 台", "Broadcast targets: 2"],
+  ["广播目标 2 台（跳过 1 个非 SSH 会话）", "Broadcast targets: 2 (skipped 1 non-SSH session(s))"],
 ];
 
 let bad = 0;
