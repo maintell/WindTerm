@@ -118,6 +118,13 @@ clippy 零告警、文档对账 PASSED、端到端 `N/N 项通过`，退出码 0
    `spawn` 时只注入了 `TERM=xterm-256color` 与 `COLORTERM=truecolor`（这两条已有 e2e 证据，
    见 `TER-024`）。会话句柄由 `registry.register()` 在 spawn **之后**才生成，要注入就得把 id
    分配提前到 spawn 之前并同时改本地/SSH 两条路径，牵动面大，暂未做——如实记在这里，别当成已覆盖。
+7. **SSH 压缩暂不开放**：`wt_ssh::SshConfig.compression` 字段在，但界面没有入口，`client::Config`
+   一直用默认值（默认 `none` 排第一，等于不压）。2026-11-08 试过接上 `russh` 的
+   `Preferred.compression`（顺序 `zlib@openssh.com` → `zlib` → `none`）：配置层单测通过，
+   但**开启压缩后 e2e 的连接建不起来**。**根因未定位**——可能是 russh 客户端压缩实现的问题，
+   也可能是应用内 mock 服务端不支持该方向压缩。没有真机 `sshd` 对照前不开放这个开关：
+   一个「打开就连不上」的开关比没有更糟。要再动它，先准备一台真 sshd（`sshd_config` 里
+   `Compression yes`）做对照实验，确认是客户端还是 mock 的问题。
 
 ## 6. 建议的下一步顺序
 
