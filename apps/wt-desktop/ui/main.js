@@ -7040,6 +7040,13 @@ useJumpBox.addEventListener("change", syncAuthUi);
 jumpSessionSelect.addEventListener("change", async () => {
   const id = jumpSessionSelect.value;
   const jump = id ? (lastTree?.sessions ?? []).find((x) => x.id === id) : null;
+  // 选了跳板机会话就等于「要经跳板机」，必须跟着勾上。
+  //
+  // 不勾的后果不是「少走一步」，而是**静默直连**：表单里明明填着跳板机，连的却是
+  // 目标机本身——把跳板机整个绕过去了。这类失效在界面上看不出任何异常，
+  // 只有事后查 `ss` 才会发现「怎么是从这台机器直连的」。
+  useJumpBox.checked = Boolean(jump);
+  syncAuthUi();
   await fillJumpFields(jump);
 });
 

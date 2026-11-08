@@ -67,6 +67,11 @@ struct AppState {
     jump_pool: std::sync::Mutex<HashMap<String, JumpEntry>>,
     jump_opens: std::sync::atomic::AtomicU64,
     jump_reuses: std::sync::atomic::AtomicU64,
+    /// 最近一次建连用的跳板链，**离本机由近到远**（`host:port`）。
+    ///
+    /// 只放地址、不放凭据：这条是给人核对「到底走的哪几台」用的——链的顺序排反时
+    /// 从界面上完全看不出来（全部机器同宿主的验收环境里两种顺序都能连上）。
+    jump_last_chain: std::sync::Mutex<Vec<String>>,
 }
 
 /// 一条运行中的隧道。`-L`/`-D` 在本地监听、`-R` 在服务端监听——
@@ -1983,17 +1988,28 @@ async fn connect_accept_new(
     auth: &AuthInput,
     jumps: &[JumpReq],
 ) -> Result<(wt_ssh::SshConnection, bool), String> {
-    let Some(first) = jumps.first() else {
+    if jumps.is_empty() {
+        // 直连也要把「上一次走的链」清掉，否则面板会一直显示早就没在用的那几台
+        if let Ok(mut last) = state.jump_last_chain.lock() {
+            last.clear();
+        }
         return connect_direct_accept_new(cfg, auth).await;
-    };
-    // 单跳是最常见的形态，走缓存（`SES-024` AC-3）；多跳先不缓存，见下面的注释
-    if jumps.len() == 1 {
-        return connect_via_cached_jump(state, cfg, auth, first).await;
     }
+    // 单跳与多跳走**同一条**路径：单跳就是长度为 1 的链，键也退化成原来的单跳键，
+    // 所以合并这个分支不改变单跳的任何行为（`SES-024` AC-3 的既有断言照旧）。
+    connect_via_cached_chain(state, cfg, auth, jumps).await
+}
 
-    // 第 1 跳由本机直连（它自己的主机密钥也走 accept-new）
+/// 把整条跳板链建起来，返回**最后一跳**的连接，以及本次是否新增了主机密钥。
+///
+/// 前几跳的 `SshConnection` 在这里被丢掉是安全的：下一跳的会话跑在它开出的
+/// `direct-tcpip` 通道上，通道自己握着会话的发送端，所以链路不会因为句柄被 drop 就断
+/// （多跳能连上本身就证明了这一点）。
+async fn build_jump_chain(jumps: &[JumpReq]) -> Result<(wt_ssh::SshConnection, bool), String> {
+    let first = &jumps[0];
     let first_cfg = hop_cfg(first)?;
     let first_auth = AuthInput::Password(first.password.clone());
+    // 第 1 跳由本机直连（它自己的主机密钥也走 accept-new）
     let (mut conn, mut added) = connect_direct_accept_new(&first_cfg, &first_auth).await?;
     trace(&format!("[connect] 第 1 跳 {}:{} 就绪", first_cfg.host, first_cfg.port));
 
@@ -2007,29 +2023,34 @@ async fn connect_accept_new(
         added |= a;
         link = format!("{}:{}", hop_cfg.host, hop_cfg.port);
     }
-
-    // 最后一跳连目标：它**没法 probe**（`probe_host_key` 是直连的，目标只有跳板机能到），
-    // 所以密钥未知时就地接受并记录——这就是 `trust_observed_key` 存在的理由。
-    let (conn, a) = connect_over_accept_new(&conn, jumps.len(), &link, cfg, auth).await?;
-    Ok((conn, added || a))
+    Ok((conn, added))
 }
 
-/// 经**单台**跳板机连接，并复用这台跳板机的 SSH 会话（`SES-024` AC-3）。
+/// 经一跳或**多跳**跳板链连接，并复用链上最后一跳的 SSH 会话（`SES-024` AC-3）。
 ///
-/// 复用失败（跳板机重启、连接被回收）就摘掉缓存重建一次——不能让一条坏连接把
-/// 后续所有连接都卡死。
+/// 缓存的是「最后一跳的连接」：目标机是在它上面新开一条 `direct-tcpip`，所以复用
+/// 它等于复用整条链——中间几跳的会话由通道持有，不会因为没人拿句柄就断。
 ///
-/// 多跳暂时不缓存：那要把整条链的每一段都存下来，失效与凭据匹配的复杂度高一个量级，
-/// 先把最常见的一半做对并如实标注。
-async fn connect_via_cached_jump(
+/// 复用失败（跳板机重启、连接被回收、中间某一跳没了）就摘掉缓存重建一次，
+/// 不能让一条坏连接把后续所有连接都卡死。
+async fn connect_via_cached_chain(
     state: &AppState,
     cfg: &wt_ssh::SshConfig,
     auth: &AuthInput,
-    hop: &JumpReq,
+    jumps: &[JumpReq],
 ) -> Result<(wt_ssh::SshConnection, bool), String> {
-    let hop_cfg = hop_cfg(hop)?;
-    let link = format!("{}:{}", hop_cfg.host, hop_cfg.port);
-    let key = jump_key(hop);
+    let hops = jumps.len();
+    let key = chain_key(jumps);
+    trace(&format!("[jump] 链 {hops} 跳，键 {key}"));
+    // 记下这次实际走的链（离本机由近到远），供界面与验收核对顺序
+    if let Ok(mut last) = state.jump_last_chain.lock() {
+        *last = jumps
+            .iter()
+            .map(|h| format!("{}:{}", h.host.trim(), h.port))
+            .collect();
+    }
+    let last_cfg = hop_cfg(&jumps[hops - 1])?;
+    let link = format!("{}:{}", last_cfg.host, last_cfg.port);
 
     // 命中就先试。必须把 `Arc` 拿出来再放锁：`connect_over_accept_new` 里有 await，
     // 持着 `std::sync::MutexGuard` 跨 await 会直接编译不过（也确实会卡住别的连接）。
@@ -2043,10 +2064,10 @@ async fn connect_via_cached_jump(
         state
             .jump_reuses
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        match connect_over_accept_new(&conn, 1, &link, cfg, auth).await {
+        match connect_over_accept_new(&conn, hops, &link, cfg, auth).await {
             Ok(v) => return Ok(v),
             Err(e) => {
-                trace(&format!("[jump] 缓存连接不可用，摘掉重建：{e}"));
+                trace(&format!("[jump] 缓存的跳板链不可用，摘掉重建：{e}"));
                 if let Ok(mut m) = state.jump_pool.lock() {
                     m.remove(&key);
                 }
@@ -2054,8 +2075,7 @@ async fn connect_via_cached_jump(
         }
     }
 
-    let hop_auth = AuthInput::Password(hop.password.clone());
-    let (conn, added) = connect_direct_accept_new(&hop_cfg, &hop_auth).await?;
+    let (conn, added) = build_jump_chain(jumps).await?;
     state
         .jump_opens
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -2071,13 +2091,15 @@ async fn connect_via_cached_jump(
             JumpEntry {
                 conn: shared.clone(),
                 last_used: std::time::Instant::now(),
+                hops,
             },
         );
     }
-    let (conn, a) = connect_over_accept_new(&shared, 1, &link, cfg, auth).await?;
+    // 最后一跳连目标：它**没法 probe**（`probe_host_key` 是直连的，目标只有跳板机能到），
+    // 所以密钥未知时就地接受并记录——这就是 `trust_observed_key` 存在的理由。
+    let (conn, a) = connect_over_accept_new(&shared, hops, &link, cfg, auth).await?;
     Ok((conn, added || a))
 }
-
 /// 从上一跳开一条 `direct-tcpip` 到 `cfg`，在通道上握手；主机密钥未知时接受并记录。
 ///
 /// 与 `wt_ssh::connect_chain` 的区别只有主机密钥策略：界面侧是 accept-new（未知就记下），
@@ -2197,7 +2219,7 @@ fn resolve_jumps(state: &AppState, jump: Option<&JumpReq>) -> Result<Vec<JumpReq
 
     let start = wt_core::SessionId::from(session_id);
     // 环与深度在这里再拦一次：链是会话属性，可能在别处被改成环
-    let rest = wt_core::validate_jump_chain(&start, |id| {
+    let outward = wt_core::validate_jump_chain(&start, |id| {
         by_id
             .get(id.as_str())
             .and_then(|s| s.jump())
@@ -2206,8 +2228,12 @@ fn resolve_jumps(state: &AppState, jump: Option<&JumpReq>) -> Result<Vec<JumpReq
     })
     .map_err(|e| e.to_string())?;
 
-    let mut hops = Vec::with_capacity(rest.len() + 1);
-    for (idx, id) in std::iter::once(start).chain(rest).enumerate() {
+    let order = chain_in_client_order(start, outward);
+    let hops = order.len();
+    trace(&format!("[jump] 解析跳板链：{hops} 跳"));
+
+    let mut out = Vec::with_capacity(hops);
+    for (idx, id) in order.into_iter().enumerate() {
         let s = by_id.get(id.as_str()).ok_or_else(|| {
             format!(
                 "[SSH_BAD_ARGUMENT] 第 {} 跳的会话不存在（可能已被删除）：{id}",
@@ -2223,8 +2249,9 @@ fn resolve_jumps(state: &AppState, jump: Option<&JumpReq>) -> Result<Vec<JumpReq
                 s.name
             ));
         }
-        // 第一跳可以沿用表单里的口令（用户可能刚手填过），其后各跳只认保险库
-        let password = if idx == 0 && !jump.password.is_empty() {
+        // 表单里的口令属于「用户选的那条跳板会话」，它现在排在链尾（离目标最近）；
+        // 其余各跳只认保险库——凭据不继承（`SES-024` 行为规格第 4 条）
+        let password = if idx + 1 == hops && !jump.password.is_empty() {
             jump.password.clone()
         } else {
             vault_password(state, id.as_str()).ok_or_else(|| {
@@ -2235,7 +2262,7 @@ fn resolve_jumps(state: &AppState, jump: Option<&JumpReq>) -> Result<Vec<JumpReq
                 )
             })?
         };
-        hops.push(JumpReq {
+        out.push(JumpReq {
             host,
             port: s.port.unwrap_or(22),
             user,
@@ -2243,9 +2270,27 @@ fn resolve_jumps(state: &AppState, jump: Option<&JumpReq>) -> Result<Vec<JumpReq
             session_id: None,
         });
     }
-    Ok(hops)
+    Ok(out)
 }
 
+/// 把「我要经过谁」这条链排成「离本机由近到远」（`SES-025`）。
+///
+/// `outward` 是 `validate_jump_chain` 的结果：`start` 的跳板、那个跳板的跳板……，
+/// 也就是**离目标越来越远**。建连必须从离本机最近的那台开始，所以顺序正好相反：
+/// 最外层先连，`start` 排在最后。
+///
+/// 排错的后果很具体：程序会去**直连**最里面那台跳板机，而那台通常正是本机根本
+/// 连不到的内网机器——多跳在真实网络里就完全不工作。而全部机器同宿主的 mock 里
+/// 两种顺序都「能连上」，所以只验「连上了」永远发现不了这个错。
+fn chain_in_client_order(
+    start: wt_core::SessionId,
+    outward: Vec<wt_core::SessionId>,
+) -> Vec<wt_core::SessionId> {
+    let mut order: Vec<wt_core::SessionId> = outward;
+    order.reverse();
+    order.push(start);
+    order
+}
 /// 取某个会话在保险库里的密码（保险库锁着就当没有）。
 fn vault_password(state: &AppState, session_id: &str) -> Option<String> {
     let st = state.vault.lock().ok()?;
@@ -2276,9 +2321,14 @@ fn ssh_auth(input: &AuthInput) -> wt_ssh::Auth<'_> {
 ///
 /// 为什么值得缓存：不缓存的话，每开一个标签就在跳板机上重新登一次，`ss` 上越堆越多；
 /// 缓存之后第二条连接只在**已有的那条 SSH 会话**上新开一条 `direct-tcpip`。
+///
+/// 多跳链缓存的是**最后一跳**的连接：目标机是在它上面开通道，所以复用它等于复用整条链。
 struct JumpEntry {
     conn: std::sync::Arc<wt_ssh::SshConnection>,
     last_used: std::time::Instant,
+    /// 这条缓存对应几跳（单跳为 1）。只报跳数、不报键：键里有口令指纹，
+    /// 把它吐到界面上等于给了一个可离线猜解的凭据样本。
+    hops: usize,
 }
 
 const JUMP_POOL_MAX: usize = 8;
@@ -2292,6 +2342,14 @@ fn jump_key(hop: &JumpReq) -> String {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     hop.password.hash(&mut h);
     format!("{}:{}:{}|{:x}", hop.host.trim(), hop.port, hop.user.trim(), h.finish())
+}
+
+/// 缓存键：整条链逐跳的「主机:端口:用户|口令指纹」，用 `->` 串起来。
+///
+/// 单跳时它退化成 `jump_key`（`->` 根本不出现），所以单跳的键与合并之前逐字节一致。
+/// 顺序也算进键里：A→B 与 B→A 是两条不同的链，复用错了会把流量送到错误的机器上。
+fn chain_key(jumps: &[JumpReq]) -> String {
+    jumps.iter().map(jump_key).collect::<Vec<_>>().join("->")
 }
 
 /// 跳板机参数（`SES-024`）。
@@ -2443,6 +2501,10 @@ static MOCK_PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
 /// 跳板机 mock 的会话计数（`SES-024` AC-3 的证据：第二条连接不该让它再涨）
 #[cfg(feature = "e2e-mock")]
 static MOCK_JUMP_SESSIONS: std::sync::OnceLock<std::sync::Arc<std::sync::atomic::AtomicUsize>> =
+    std::sync::OnceLock::new();
+/// 多跳链**第一跳**的会话计数（`SES-025` 的多跳复用证据：整条链被复用时它也不该涨）
+#[cfg(feature = "e2e-mock")]
+static MOCK_JUMP2_SESSIONS: std::sync::OnceLock<std::sync::Arc<std::sync::atomic::AtomicUsize>> =
     std::sync::OnceLock::new();
 
 /// 诊断用：mock 服务端的端口（前端拿不到 stdout，用一个命令问）
@@ -3817,13 +3879,32 @@ struct JumpPoolDto {
     pooled: usize,
     opens: u64,
     reuses: u64,
+    /// 池里每条缓存对应几跳，升序。只报跳数不报键（键里有口令指纹）。
+    /// 多跳复用能不能被看见，全靠这一项——只看 `pooled` 分不出是几条单跳还是两条多跳。
+    chain_hops: Vec<usize>,
+    /// 最近一次建连实际走的跳板链（`host:port`，离本机由近到远）。空表示直连。
+    ///
+    /// 链的顺序排反时从界面上完全看不出来——所以它得是个能读的数，不是靠猜。
+    last_chain: Vec<String>,
 }
 
 #[tauri::command]
 fn jump_pool_stats(state: State<'_, AppState>) -> JumpPoolDto {
-    let pooled = state.jump_pool.lock().map(|m| m.len()).unwrap_or(0);
+    let (pooled, mut chain_hops) = state
+        .jump_pool
+        .lock()
+        .map(|m| (m.len(), m.values().map(|e| e.hops).collect::<Vec<_>>()))
+        .unwrap_or((0, Vec::new()));
+    chain_hops.sort_unstable();
+    let last_chain = state
+        .jump_last_chain
+        .lock()
+        .map(|v| v.clone())
+        .unwrap_or_default();
     JumpPoolDto {
         pooled,
+        chain_hops,
+        last_chain,
         opens: state.jump_opens.load(std::sync::atomic::Ordering::Relaxed),
         reuses: state.jump_reuses.load(std::sync::atomic::Ordering::Relaxed),
     }
@@ -3835,6 +3916,22 @@ fn mock_jump_sessions() -> u64 {
     #[cfg(feature = "e2e-mock")]
     {
         MOCK_JUMP_SESSIONS
+            .get()
+            .map(|a| a.load(std::sync::atomic::Ordering::Relaxed) as u64)
+            .unwrap_or(0)
+    }
+    #[cfg(not(feature = "e2e-mock"))]
+    {
+        0
+    }
+}
+
+/// mock 多跳链**第一跳**上累计接受过多少个 SSH 连接（`SES-024` AC-3 的多跳判据）。
+#[tauri::command]
+fn mock_jump2_sessions() -> u64 {
+    #[cfg(feature = "e2e-mock")]
+    {
+        MOCK_JUMP2_SESSIONS
             .get()
             .map(|a| a.load(std::sync::atomic::Ordering::Relaxed) as u64)
             .unwrap_or(0)
@@ -3953,6 +4050,7 @@ fn main() {
         jump_pool: std::sync::Mutex::new(HashMap::new()),
         jump_opens: std::sync::atomic::AtomicU64::new(0),
         jump_reuses: std::sync::atomic::AtomicU64::new(0),
+        jump_last_chain: std::sync::Mutex::new(Vec::new()),
         })
         .setup(|app| {
             create_main_window(app)?;
@@ -3992,6 +4090,7 @@ fn main() {
         sftp_pool_stats,
         jump_pool_stats,
         mock_jump_sessions,
+        mock_jump2_sessions,
             tunnel_start,
             tunnel_start_saved,
             tunnel_autostart,
@@ -4108,6 +4207,7 @@ fn start_mock_ssh_if_requested() {
         // 每一段都是真实 TCP，所以「三跳」也是被证实的链路。
         if std::env::var("WT_MOCK_SSH_JUMP2").is_ok() {
             let jump2 = wt_ssh::testing::MockSshServer::start().await;
+            let _ = MOCK_JUMP2_SESSIONS.set(jump2.sessions.clone());
             println!("WT_MOCK_SSH_JUMP2_PORT={}", jump2.port);
         }
     });
@@ -4219,4 +4319,69 @@ mod editor_limits_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
+/// 跳板链缓存键（`SES-024` AC-3 的多跳版）。
+///
+/// 单跳的键必须与合并之前逐字节一致——把单跳/多跳两条路径并成一条时，最容易在这里
+/// 悄悄改口径，改坏了表现为「同一台跳板机被当成两台，每次都在它上面重新登一次」，
+/// 而且不会报错，只会看到跳板机上连接越堆越多。
+#[cfg(test)]
+mod jump_chain_key_tests {
+    use super::*;
 
+    fn hop(host: &str, port: u16, user: &str, password: &str) -> JumpReq {
+        JumpReq {
+            host: host.to_string(),
+            port,
+            user: user.to_string(),
+            password: password.to_string(),
+            session_id: None,
+        }
+    }
+
+    #[test]
+    fn single_hop_key_is_unchanged() {
+        let h = hop("10.0.0.1", 22, "ops", "s3cret");
+        assert_eq!(chain_key(std::slice::from_ref(&h)), jump_key(&h));
+        assert!(!chain_key(std::slice::from_ref(&h)).contains("->"));
+    }
+
+    #[test]
+    fn chain_key_covers_every_hop_in_order() {
+        let a = hop("10.0.0.1", 22, "ops", "pa");
+        let b = hop("10.0.0.2", 2222, "ops", "pb");
+        let ab = chain_key(&[a.clone(), b.clone()]);
+        let ba = chain_key(&[b.clone(), a.clone()]);
+        assert_ne!(ab, ba, "A→B 与 B→A 必须不是同一个键");
+        assert!(ab.starts_with(&jump_key(&a)));
+        assert!(ab.ends_with(&jump_key(&b)));
+        assert_ne!(ab, jump_key(&b), "两跳的键不能退化成最后一跳");
+    }
+
+    #[test]
+    fn credentials_change_the_key() {
+        let a = hop("10.0.0.1", 22, "ops", "old");
+        let b = hop("10.0.0.1", 22, "ops", "new");
+        assert_ne!(jump_key(&a), jump_key(&b));
+        // 中间某一跳换了口令，整条链就是另一条链：拿旧连接顶替新凭据，出问题时
+        // 分不清是认证失败还是复用错了
+        let tail = hop("10.0.0.9", 22, "ops", "same");
+        assert_ne!(chain_key(&[a, tail.clone()]), chain_key(&[b, tail]));
+    }
+
+    #[test]
+    fn chain_is_ordered_nearest_first() {
+        let s = wt_core::SessionId::from("s");
+        let a = wt_core::SessionId::from("a");
+        let b = wt_core::SessionId::from("b");
+        // s 的跳板是 a、a 的跳板是 b：本机 → b → a → s。
+        // 排反了程序就会去直连 b —— 在真实网络里那台通常是连不到的。
+        assert_eq!(
+            chain_in_client_order(s.clone(), vec![a.clone(), b.clone()]),
+            vec![b.clone(), a.clone(), s.clone()]
+        );
+        // 单跳：会话的跳板在前，自己最后
+        assert_eq!(chain_in_client_order(s.clone(), vec![a.clone()]), vec![a, s.clone()]);
+        // 没有跳板：只剩自己
+        assert_eq!(chain_in_client_order(s.clone(), vec![]), vec![s]);
+    }
+}

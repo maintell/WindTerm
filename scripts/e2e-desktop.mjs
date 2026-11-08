@@ -6754,11 +6754,17 @@ try {
     if (!opt) return { ok: false };
     sel.value = opt.value;
     sel.dispatchEvent(new Event("change", { bubbles: true }));
-    return { ok: true, host: document.getElementById("jump-host").value };
+    return {
+      ok: true,
+      host: document.getElementById("jump-host").value,
+      checked: document.getElementById("use-jump").checked,
+    };
   })()`);
+  // 这里必须同时盯住勾选框：之前只读 `jump-host` 输入框，于是「跳板没启用、直连目标」
+  // 也能让这条断言变绿——三跳用例实际上一直在直连，池子从头到尾没参与过。
   check(
-    "多跳：跳板机下拉里能选中第一跳",
-    chainUi.ok === true && chainUi.host === `127.0.0.1:${jumpPort}`,
+    "多跳：选中跳板机会话后「经跳板机」真的被勾上",
+    chainUi.ok === true && chainUi.host === `127.0.0.1:${jumpPort}` && chainUi.checked === true,
     JSON.stringify(chainUi),
   );
 
@@ -6784,6 +6790,63 @@ try {
     { timeout: 15000, label: "三跳后的目标横幅" },
   );
   check("第三跳拿到的是目标机的 shell，不是跳板机的", hop3Screen !== null);
+
+  // 链的**顺序**必须能被看见（`SES-025`）：会话属性记的是「我要经过谁」，
+  // 建连顺序正好相反——最外层先连。排反了程序会去直连最里面那台跳板机，
+  // 而那台在真实网络里通常正是本机连不到的内网机器；验收环境里全部机器同宿主，
+  // 两种顺序都能连上，所以只验「连上了」永远发现不了。
+  const chainOrder = await cdp.eval(`window.__TAURI__.core.invoke("jump_pool_stats")`);
+  const wantChain = [`127.0.0.1:${jump2Port}`, `127.0.0.1:${jumpPort}`];
+  check(
+    "多跳链的顺序是「离本机由近到远」：先连最外层跳板机",
+    JSON.stringify(chainOrder.lastChain) === JSON.stringify(wantChain),
+    `实际 ${JSON.stringify(chainOrder.lastChain)}，期望 ${JSON.stringify(wantChain)}`,
+  );
+
+  // 多跳链也复用（`SES-024` AC-3 的多跳版）：同一条链再连一次，**第一跳**上不该多登一次。
+  // 判据同样读 mock 自己的会话计数，而且读链上最外层那台——整条链真被复用时，
+  // 中间几跳的会话由通道持有，所以第一跳的计数也不会涨；只读池子计数只能证明
+  // 「我们以为复用了」。
+  const chainSessions1 = await cdp.eval(`window.__TAURI__.core.invoke("mock_jump2_sessions")`);
+  const chainPool1 = await cdp.eval(`window.__TAURI__.core.invoke("jump_pool_stats")`);
+  const tabsBeforeChain = await cdp.eval(`window.__wt.tabs().length`);
+  await clickElement("#ssh");
+  await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.tabs().length`);
+      return t > tabsBeforeChain ? t : null;
+    },
+    { timeout: 40000, label: "第二条经两跳跳板机的连接" },
+  ).catch(() => null);
+  const chainSessions2 = await cdp.eval(`window.__TAURI__.core.invoke("mock_jump2_sessions")`);
+  const chainPool2 = await cdp.eval(`window.__TAURI__.core.invoke("jump_pool_stats")`);
+  check(
+    "同一条两跳链再连一次，不再新建跳板机会话（SES-024 AC-3 多跳）",
+    chainSessions2 === chainSessions1 &&
+      chainPool2.reuses > chainPool1.reuses &&
+      // 先证明池里真的有一条**两跳**的缓存：只看 pooled 分不出是几条单跳
+      // 注意 DTO 是 camelCase（`#[serde(rename_all = "camelCase")]`）
+      chainPool1.chainHops.includes(2) &&
+      chainPool2.chainHops.includes(2),
+    `末跳会话 ${chainSessions1}→${chainSessions2}，池 ${JSON.stringify(chainPool1)}→${JSON.stringify(chainPool2)}`,
+  );
+
+  // 收尾：把跳板机关掉。后面的用例（连不上的错误路径、本地 shell）都假设是**直连**，
+  // 留着勾选会让它们也走跳板，报出来的错误码变成「第 N 跳」那一套，断言自然对不上。
+  await cdp.eval(`(() => {
+    const sel = document.getElementById("jump-session");
+    sel.value = "";
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    const box = document.getElementById("use-jump");
+    box.checked = false;
+    box.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  })()`);
+  check(
+    "多跳用例收尾：跳板机已关闭（不给后面的直连用例留状态）",
+    (await cdp.eval(`document.getElementById("use-jump").checked`)) === false,
+  );
+
   await closeAllTabs();
 
   // 19k. 主密码管理（`SEC-001`）：改密码后旧密码失效、移除后保险库没了
@@ -6927,6 +6990,15 @@ try {
 
   // 20. 连不上的错误路径：必须给出稳定错误码，不能静默失败
   await closeAllTabs();
+  // 明说「这一条是直连」：走跳板时错误码是「第 N 跳连不上」，与这里要验的不是同一件事
+  await cdp.eval(`(() => {
+    const box = document.getElementById("use-jump");
+    if (box.checked) {
+      box.checked = false;
+      box.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    return true;
+  })()`);
   await fillInput("#port", "1");
   await clickElement("#ssh");
   const errScreen = await waitFor(
