@@ -269,6 +269,25 @@ impl SftpClient {
             .map_err(|e| sftp_error(&format!("无法读取 {path}"), e.to_string()))
     }
 
+    /// 打开远端文件**按块读**（大文件下载用）。
+    ///
+    /// `read_file` 会把整个文件读进内存：几百 MB 的日志一读就是几百 MB 常驻，
+    /// 同时下两个就危险了。这里只给一个句柄，调用方按块读、边读边写盘。
+    ///
+    /// **调用方必须一直持着连接的那把锁直到读完**：`russh_sftp` 的会话是共享请求状态，
+    /// 两个克隆同时发请求会错配应答（`SEC-002` AC-2 记着这个坑）。
+    pub async fn open_read(&self, path: &str) -> Result<SftpReader, WtError> {
+        let file = self
+            .inner
+            .open(path)
+            .await
+            .map_err(|e| sftp_error(&format!("无法打开 {path}"), e.to_string()))?;
+        Ok(SftpReader {
+            file,
+            path: path.to_string(),
+        })
+    }
+
     /// 写整个文件（覆盖）。
     ///
     /// 用 `create` 而不是 `write`：`write` **不截断**——覆盖成更短的内容时，
@@ -335,6 +354,27 @@ impl SftpClient {
             .canonicalize(path)
             .await
             .map_err(|e| sftp_error(&format!("无法解析路径 {path}"), e.to_string()))
+    }
+}
+
+
+/// 一次按块读的句柄（大文件下载）。
+///
+/// 它**不持有** `SftpClient`：连接的所有权在调用方手里（池里那条由 `Arc<Mutex<..>>` 把着），
+/// 只要调用方在读的过程中不放开那把锁，底层通道就一直活着。
+pub struct SftpReader {
+    file: russh_sftp::client::fs::File,
+    path: String,
+}
+
+impl SftpReader {
+    /// 读一块；返回 0 表示读完（`AsyncRead` 的约定）。
+    pub async fn read_chunk(&mut self, buf: &mut [u8]) -> Result<usize, WtError> {
+        use tokio::io::AsyncReadExt;
+        self.file
+            .read(buf)
+            .await
+            .map_err(|e| sftp_error(&format!("读取 {} 失败", self.path), e.to_string()))
     }
 }
 

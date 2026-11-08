@@ -151,6 +151,34 @@ async fn get_writes_local_file() {
 }
 
 #[tokio::test]
+async fn get_streams_large_file_in_chunks() {
+    // 边读边写盘：200 KB 会跨多个 64 KB 块，内容必须逐字节一致。
+    // 这条同时守「不再把整个文件读进内存」的回归——以前走的是 `read_file`。
+    let server = MockSshServer::start().await;
+    let big: Vec<u8> = (0..200 * 1024).map(|i| (i % 251) as u8).collect();
+    server.fs.lock().await.insert("/big.bin".into(), big.clone());
+
+    let dir = tmp_dir("get-big");
+    let local = dir.join("big.bin");
+    let mut out: Vec<u8> = Vec::new();
+    run_sftp(
+        &target(server.port),
+        &SftpAction::Get {
+            remote: "/big.bin".into(),
+            local: local.clone(),
+        },
+        &mut out,
+    )
+    .await
+    .expect("get 应成功");
+
+    let got = std::fs::read(&local).expect("应落盘");
+    assert_eq!(got.len(), big.len(), "字节数应一致");
+    assert_eq!(got, big, "内容应逐字节一致");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
 async fn put_uploads_local_file() {
     let server = MockSshServer::start().await;
 

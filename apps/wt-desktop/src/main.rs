@@ -3097,18 +3097,6 @@ async fn sftp_download(
 ) -> Result<DownloadDto, String> {
     let _scope = TraceScope::enter("sftp_download");
     let (key, conn) = sftp_pooled(&state, req, jump).await?;
-    let out = {
-        let c = conn.lock().await;
-        c.read_file(&path).await
-    };
-    let data = match out {
-        Ok(v) => v,
-        Err(e) => {
-            sftp_forget(&state, &key);
-            return Err(e.to_string());
-        }
-    };
-    trace(&format!("[sftp_download] 读到 {} 字节", data.len()));
 
     let name = path
         .rsplit('/')
@@ -3116,19 +3104,56 @@ async fn sftp_download(
         .filter(|s| !s.is_empty())
         .unwrap_or("download.bin");
     let dir = download_dir();
-    // 用 `std::fs` 而不是 `tokio::fs`：`read_file` 已经把整个文件读进内存了，
-    // 这里只是把同一个缓冲区写出去，再加一层异步文件 IO 换不来什么，
-    // 却要为桌面端引入 tokio 的 fs 特性。
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("无法创建下载目录 {}：{e}", dir.display()))?;
     let target = unique_path(&dir, name);
-    std::fs::write(&target, &data)
-        .map_err(|e| format!("无法写入 {}：{e}", target.display()))?;
+
+    // **边读边写盘**，不把整个文件塞进内存：以前用 `read_file` 一次性读，
+    // 几百 MB 的日志就是几百 MB 常驻，同时下两个就危险了。
+    // 锁一直持到读完——`russh_sftp` 的会话是共享请求状态，中途放开会让别的请求插进来。
+    let mut file = std::fs::File::create(&target)
+        .map_err(|e| format!("无法创建 {}：{e}", target.display()))?;
+    let mut total = 0usize;
+    {
+        use std::io::Write;
+        let c = conn.lock().await;
+        let mut reader = match c.open_read(&path).await {
+            Ok(v) => v,
+            Err(e) => {
+                sftp_forget(&state, &key);
+                return Err(e.to_string());
+            }
+        };
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            let n = match reader.read_chunk(&mut buf).await {
+                Ok(v) => v,
+                Err(e) => {
+                    sftp_forget(&state, &key);
+                    // 半截文件比没有更糟：它看起来是「下载完了」，内容却少了一截
+                    drop(file);
+                    let _ = std::fs::remove_file(&target);
+                    return Err(e.to_string());
+                }
+            };
+            if n == 0 {
+                break;
+            }
+            if let Err(e) = file.write_all(&buf[..n]) {
+                drop(file);
+                let _ = std::fs::remove_file(&target);
+                return Err(format!("无法写入 {}：{e}", target.display()));
+            }
+            total += n;
+        }
+    }
+    drop(file);
+    trace(&format!("[sftp_download] 已写入 {total} 字节"));
     let saved_to = target.display().to_string();
     trace(&format!("[sftp_download] 已保存到 {saved_to}"));
 
     Ok(DownloadDto {
-        bytes: data.len(),
+        bytes: total,
         saved_to,
     })
 }

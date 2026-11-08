@@ -1041,16 +1041,28 @@ pub async fn run_sftp(
             }
         }
         SftpAction::Get { remote, local } => {
-            let data = sftp.read_file(remote).await.map_err(|e| e.to_string())?;
-            std::fs::write(local, &data)
-                .map_err(|e| format!("写入本地文件失败 {}: {e}", local.display()))?;
-            writeln!(
-                out,
-                "已下载 {remote} → {}（{} 字节）",
-                local.display(),
-                data.len()
-            )
-            .map_err(|e| e.to_string())?;
+            // 边读边写盘：`read_file` 会把整个文件读进内存，几百 MB 的日志就危险了。
+            // 这里没有连接池的锁要拿——CLI 这条连接是它自己独占的。
+            use std::io::Write;
+            let mut file = std::fs::File::create(local)
+                .map_err(|e| format!("创建本地文件失败 {}: {e}", local.display()))?;
+            let mut reader = sftp.open_read(remote).await.map_err(|e| e.to_string())?;
+            let mut buf = vec![0u8; 64 * 1024];
+            let mut total: u64 = 0;
+            loop {
+                let n = reader
+                    .read_chunk(&mut buf)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if n == 0 {
+                    break;
+                }
+                file.write_all(&buf[..n])
+                    .map_err(|e| format!("写入本地文件失败 {}: {e}", local.display()))?;
+                total += n as u64;
+            }
+            writeln!(out, "已下载 {remote} → {}（{total} 字节）", local.display())
+                .map_err(|e| e.to_string())?;
         }
         SftpAction::Put { local, remote } => {
             let data = std::fs::read(local)
