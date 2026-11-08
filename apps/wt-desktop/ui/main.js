@@ -234,6 +234,9 @@ const STATUS_TPL_EN = [
   [/^keepalive 最多丢失：(\d+) 次$/, "keepalive max missed: $1"],
   [/^已跳到「(.+)」$/, "Jumped to $1"],
   [/^终端编码：(.+)$/, "Terminal encoding: $1"],
+  // 保存终端输出（`TER-020`）
+  [/^已保存终端输出：(.+)$/, "Terminal output saved: $1"],
+  [/^保存终端输出失败：(.+)$/, "Failed to save terminal output: $1"],
   // 会话树批量多执行（`TER-004`）
   [/^正在打开 (\d+) 个会话…$/, "Opening $1 sessions…"],
   [/^广播目标 (\d+) 台$/, "Broadcast targets: $1"],
@@ -1017,6 +1020,19 @@ function openTermMenu(x, y, view) {
     ],
     "terminal",
   );
+}
+
+/** 取整个滚动缓冲的纯文本（`TER-020` 的「保存终端输出」） */
+function terminalBufferText(view) {
+  const b = view.term.buffer.active;
+  const lines = [];
+  for (let i = 0; i < b.length; i++) {
+    const line = b.getLine(i);
+    lines.push(line ? line.translateToString(true) : "");
+  }
+  // 去掉尾部空行：日志末尾常拖一大段空白，存下来纯属噪音
+  while (lines.length && lines[lines.length - 1] === "") lines.pop();
+  return `${lines.join("\r\n")}\r\n`;
 }
 
 /** 会话建立后的公共收尾：激活标签、开始拉取 */
@@ -2338,7 +2354,10 @@ const KEYMAP_DEFAULT = {
   findPrev: { label: "查找上一个", chords: ["Shift+F3"] },
   settingsOpen: { label: "打开设置", chords: ["Ctrl+,"] },
   keysOpen: { label: "键位设置", chords: ["Ctrl+K"] },
-  splitToggle: { label: "左右分屏", chords: ["Ctrl+Shift+S"] },
+  // 左右分屏原来占着 Ctrl+Shift+S，和规格里「保存终端输出」的键位撞了。
+  // 规格优先：分屏让到 Ctrl+Shift+E（与「分屏」语义一致），Ctrl+Shift+S 还给保存输出。
+  splitToggle: { label: "左右分屏", chords: ["Ctrl+Shift+E"] },
+  saveOutput: { label: "保存终端输出", chords: ["Ctrl+Shift+S"] },
   fullscreen: { label: "全屏", chords: ["F11"] },
   // 第二批量：标签管理、滚动、清屏、全选、侧栏。**每一条都有真行为**——
   // 规格里 30+ 个动作，但填一堆按了没反应的条目比数量不够更糟（`TER-020`）。
@@ -2493,6 +2512,21 @@ function runAction(action) {
     case "splitToggle":
       document.getElementById("split-toggle").click();
       return true;
+    case "saveOutput": {
+      // 保存整段滚动缓冲（不只是可见区）：用户按这个键通常是为了留证据，
+      // 只存一屏等于让他自己再翻一遍。
+      const v = active;
+      if (!v) return false;
+      void (async () => {
+        try {
+          const path = await invoke("save_terminal_text", { text: terminalBufferText(v) });
+          setStatus(`已保存终端输出：${path}`);
+        } catch (e) {
+          setStatus(`保存终端输出失败：${e}`);
+        }
+      })();
+      return true;
+    }
     case "closeTab": {
       // 同上：确认框是异步的，闭包里必须用抓下来的引用，不能回头再读 active
       const v = active;

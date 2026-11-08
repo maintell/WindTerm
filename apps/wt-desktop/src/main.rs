@@ -2826,6 +2826,26 @@ fn unique_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     }
     dir.join(name)
 }
+#[tauri::command]
+/// 把终端文本存成文件（`TER-020` 的「保存终端输出」）。
+///
+/// 落到下载目录而不是弹保存框：这个版本没有引入文件对话框插件，
+/// 与其塞一个半成品选择器，不如把路径明确写进状态栏、让用户自己去拿。
+fn save_terminal_text(text: String) -> Result<String, String> {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let dir = download_dir();
+    // 目录可能还不存在（首启、或 e2e 指到临时目录）：不建就直接写会得到
+    // 「系统找不到指定的路径」，而且错在最后一步、看起来像是内容的问题。
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建 {} 失败：{e}", dir.display()))?;
+    let path = unique_path(&dir, &format!("windterm-output-{secs}.txt"));
+    std::fs::write(&path, text.as_bytes())
+        .map_err(|e| format!("写入 {} 失败：{e}", path.display()))?;
+    Ok(path.display().to_string())
+}
+
 
 #[tauri::command]
 async fn sftp_download(
@@ -4000,6 +4020,7 @@ fn main() {
             session_export,
             app_paths,
             broadcast_export_csv,
+            save_terminal_text,
             keymap_export,
             tunnel_update,
             prefs_reset,

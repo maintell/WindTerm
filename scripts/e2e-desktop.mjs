@@ -8885,6 +8885,41 @@ try {
     { timeout: 15000, label: "确认后标签关闭" },
   );
   check("确认后标签才真的关掉（TER-018）", true, "0 个标签");
+  // 19w. 保存终端输出（`TER-020`）：Ctrl+Shift+S 落盘，文件里能看到刚才的输出。
+  // 放在末尾跑：它会往下载目录写文件，早跑会干扰「同名下载自动改名」那类断言。
+  await closeAllTabs();
+  await clickUntil(
+    () => pressChord(2, "t", "KeyT", 84),
+    async () => (await cdp.eval(`document.querySelectorAll("#tabs .tab").length`)) >= 1,
+    { timeout: 15000, tries: 3, label: "为保存输出开一个本地终端" },
+  );
+  await new Promise((r) => setTimeout(r, 1200));
+  await typeText("echo save-marker-ok");
+  await waitFor(
+    async () => {
+      const s = await cdp.eval(`window.__wt.screen()`);
+      return (s ?? "").includes("save-marker-ok") ? true : null;
+    },
+    { timeout: 15000, label: "保存前先有输出" },
+  );
+  await pressChord(2 | 8, "s", "KeyS", 83);
+  const savedPath = await waitFor(
+    async () => {
+      const s = await cdp.eval(`document.getElementById("status").textContent`);
+      const m = /已保存终端输出：(.+)$/.exec(s);
+      return m ? m[1].trim() : null;
+    },
+    { timeout: 15000, label: "保存终端输出" },
+  ).catch(() => null);
+  const savedText = savedPath ? readFileSync(savedPath, "utf8") : "";
+  check("Ctrl+Shift+S 把终端输出存成文件（TER-020）", Boolean(savedPath), savedPath ?? "没存");
+  check(
+    "存下来的文件里有刚才那条输出（TER-020）",
+    savedText.includes("save-marker-ok"),
+    savedPath ? `${savedText.length} 字符` : "没有文件",
+  );
+  // 清掉自己造的文件：下载目录里的残留会干扰别的断言
+  if (savedPath) rmSync(savedPath, { force: true });
   // 连接被拒且状态栏点名「主机密钥变了」，以及 known_hosts 里那条记录没被改写。
   await closeAllDialogs();
   await closeAllTabs();

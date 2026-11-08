@@ -64,6 +64,8 @@ const cases = [
   ["正在打开 2 个会话…", "Opening 2 sessions…"],
   ["广播目标 2 台", "Broadcast targets: 2"],
   ["广播目标 2 台（跳过 1 个非 SSH 会话）", "Broadcast targets: 2 (skipped 1 non-SSH session(s))"],
+  ["已保存终端输出：C:/dl/a.txt", "Terminal output saved: C:/dl/a.txt"],
+  ["保存终端输出失败：磁盘满", "Failed to save terminal output: 磁盘满"],
 ];
 
 let bad = 0;
