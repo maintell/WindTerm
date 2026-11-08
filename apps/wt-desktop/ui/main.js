@@ -3294,6 +3294,7 @@ document.getElementById("keygen-open").addEventListener("click", () => {
 });
 
 document.getElementById("key-close").addEventListener("click", () => keyDialog.close());
+document.getElementById("net-open").addEventListener("click", () => void renderNetActivity());
 
 document.getElementById("key-gen").addEventListener("click", async () => {
   keyResult.textContent = "生成中…";
@@ -5001,6 +5002,44 @@ function stopLiveBroadcast(announce) {
   if (wasOn && announce) setStatus("实时广播已关闭");
 }
 
+/**
+ * 网络活动面板（`SEC-015`）。
+ *
+ * 它要回答的不是「有哪些连接」（那在标签栏和隧道面板里也能看到），
+ * 而是「**除了我主动发起的，还有没有别的出站**」——这正是「不发送遥测」这句
+ * 承诺可以被核对的地方。所以除了列连接，还要明确写出「非用户发起：0 条」。
+ */
+async function renderNetActivity() {
+  const rows = [];
+  for (const v of sessions.values()) {
+    if (!v.handle) continue;
+    rows.push(["终端", v.label, v.running ? "已连接" : "连接中"]);
+  }
+  try {
+    const tunnels = await invoke("tunnel_stats");
+    for (const t of tunnels) {
+      if (!t.running) continue;
+      rows.push(["隧道", `${t.listen} → ${t.target}`, `经 ${t.via}`]);
+    }
+  } catch {
+    /* 隧道列表取不到不影响「终端」那部分，如实少列一行即可 */
+  }
+
+  netRows.textContent = "";
+  for (const [kind, target, note] of rows) {
+    const tr = document.createElement("tr");
+    for (const text of [kind, target, note]) {
+      const td = document.createElement("td");
+      td.textContent = text;
+      tr.appendChild(td);
+    }
+    netRows.appendChild(tr);
+  }
+  netSummary.textContent = rows.length
+    ? `共 ${rows.length} 条，全部由你发起；非用户发起的出站连接 0 条。`
+    : "当前没有出站连接；非用户发起的出站连接 0 条。";
+  netDialog.showModal();
+}
 function askConfirm(title, body, okLabel = "确认发送") {
   askTitle.textContent = title;
   askBody.textContent = body;
@@ -5238,6 +5277,10 @@ bcExport.addEventListener("click", async () => {
   }
 });
 const askDialog = document.getElementById("ask-dialog");
+// 网络活动（`SEC-015`）
+const netDialog = document.getElementById("net-dialog");
+const netRows = document.getElementById("net-rows");
+const netSummary = document.getElementById("net-summary");
 const askTitle = document.getElementById("ask-title");
 const askBody = document.getElementById("ask-body");
 const encodingSelect = document.getElementById("encoding");

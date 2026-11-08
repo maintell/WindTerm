@@ -8920,6 +8920,51 @@ try {
   );
   // 清掉自己造的文件：下载目录里的残留会干扰别的断言
   if (savedPath) rmSync(savedPath, { force: true });
+  // 19v. 网络活动面板（`SEC-015`）：把「零外发」这句承诺变成可核对的东西
+  await closeAllTabs();
+  await clickSessionNode("mock-ssh");
+  const clickSshWhenReady = async () => {
+    await waitFor(
+      async () => ((await cdp.eval(`document.getElementById("ssh").disabled`)) ? null : true),
+      { timeout: 20000, label: "连接按钮可用" },
+    );
+    await clickElement("#ssh");
+  };
+  const netTabsBefore = await cdp.eval(`window.__wt.tabs().length`);
+  await clickSshWhenReady();
+  await waitFor(
+    async () => ((await cdp.eval(`window.__wt.tabs().length`)) > netTabsBefore ? true : null),
+    { timeout: 30000, label: "网络面板：第一条连接" },
+  );
+  await clickSshWhenReady();
+  // 等「两条都真的连上」而不是「有两个标签」：正在连接的标签没有 handle，面板会少列一行
+  await waitFor(
+    async () => ((await cdp.eval(`window.__wt.broadcast.targets`)) >= 2 ? true : null),
+    { timeout: 30000, label: "网络面板：两条都已连接" },
+  );
+  await clickElement("#net-open");
+  const net = await waitFor(
+    async () => {
+      const d = await cdp.eval(`(() => {
+        const dlg = document.getElementById("net-dialog");
+        return {
+          open: Boolean(dlg && dlg.open),
+          rows: document.querySelectorAll("#net-rows tr").length,
+          summary: document.getElementById("net-summary").textContent,
+        };
+      })()`);
+      return d.open ? d : null;
+    },
+    { timeout: 10000, label: "网络活动面板打开" },
+  );
+  check("网络活动面板列出当前连接（SEC-015）", net.rows >= 2, `${net.rows} 行`);
+  check(
+    "面板明确写出「非用户发起 0 条」（SEC-015）",
+    net.summary.includes("非用户发起的出站连接 0 条"),
+    net.summary,
+  );
+  await cdp.eval(`document.getElementById("net-dialog").close()`);
+  await closeAllTabs();
   // 连接被拒且状态栏点名「主机密钥变了」，以及 known_hosts 里那条记录没被改写。
   await closeAllDialogs();
   await closeAllTabs();

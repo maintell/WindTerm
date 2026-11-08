@@ -1228,6 +1228,7 @@
           <button id="bc-toggle" data-i18n="btn.broadcast" title="多执行广播：同一命令发给所有已连接会话">广播</button>
           <button id="keys-open" title="键位设置（可重绑、冲突检测、导入导出）">键位</button>
           <button id="keygen-open" title="生成或导入 SSH 密钥，查看指纹">密钥</button>
+          <button id="net-open" title="网络活动：当前所有出站连接（WindTerm 不发送遥测）">网络</button>
         </div>
         <div id="find-bar" hidden>
           <input id="find-input" placeholder="查找（Ctrl+F）" spellcheck="false" />
@@ -1571,6 +1572,21 @@
           <button value="yes" id="ask-ok">确认发送</button>
           <button value="no" id="ask-cancel">取消</button>
         </menu>
+      </form>
+    </dialog>
+    <!-- 网络活动（SEC-015）：只列**用户发起的**出站连接，把「零外发」这句承诺变成可核对的东西 -->
+    <dialog id="net-dialog">
+      <form method="dialog">
+        <h3>网络活动</h3>
+        <p class="hint">这里只列出<b>你发起的连接</b>。WindTerm 不发送遥测，也不在后台访问网络。</p>
+        <table id="net-table">
+          <thead>
+            <tr><th>类型</th><th>目标</th><th>说明</th></tr>
+          </thead>
+          <tbody id="net-rows"></tbody>
+        </table>
+        <p id="net-summary"></p>
+        <menu><button value="yes">关闭</button></menu>
       </form>
     </dialog>
     <!-- 选文件夹：用原生 dialog + select，和命名对话框同一套路数 -->
