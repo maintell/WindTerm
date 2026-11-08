@@ -5540,6 +5540,20 @@ try {
   ).catch(() => null);
   check("Ctrl+Alt+Q 关闭当前标签（TER-020）", closedByKey !== null, `标签数 ${tabsBeforeClose} → ${closedByKey}`);
 
+  // F11 全屏（`TER-020`）：状态以窗口真实状态为准，前后各切一次，避免影响后续用例
+  await pressChord(0, "F11", "F11", 122);
+  const fsOn = await waitFor(
+    async () => ((await cdp.eval(`window.__wt.fullscreen`)) === true ? true : null),
+    { timeout: 8000, label: "F11 进入全屏" },
+  ).catch(() => null);
+  check("F11 进入全屏（TER-020）", fsOn === true, `fullscreen=${await cdp.eval(`window.__wt.fullscreen`)}`);
+  await pressChord(0, "F11", "F11", 122);
+  const fsOff = await waitFor(
+    async () => ((await cdp.eval(`window.__wt.fullscreen`)) === false ? true : null),
+    { timeout: 8000, label: "F11 退出全屏" },
+  ).catch(() => null);
+  check("再按 F11 退出全屏（TER-020）", fsOff === true, `fullscreen=${await cdp.eval(`window.__wt.fullscreen`)}`);
+
   await closeAllTabs();
 
   // 新增的可重绑动作必须**真的有效果**，不能只是表里多几行

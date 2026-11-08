@@ -228,6 +228,16 @@ fn term_resize(
         .map_err(|e| e.to_string())
 }
 
+/// 切换主窗口全屏（`TER-020` 的 `F11`）。
+///
+/// 返回切换后的真实状态，而不是把入参原样回显：窗口管理器可能拒绝或延迟，
+/// 前端据此判断「到底进没进全屏」，而不是自己记一个可能与现实不符的布尔。
+#[tauri::command]
+fn window_set_fullscreen(window: tauri::WebviewWindow, on: bool) -> Result<bool, String> {
+    window.set_fullscreen(on).map_err(|e| e.to_string())?;
+    window.is_fullscreen().map_err(|e| e.to_string())
+}
+
 /// 本地会话里有没有**前台命令**在跑（`TER-018`：关标签前确认）。
 ///
 /// 判据是「本地 shell 还有没有子孙进程」：shell 自己空闲时没有子进程，
@@ -3934,6 +3944,7 @@ fn main() {
             term_resize,
             term_stats,
             term_busy,
+            window_set_fullscreen,
             term_close,
             ssh_open,
             sessions_load,

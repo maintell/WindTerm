@@ -91,6 +91,8 @@ const sessions = new Map();
 /** 当前激活的 view；`null` 表示没有会话 */
 let active = null;
 let nextViewId = 1;
+/** 主窗口是否全屏（`TER-020`）。以后端 `is_fullscreen` 为准，不自己猜。 */
+let isFullscreen = false;
 
 /**
  * 最近使用的标签顺序（`TER-001` / `TER-020`），第一个永远是最新激活的。
@@ -160,6 +162,9 @@ const STATUS_EN = {
   "保险库已锁定": "Vault locked",
   "密码已记住（仅本次运行）": "Password remembered (this run only)",
   "就绪（点击「新建本地终端」开始）": "Ready (click New local terminal to start)",
+  "已进入全屏（F11 退出）": "Entered fullscreen (F11 to exit)",
+  "已退出全屏": "Exited fullscreen",
+  "切换全屏失败": "Failed to toggle fullscreen",
 };
 
 /**
@@ -2334,6 +2339,7 @@ const KEYMAP_DEFAULT = {
   settingsOpen: { label: "打开设置", chords: ["Ctrl+,"] },
   keysOpen: { label: "键位设置", chords: ["Ctrl+K"] },
   splitToggle: { label: "左右分屏", chords: ["Ctrl+Shift+S"] },
+  fullscreen: { label: "全屏", chords: ["F11"] },
   // 第二批量：标签管理、滚动、清屏、全选、侧栏。**每一条都有真行为**——
   // 规格里 30+ 个动作，但填一堆按了没反应的条目比数量不够更糟（`TER-020`）。
   closeTab: { label: "关闭当前标签", chords: ["Ctrl+Alt+Q"] },
@@ -2468,6 +2474,22 @@ function runAction(action) {
     case "keysOpen":
       keysOpen.click();
       return true;
+    case "fullscreen": {
+      // 状态以窗口真实状态为准（后端回传 `is_fullscreen`），不是本地记一个布尔
+      void (async () => {
+        const r = await invoke("window_set_fullscreen", { on: !isFullscreen }).catch(() => null);
+        if (r === null) {
+          setStatus("切换全屏失败");
+          return;
+        }
+        isFullscreen = r;
+        // 写成两条直接调用：状态栏词表扫描只认「直接传字符串」的形状，
+        // 三元表达式里的字符串会被判成「没人用的死词条」。
+        if (r) setStatus("已进入全屏（F11 退出）");
+        else setStatus("已退出全屏");
+      })();
+      return true;
+    }
     case "splitToggle":
       document.getElementById("split-toggle").click();
       return true;
@@ -7070,7 +7092,11 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-120",
+  ui: "wt-ui-121",
+  /** 验收用：主窗口当前是否全屏（`TER-020`） */
+  get fullscreen() {
+    return isFullscreen;
+  },
   /**
    * 验收用：刷新会话树并等它**画完**。
    *
