@@ -258,8 +258,22 @@ async fn local_open(
     // 所以先定 ID 再起 shell，最后用同一个 ID 注册——句柄与环境变量因此相等，
     // 终端里跑脚本时能拿它和界面上的会话对上。
     let id = wt_core::SessionId::new().into_inner();
-    // 起始目录（`LOC-001` 行为规格第 2 条）：默认用户主目录，见 `local_cwd`
-    let cwd = local_cwd();
+    // 起始目录（`LOC-001` 行为规格第 2 条）：配了固定目录就用它，否则用户主目录。
+    // 配的路径不存在时**退回主目录并在横幅里说明**——静默落到别处比报错更糟。
+    let configured = prefs.local_cwd.trim();
+    let (cwd, cwd_note) = if configured.is_empty() {
+        (local_cwd(), String::new())
+    } else {
+        let p = std::path::PathBuf::from(configured);
+        if p.is_dir() {
+            (Some(p), String::new())
+        } else {
+            (
+                local_cwd(),
+                format!("（配置的起始目录 {configured} 不存在，已回退到主目录）"),
+            )
+        }
+    };
     let cfg = PtyConfig {
         program: program.clone(),
         args,
@@ -297,8 +311,8 @@ async fn local_open(
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "（继承应用工作目录）".to_string());
     let banner = match shell_version(&state, &prefs.local_shell, &program).await {
-        Some(v) => format!("{label} · {v} · 起始目录 {where_}"),
-        None => format!("{label} · 起始目录 {where_}"),
+        Some(v) => format!("{label} · {v} · 起始目录 {where_}{cwd_note}"),
+        None => format!("{label} · 起始目录 {where_}{cwd_note}"),
     };
     Ok(LocalOpenDto {
         handle: handle.as_str().to_string(),
@@ -1083,6 +1097,11 @@ struct PrefsDto {
     local_shell_path: String,
     /// `local_shell = "custom"` 时的参数（空格分隔，`"` 包住带空格的段）
     local_shell_args: String,
+    /// 本地终端的起始目录（`LOC-001` 行为规格第 2 条：可配固定目录）。
+    /// 留空 = 用户主目录；填了就用它（不存在就退回主目录并在横幅里说出来，
+    /// 不静默落到别处）。旧配置没有这一项，所以要 `#[serde(default)]`。
+    #[serde(default)]
+    local_cwd: String,
     /// SSH 连上就打开文件面板（`FIL-001`）。规格要求默认开、但要能关——
     /// 有人只想开一个终端。
     files_auto_open: bool,
@@ -1157,6 +1176,7 @@ impl Default for PrefsDto {
             local_shell: "auto".into(),
             local_shell_path: String::new(),
             local_shell_args: String::new(),
+            local_cwd: String::new(),
             files_auto_open: true,
             files_show_hidden: true,
             net_connect_timeout_secs: 15,

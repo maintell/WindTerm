@@ -280,11 +280,11 @@ $i18nEls = [regex]::Matches($htmlText, $i18nPat)
 $i18nKeys = @($i18nEls | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
 $i18nElCount = $i18nEls.Count
 $i18nKeyCount = $i18nKeys.Count
-Assert-ReadmeNumber "覆盖[ \t]*([0-9]+)[ \t]*键" $i18nKeyCount "SET-012 键数"
-$mEls = [regex]::Match($readmeText, "覆盖[ \t]*[0-9]+[ \t]*键[ \t]*/[ \t]*([0-9]+)[ \t]*处")
-if ($mEls.Success -and ([int]$mEls.Groups[1].Value -ne $i18nElCount)) {
-    Fail ("README 的 SET-012 处数写 {0}，实际应为 {1}" -f $mEls.Groups[1].Value, $i18nElCount)
-}
+# 用「每一处都对」的版本：README 里 i18n 的数字有两处（进度表 + 缺口表），
+# 原来只校验第一处，第二处从 45/48 漂了没人管；而且第二处写成「45 个键」，
+# 旧正则连匹配都匹配不上。
+Assert-AllReadmeNumbers "覆盖[ \t]*\**[ \t]*([0-9]+)[ \t]*个?键" $i18nKeyCount "SET-012 键数"
+Assert-AllReadmeNumbers "覆盖[ \t]*\**[ \t]*[0-9]+[ \t]*个?键[ \t]*/[ \t]*([0-9]+)[ \t]*处" $i18nElCount "SET-012 处数"
 
 # 9b. P0 状态数：从 p0-coverage 表算 ✅/🟡/⬜
 $p0Rows = @($statusText2 -split [char]10 | Where-Object { $_ -match '^[|].*`[A-Z][A-Z]+-[0-9]+`' })

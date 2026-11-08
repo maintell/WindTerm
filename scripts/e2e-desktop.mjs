@@ -9179,6 +9179,44 @@ try {
 
   // 清掉自己造的文件：下载目录里的残留会干扰别的断言
   if (savedPath) rmSync(savedPath, { force: true });
+  // 起始目录可配（`LOC-001` 行为规格第 2 条）：配了固定目录就落到那里，横幅上看得见。
+  // 走真实控件（`change` 事件）而不是直接改 prefs，顺带证明这个设置项不是死控件。
+  // 放在这一段的末尾：它会开一个新终端，早插会打乱后面「一个标签」的前提。
+  const cwdDir = process.cwd();
+  await clickElement("#settings-open");
+  const cwdSet = await cdp.eval(`(() => {
+    const el = document.getElementById("local-cwd");
+    if (!el) return "没有 #local-cwd";
+    el.focus();
+    el.value = ${JSON.stringify(cwdDir)};
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return el.value;
+  })()`);
+  await clickElement("#set-close");
+  await clickElement("#open");
+  const cwdBanner = await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.screen()`);
+      const line = (t ?? "").split(/\r?\n/).find((l) => l.includes("起始目录")) ?? "";
+      return line.includes(cwdDir) ? line : null;
+    },
+    { timeout: 20000, label: "起始目录生效" },
+  ).catch(() => null);
+  check(
+    "配了固定起始目录后，新建终端真的落在那里（LOC-001）",
+    cwdSet === cwdDir && cwdBanner !== null,
+    cwdBanner ? `横幅「${cwdBanner}」` : `设置值「${cwdSet}」，横幅没出现「${cwdDir}」`,
+  );
+  // 复原：后面的用例假设起始目录是主目录
+  await clickElement("#settings-open");
+  await cdp.eval(`(() => {
+    const el = document.getElementById("local-cwd");
+    el.value = "";
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  })()`);
+  await clickElement("#set-close");
+  await closeAllTabs();
   // 19v. 网络活动面板（`SEC-015`）：把「零外发」这句承诺变成可核对的东西
   await closeAllTabs();
   await clickSessionNode("mock-ssh");

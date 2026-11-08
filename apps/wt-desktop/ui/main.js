@@ -399,6 +399,7 @@ async function loadPrefs() {
     if (typeof p.localShell === "string" && p.localShell) localShell = p.localShell;
     if (typeof p.localShellPath === "string") localShellPath = p.localShellPath;
     if (typeof p.localShellArgs === "string") localShellArgs = p.localShellArgs;
+  if (typeof p.localCwd === "string") localCwd = p.localCwd;
     if (typeof p.filesAutoOpen === "boolean") filesAutoOpen = p.filesAutoOpen;
     if (typeof p.filesShowHidden === "boolean") filesShowHidden = p.filesShowHidden;
     if (["persist", "session", "no"].includes(p.rememberDefault)) {
@@ -467,6 +468,7 @@ async function savePrefs() {
         localShell,
         localShellPath,
         localShellArgs,
+        localCwd,
         filesAutoOpen,
         filesShowHidden,
         rememberDefault,
@@ -516,6 +518,8 @@ let encoding = "utf-8";
 let localShell = "auto";
 let localShellPath = "";
 let localShellArgs = "";
+/** 本地终端起始目录（`LOC-001`）：留空 = 用户主目录 */
+let localCwd = "";
 
 /** SSH 连上就打开文件面板（`FIL-001`）。默认开，规格要能关。 */
 let filesAutoOpen = true;
@@ -6488,6 +6492,7 @@ const localShellSelect = document.getElementById("local-shell");
 const localShellPathInput = document.getElementById("local-shell-path");
 const localShellArgsInput = document.getElementById("local-shell-args");
 const localShellCustomRow = document.getElementById("local-shell-custom");
+const localCwdInput = document.getElementById("local-cwd");
 
 async function initShellControls() {
   let list = [];
@@ -6517,6 +6522,7 @@ async function initShellControls() {
   localShellSelect.value = localShell;
   localShellPathInput.value = localShellPath;
   localShellArgsInput.value = localShellArgs;
+  localCwdInput.value = localCwd;
   syncShellUi();
 }
 
@@ -6524,6 +6530,18 @@ async function initShellControls() {
 function syncShellUi() {
   localShellCustomRow.hidden = localShellSelect.value !== "custom";
 }
+
+// 起始目录（`LOC-001`）：留空 = 用户主目录。不做「目录不存在就报错」——
+// 后端会退回主目录并在横幅里说明，用户开个终端就知道配错了。
+localCwdInput.addEventListener("change", () => {
+  localCwd = localCwdInput.value.trim();
+  void savePrefs();
+  setStatus(
+    localCwd
+      ? `本地终端起始目录：${localCwd}（新建终端生效）`
+      : "本地终端起始目录：用户主目录（新建终端生效）",
+  );
+});
 
 localShellSelect.addEventListener("change", () => {
   localShell = localShellSelect.value;
@@ -6677,6 +6695,7 @@ const SET_META = {
   "look-scrollback": ["10000", false],
   "ui-lang": ["中文", false],
   "local-shell": ["跟随系统", false],
+  "local-cwd": ["用户主目录", false],
   "local-shell-path": ["（空）", false],
   "files-auto-open": ["开", false],
   "files-show-hidden": ["开", false],
@@ -6914,6 +6933,7 @@ const I18N = {
     "btn.broadcast": "广播",
     "set.lang": "界面语言",
     "set.shell": "本地终端 Shell",
+    "set.localCwd": "本地终端起始目录",
     "set.shellCustom": "自定义 Shell",
     "set.fontSize": "字号",
     "set.lineHeight": "行高",
@@ -6995,6 +7015,7 @@ const I18N = {
     "btn.broadcast": "Broadcast",
     "set.lang": "Language",
     "set.shell": "Local shell",
+    "set.localCwd": "Local start directory",
     "set.shellCustom": "Custom shell",
     "set.fontSize": "Font size",
     "set.lineHeight": "Line height",
@@ -7685,7 +7706,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-132",
+  ui: "wt-ui-134",
   /** 验收用：主窗口当前是否全屏（`TER-020`） */
   get fullscreen() {
     return isFullscreen;
