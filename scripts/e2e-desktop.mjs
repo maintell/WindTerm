@@ -1040,7 +1040,9 @@ async function setInputValue(selector, value) {
 
 /** 关掉所有标签页（多标签之后，「关闭」只关当前那个） */
 async function closeAllTabs() {
-  await waitFor(
+  // 超时不能只报一句「超时」：要把当时的实际状态写出来（还剩几个标签、`#close` 是不是
+  // 禁用的、有没有模态框挡着），否则下一轮还是只能重新猜——这条已经飘了好几次
+  const done = await waitFor(
     async () => {
       const n = await cdp.eval(`window.__wt.tabs().length`);
       if (n === 0) return true;
@@ -1057,7 +1059,21 @@ async function closeAllTabs() {
       return null;
     },
     { timeout: 20000, label: "关闭所有标签页" },
-  );
+  )
+    .then(() => true)
+    .catch(() => false);
+  if (!done) {
+    const st = await cdp
+      .eval(`({
+        tabs: window.__wt.tabs().map((t) => t.label),
+        active: window.__wt.tabs().find((t) => t.active)?.label ?? null,
+        closeDisabled: document.getElementById("close").disabled,
+        dialog: document.querySelector("dialog[open]")?.id ?? null,
+        status: document.getElementById("status").textContent,
+      })`)
+      .catch(() => null);
+    throw new Error(`关闭所有标签页超时：${JSON.stringify(st)}`);
+  }
   // 一次关多个本地终端会销毁多个 xterm 实例、并让后端杀子进程/放 ConPTY，
   // WebView2 主线程可能短暂不响应；此时紧接的任何裸 eval 都会等满 20 秒然后
   // 抛「CDP 超时」打断整轮。这里统一等它恢复，所有调用点都受益。
@@ -1255,6 +1271,24 @@ try {
   ).catch(() => null);
   check("本地终端能读到 WT_SESSION（LOC-001）", Boolean(wtSession), wtSession ?? "没读到");
   check("WT_SESSION 与会话句柄一致", wtSession === h, `${wtSession} vs ${h}`);
+
+  // 启动横幅（`LOC-001` 行为规格第 1 条）：shell 类型 · 版本 · 起始目录。
+  // 三样都得有——只验「屏幕上多了一行」等于没验，其中「版本」最容易漏（要跑一次子进程）。
+  const bannerText = (await cdp.eval(`window.__wt.screen()`)) ?? "";
+  const bannerLine = bannerText.split(/\r?\n/).find((l) => l.includes("起始目录")) ?? "";
+  check(
+    "本地终端启动横幅有 shell 类型、版本与起始目录（LOC-001）",
+    bannerLine.length > 0 && /起始目录\s+\S/.test(bannerLine) && /\d+\.\d+/.test(bannerLine),
+    bannerLine || `屏幕上没有横幅：${JSON.stringify(bannerText.split(/\r?\n/).slice(0, 3))}`,
+  );
+  // 起始目录要是**用户主目录**，不是应用自己的工作目录（从资源管理器启动时那是安装目录）。
+  // 这一条同时验证「横幅里写的」与「真的传给子进程的」是同一个值。
+  const homeDir = process.env.USERPROFILE ?? process.env.HOME ?? "";
+  check(
+    "本地终端起始目录是用户主目录（不是安装目录）",
+    homeDir === "" || bannerLine.includes(homeDir),
+    `横幅「${bannerLine}」，主目录「${homeDir}」`,
+  );
 
   // 5. shell 启动横幅（或提示符）渲染进 DOM —— 证明 term_read → 渲染 通了
   const firstPaint = await waitFor(
@@ -1996,7 +2030,9 @@ try {
       const state = await cdp.eval(
         `({ handle: window.__wt.handle, screen: window.__wt.screen() })`,
       );
-      return state.handle === firstHandle && state.screen.trim().length > 0 ? state : null;
+      // 等**提示符**而不是「屏幕非空」：启动横幅（`LOC-001`）会让「非空」立刻成立，
+      // 这个等待就不再等 shell 了，断言会在提示符还没画出来时下判断
+      return state.handle === firstHandle && state.screen.includes("PS ") ? state : null;
     },
     { timeout: 10000, label: "切回第一个标签" },
   );

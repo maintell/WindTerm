@@ -1139,12 +1139,20 @@ async function openLocal() {
   view.isLocalTerminal = true;
   view.fit.fit();
   try {
-    view.handle = await invokeWithTimeout(
+    // `local_open` 回的是 `{ handle, banner }`：横幅由后端给（`LOC-001`），
+    // 版本要跑一次子进程才拿得到，前端拼不出来
+    const opened = await invokeWithTimeout(
       "local_open",
       { cols: view.term.cols, rows: view.term.rows },
       20000,
       "打开本地终端",
     );
+    view.handle = opened.handle;
+    if (opened.banner) {
+      // 暗色一行，不抢 shell 自己的输出；写进 xterm 缓冲而不是发给 PTY——
+      // 发给 shell 就等于替用户敲了一行命令
+      view.term.write(`\x1b[2m${opened.banner}\x1b[0m\r\n`);
+    }
   } catch (e) {
     view.status = `打开失败：${e}`;
     view.term.write(`\r\n\x1b[31m打开失败：${e}\x1b[0m\r\n`);
@@ -1294,14 +1302,16 @@ async function closeView(view) {
   const mruAt = mruViews.indexOf(view);
   if (mruAt >= 0) mruViews.splice(mruAt, 1);
   view.el.remove();
-  // 关掉的会话在哪个格子里就腾空哪个格子：留一个空 pane 比少一个格子更难看懂
+  // 先把所有指向这个会话的引用清干净，**再** syncSplit：
+  // 否则 `active` / 左槽还指着它，`syncSplit` 会去 fit 一个已经摘出 DOM 的终端
+  // ——xterm 的 fit 在 0 尺寸容器上会抛，异常一出 `closeView` 就半途而废：
+  // 会话从 `sessions` 删了，`active` 却还指着它，之后 `#close` 再也关不掉任何东西
+  // （表现为「关闭所有标签页」一直超时）。
   const slot = splitIds.indexOf(view.id);
-  if (slot >= 0) {
-    splitIds[slot] = null;
-    syncSplit();
-  }
-  // 关掉的是左槽那个：左槽回到「跟随当前标签」
+  if (slot >= 0) splitIds[slot] = null;
   if (splitLeftId === view.id) splitLeftId = null;
+  if (active === view) active = null;
+  if (splitMode() !== "none" || slot >= 0) syncSplit();
   const next = sessions.values().next().value ?? null;
   setActive(next);
 }
@@ -7589,7 +7599,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-126",
+  ui: "wt-ui-127",
   /** 验收用：主窗口当前是否全屏（`TER-020`） */
   get fullscreen() {
     return isFullscreen;

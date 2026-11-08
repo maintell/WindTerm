@@ -67,6 +67,11 @@ struct AppState {
     jump_pool: std::sync::Mutex<HashMap<String, JumpEntry>>,
     jump_opens: std::sync::atomic::AtomicU64,
     jump_reuses: std::sync::atomic::AtomicU64,
+    /// 本地 shell 的版本（`LOC-001` AC-1）：跑一次 `<shell> -v` 拿到，缓存住。
+    ///
+    /// 每次开终端都探一次太贵（PowerShell 冷启动几百毫秒），而版本在一次运行里不会变。
+    /// `None` 表示「探过但拿不到」，也要缓存——否则每次开终端都白跑一次子进程。
+    shell_versions: std::sync::Mutex<HashMap<String, Option<String>>>,
     /// 最近一次建连用的跳板链，**离本机由近到远**（`host:port`）。
     ///
     /// 只放地址、不放凭据：这条是给人核对「到底走的哪几台」用的——链的顺序排反时
@@ -120,8 +125,126 @@ struct TunnelMeta {
 /// 前端拉取单次上限：64 KB（`design/02` §5.2）。
 const MAX_CHUNK: usize = 64 * 1024;
 
+/// 本地终端启动结果（`LOC-001`）。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalOpenDto {
+    handle: String,
+    /// 启动横幅：shell 类型、版本、起始目录（`spec/10` §2 行为规格第 1 条）。
+    ///
+    /// 由后端给而不是前端拼：版本要跑一次子进程才拿得到，起始目录也必须和**真的**
+    /// 传给子进程的那个一致——前端各拼一份，迟早两处各说各话。
+    banner: String,
+}
+
+/// 本地终端的起始目录：默认用户主目录（`spec/10` §2 行为规格第 2 条）。
+///
+/// 不显式设的话子进程继承**应用自己**的工作目录：从资源管理器启动时那是 exe 所在目录，
+/// 用户一开终端就落在安装目录里，`dir` 看到一堆 dll。取不到主目录就返回 `None`
+/// （退回继承），不编一个假路径。
+fn local_cwd() -> Option<std::path::PathBuf> {
+    let home = std::env::var("USERPROFILE")
+        .ok()
+        .or_else(|| std::env::var("HOME").ok())
+        .filter(|s| !s.trim().is_empty())?;
+    let p = std::path::PathBuf::from(home);
+    p.is_dir().then_some(p)
+}
+
+/// 把「配置里的 shell id」与「真正跑起来的程序」归一成版本探测认识的那几种。
+///
+/// 默认配置是「跟随系统」（id = `auto`），只看 id 会认不出来——那正好是最常见的情形，
+/// 认不出就等于默认模式下横幅永远没有版本。所以再按可执行文件名兜一次。
+fn shell_kind(id: &str, program: &str) -> &'static str {
+    match id {
+        "pwsh" => return "pwsh",
+        "powershell" => return "powershell",
+        "cmd" => return "cmd",
+        "gitbash" | "bash" => return "bash",
+        _ => {}
+    }
+    let stem = std::path::Path::new(program)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match stem.as_str() {
+        "pwsh" => "pwsh",
+        "powershell" => "powershell",
+        "cmd" => "cmd",
+        "bash" | "git-bash" => "bash",
+        _ => "",
+    }
+}
+
+/// 本地 shell 的版本（`LOC-001` AC-1）。拿不到就 `None`——**不猜**。
+///
+/// 只对认识的 shell 跑它自己的版本参数：`wsl` 与自定义命令不知道就返回 `None`，
+/// 横幅里少一行，比显示一个错版本强。结果按**可执行文件**缓存（一次运行里版本不会变），
+/// 用程序路径而不是 id 当键：`auto` 与实际程序是一对多，按 id 存会串味。
+async fn shell_version(state: &AppState, id: &str, program: &str) -> Option<String> {
+    let kind = shell_kind(id, program);
+    if kind.is_empty() {
+        return None;
+    }
+    if let Ok(m) = state.shell_versions.lock() {
+        if let Some(v) = m.get(program) {
+            return v.clone();
+        }
+    }
+    let mut cmd = tokio::process::Command::new(program);
+    let prefix = match kind {
+        // `-NoProfile` 是必须的：用户 profile 里可能挂着一堆启动脚本，
+        // 为了拿个版本号跑一遍它们既慢又可能有副作用
+        "pwsh" | "powershell" => {
+            cmd.args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "$PSVersionTable.PSVersion.ToString()",
+            ]);
+            "PowerShell"
+        }
+        "cmd" => {
+            cmd.args(["/c", "ver"]);
+            "cmd"
+        }
+        "gitbash" | "bash" => {
+            cmd.arg("--version");
+            "bash"
+        }
+        _ => return None,
+    };
+    // 1.5 秒封顶：拿不到版本不该让「开个终端」卡住
+    let out = tokio::time::timeout(std::time::Duration::from_millis(1500), cmd.output())
+        .await
+        .ok()?
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let first = text.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let ver = match kind {
+        "pwsh" | "powershell" => first.to_string(),
+        // `ver` 的输出是 `Microsoft Windows [Version 10.0.x]`，只留版本号
+        "cmd" => first
+            .trim_start_matches("Microsoft Windows [")
+            .trim_end_matches(']')
+            .trim_start_matches("Version ")
+            .to_string(),
+        _ => first.split_whitespace().take(2).collect::<Vec<_>>().join(" "),
+    };
+    let got = (!ver.is_empty()).then(|| format!("{prefix} {ver}"));
+    if let Ok(mut m) = state.shell_versions.lock() {
+        m.insert(program.to_string(), got.clone());
+    }
+    got
+}
+
 #[tauri::command]
-fn local_open(state: State<'_, AppState>, cols: u16, rows: u16) -> Result<String, String> {
+async fn local_open(
+    state: State<'_, AppState>,
+    cols: u16,
+    rows: u16,
+) -> Result<LocalOpenDto, String> {
     // 用哪个 shell 由配置说了算（`LOC-001`）。这里**不做静默回退**：用户明明选了
     // Git Bash 却拿到 PowerShell，比直接报错的排查成本高得多。
     let prefs = prefs_load().unwrap_or_default();
@@ -135,20 +258,52 @@ fn local_open(state: State<'_, AppState>, cols: u16, rows: u16) -> Result<String
     // 所以先定 ID 再起 shell，最后用同一个 ID 注册——句柄与环境变量因此相等，
     // 终端里跑脚本时能拿它和界面上的会话对上。
     let id = wt_core::SessionId::new().into_inner();
+    // 起始目录（`LOC-001` 行为规格第 2 条）：默认用户主目录，见 `local_cwd`
+    let cwd = local_cwd();
     let cfg = PtyConfig {
-        program,
+        program: program.clone(),
         args,
         cols: cols.max(20),
         rows: rows.max(4),
+        cwd: cwd.clone(),
         env: vec![("WT_SESSION".to_string(), id.clone())],
         // 界面侧是 xterm.js，它自己会应答 ConPTY 的 DSR 查询。
         // 两边都答会多出一个 `ESC[1;1R`，被 shell 的行编辑器吃掉后紧跟的第一个字符。
         answer_queries: false,
-        ..Default::default()
     };
     let session = wt_term::TermSession::spawn_local(cfg).map_err(|e| e.to_string())?;
     let handle = state.registry.register_with_id(id, Box::new(session));
-    Ok(handle.as_str().to_string())
+
+    // 横幅（`LOC-001` 行为规格第 1 条）：类型 · 版本 · 起始目录。
+    // 版本拿不到就少一行，不编；起始目录与实际传给子进程的是同一个变量。
+    // 横幅里的「类型」要写**实际跑起来的那个**：默认配置是「跟随系统」，
+    // 直接写「跟随系统」等于没说，用户想知道的是「我现在在 pwsh 还是 cmd 里」
+    let program_name = std::path::Path::new(&program)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(&program)
+        .to_string();
+    let label = if prefs.local_shell.trim().is_empty() || prefs.local_shell == "auto" {
+        program_name
+    } else {
+        wt_term::pty::detect_shells()
+            .into_iter()
+            .find(|c| prefs.local_shell == c.id)
+            .map(|c| c.label.to_string())
+            .unwrap_or(program_name)
+    };
+    let where_ = cwd
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "（继承应用工作目录）".to_string());
+    let banner = match shell_version(&state, &prefs.local_shell, &program).await {
+        Some(v) => format!("{label} · {v} · 起始目录 {where_}"),
+        None => format!("{label} · 起始目录 {where_}"),
+    };
+    Ok(LocalOpenDto {
+        handle: handle.as_str().to_string(),
+        banner,
+    })
 }
 /// 本机可选的 shell（`LOC-001`），界面据此生成下拉框。
 #[derive(serde::Serialize)]
@@ -4051,6 +4206,7 @@ fn main() {
         jump_opens: std::sync::atomic::AtomicU64::new(0),
         jump_reuses: std::sync::atomic::AtomicU64::new(0),
         jump_last_chain: std::sync::Mutex::new(Vec::new()),
+        shell_versions: std::sync::Mutex::new(HashMap::new()),
         })
         .setup(|app| {
             create_main_window(app)?;
