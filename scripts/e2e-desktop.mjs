@@ -1241,6 +1241,21 @@ try {
   const h = await cdp.eval(`window.__wt?.handle ?? null`);
   check("界面拿到会话句柄", typeof h === "string" && h.length > 8, h ?? "null");
 
+  // `WT_SESSION`（`spec/10` §3.1）：终端里读得到，且与界面上的句柄**相等**。
+  // 只验「非空」不够——环境变量与句柄是两条独立生成的路径，不一致说明
+  // 「先定 ID → spawn → 用同一个 ID 注册」这条链断了，脚本就没法把两者对上。
+  await typeText("$env:WT_SESSION");
+  const wtSession = await waitFor(
+    async () => {
+      const t = await cdp.eval(`window.__wt.screen()`);
+      const m = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.exec(t ?? "");
+      return m ? m[0] : null;
+    },
+    { timeout: 15000, label: "终端里的 WT_SESSION" },
+  ).catch(() => null);
+  check("本地终端能读到 WT_SESSION（LOC-001）", Boolean(wtSession), wtSession ?? "没读到");
+  check("WT_SESSION 与会话句柄一致", wtSession === h, `${wtSession} vs ${h}`);
+
   // 5. shell 启动横幅（或提示符）渲染进 DOM —— 证明 term_read → 渲染 通了
   const firstPaint = await waitFor(
     async () => {

@@ -114,10 +114,10 @@ clippy 零告警、文档对账 PASSED、端到端 `N/N 项通过`，退出码 0
    连跑两轮全绿。教训：**断言的身份要用稳定键，别用会被运行时改写的显示文本**。
 5. **本机环境**：连跑多轮后 `conhost`/`OpenConsole` 会变多（实测 32 个，其中 25 个属于
    **存活进程**）。**不要按名字批量杀**，会打断其它程序。
-6. **`WT_SESSION=<id>` 未注入**（`spec/10` §3.1 第 3 条要求的三个环境变量之一）：PTY 在
-   `spawn` 时只注入了 `TERM=xterm-256color` 与 `COLORTERM=truecolor`（这两条已有 e2e 证据，
-   见 `TER-024`）。会话句柄由 `registry.register()` 在 spawn **之后**才生成，要注入就得把 id
-   分配提前到 spawn 之前并同时改本地/SSH 两条路径，牵动面大，暂未做——如实记在这里，别当成已覆盖。
+6. ~~`WT_SESSION=<id>` 未注入~~ **已做（本地终端）**：`local_open` 先定 ID、以 `WT_SESSION` 交给子进程，
+   再用**同一个 ID** 注册句柄——两者相等，终端里的脚本能拿它和界面上的会话对上。e2e 两条断言：
+   终端里读得到 UUID、且与 `window.__wt.handle` 完全一致（只验「非空」不够——环境变量与句柄是两条
+   独立生成的路径，不一致就说明链断了）。远端 SSH 会话不注入：远端 shell 的环境由服务端决定，不伪造。
 7. **SSH 压缩暂不开放**：`wt_ssh::SshConfig.compression` 字段在，但界面没有入口，`client::Config`
    一直用默认值（默认 `none` 排第一，等于不压）。2026-11-08 试过接上 `russh` 的
    `Preferred.compression`（顺序 `zlib@openssh.com` → `zlib` → `none`）：配置层单测通过，

@@ -93,6 +93,20 @@ impl SessionRegistry {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         );
+        self.register_with_id(id, session)
+    }
+
+    /// 用调用方指定的 ID 注册。
+    ///
+    /// 存在的理由只有一个：`WT_SESSION`（`spec/10` §3.1）必须在 **spawn 之前**
+    /// 就作为环境变量交给子进程，而句柄是 spawn 之后才有的。要让两者相等，
+    /// 只能先定 ID、再 spawn、再注册。
+    pub fn register_with_id(
+        &self,
+        id: impl Into<String>,
+        session: Box<dyn TerminalSession>,
+    ) -> SessionHandle {
+        let id = id.into();
         self.sessions.lock().unwrap().insert(id.clone(), session);
         SessionHandle(id)
     }

@@ -126,18 +126,23 @@ fn local_open(state: State<'_, AppState>, cols: u16, rows: u16) -> Result<String
         &prefs.local_shell_args,
     )
     .map_err(|e| e.to_string())?;
+    // `WT_SESSION`（`spec/10` §3.1）必须在 spawn **之前**交给子进程，
+    // 所以先定 ID 再起 shell，最后用同一个 ID 注册——句柄与环境变量因此相等，
+    // 终端里跑脚本时能拿它和界面上的会话对上。
+    let id = wt_core::SessionId::new().into_inner();
     let cfg = PtyConfig {
         program,
         args,
         cols: cols.max(20),
         rows: rows.max(4),
+        env: vec![("WT_SESSION".to_string(), id.clone())],
         // 界面侧是 xterm.js，它自己会应答 ConPTY 的 DSR 查询。
         // 两边都答会多出一个 `ESC[1;1R`，被 shell 的行编辑器吃掉后紧跟的第一个字符。
         answer_queries: false,
         ..Default::default()
     };
     let session = wt_term::TermSession::spawn_local(cfg).map_err(|e| e.to_string())?;
-    let handle = state.registry.register(Box::new(session));
+    let handle = state.registry.register_with_id(id, Box::new(session));
     Ok(handle.as_str().to_string())
 }
 /// 本机可选的 shell（`LOC-001`），界面据此生成下拉框。
