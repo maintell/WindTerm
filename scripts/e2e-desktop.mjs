@@ -5779,24 +5779,45 @@ try {
   }
 
   if (firstConnected) await clickElement("#split-toggle");
+  // 「DOM 里有个节点」不等于「屏幕上看得见」：`.term-view` 默认 `display:none`，
+  // 只按 `.active` 显隐的话，右半边会是一个字都没有的空白——而数节点数的断言照样全绿。
+  // 所以这里量两边的实际宽高。
   const splitOn = firstConnected
     ? await waitFor(
     async () => {
       const s = await cdp.eval(`window.__wt.split`);
-      const panes = await cdp.eval(
-        `({ a: document.querySelectorAll("#term-a .term-view").length, b: document.querySelectorAll("#term-b .term-view").length, bHidden: document.getElementById("term-b").hidden })`,
-      );
-      return s.on && panes.a === 1 && panes.b === 1 && panes.bHidden === false
-        ? { ...s, panes }
-        : null;
+      const ok = s.on && s.leftBox?.w > 0 && s.leftBox?.h > 0 && s.rightBox?.w > 0 && s.rightBox?.h > 0;
+      return ok ? s : null;
     },
         { timeout: 10000, label: "分屏生效" },
       ).catch(() => null)
     : null;
   check(
-    "分屏后两个 pane 各有一个会话",
-    splitOn?.panes.a === 1 && splitOn?.panes.b === 1,
-    splitOn ? `左 ${splitOn.panes.a} / 右 ${splitOn.panes.b}（右=${splitOn.right}）` : "前提没连上，跳过",
+    "分屏后左右两半都真的画出来了（不是只有 DOM 节点）",
+    splitOn?.leftBox?.w > 0 && splitOn?.rightBox?.w > 0,
+    splitOn
+      ? `左 ${splitOn.leftBox?.w}×${splitOn.leftBox?.h}（${splitOn.left}） / 右 ${splitOn.rightBox?.w}×${splitOn.rightBox?.h}（${splitOn.right}）`
+      : "前提没连上，跳过",
+  );
+
+  // 点右半边：焦点与「当前标签」跟过去（复制/查找按它走），但两块内容都不该变。
+  // 之前 `active` 一换，左边那块就 `display:none` 了——用户点一下右边，左半边直接空白。
+  const clickedRight = firstConnected
+    ? await cdp.eval(`(() => {
+        const el = document.querySelector("#term-b .term-view");
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: r.x + 20, clientY: r.y + 20 }));
+        return true;
+      })()`)
+    : false;
+  const afterClick = clickedRight ? await cdp.eval(`window.__wt.split`) : null;
+  check(
+    "点右半边后两块都还在（焦点跟过去，左边不会变空）",
+    afterClick?.leftBox?.w > 0 && afterClick?.rightBox?.w > 0 && afterClick.active === afterClick.right,
+    afterClick
+      ? `左 ${afterClick.leftBox?.w} / 右 ${afterClick.rightBox?.w}，当前标签=${afterClick.active}`
+      : "右半边点不到，跳过",
   );
 
   if (firstConnected) await clickElement("#split-toggle");
@@ -9206,16 +9227,41 @@ try {
   await pressKey("Enter", 13, "Enter");
   const palJump = await waitFor(
     async () => {
-      const open = await cdp.eval(`document.getElementById("settings").open`);
-      const focus = await cdp.eval(`document.activeElement?.id ?? ""`);
-      return open === true && focus === "look-font" ? { open, focus } : null;
+      const s = await cdp.eval(
+        `({ open: document.getElementById("settings").open, focus: document.activeElement?.id ?? "" })`,
+      );
+      return s.open === true && s.focus === "look-font" ? s : null;
     },
     { timeout: 5000, label: "回车跳到设置项" },
-  );
+  ).catch(() => null);
+  // 失败时把「实际是什么状态」写出来：只报一句「超时」等于什么都没说，
+  // 上一轮就是靠这句超时才发现不了到底是面板没开、还是焦点被别人抢走了
+  const palJumpNow =
+    palJump ??
+    (await cdp.eval(`({
+      open: document.getElementById("settings").open,
+      focus: document.activeElement?.id ?? "",
+      status: document.getElementById("status").textContent,
+      paletteOpen: window.__wt.palette().open,
+      paletteShown: window.__wt.palette().shown.length,
+    })`));
   check(
     "回车真的跳到该项：设置面板打开、焦点落在字体下拉上",
-    palJump.focus === "look-font",
-    `focus=${palJump.focus}`,
+    palJump !== null && palJump.focus === "look-font",
+    `实际 ${JSON.stringify(palJumpNow)}`,
+  );
+
+  // 模态框开着时，会话恰好连好不该把焦点抢到终端——否则用户正在搜索框里输入，
+  // 后面敲的字会静悄悄打进远端（这一条曾经真的偶发，而且只在慢机器上出现）。
+  const keptFocus = await cdp.eval(`(() => {
+    const id = window.__wt.tabs()[0]?.id;
+    if (id == null) return "没有标签";
+    return window.__wt._simulateSessionReady(id);
+  })()`);
+  check(
+    "模态框开着时会话连好不会把焦点抢到终端",
+    keptFocus === "look-font",
+    `焦点落在 ${keptFocus}`,
   );
   await clickElement("#set-close");
 

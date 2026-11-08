@@ -79,6 +79,12 @@ const termHost = document.getElementById("term");
 const paneA = document.getElementById("term-a");
 const paneB = document.getElementById("term-b");
 const splitToggle = document.getElementById("split-toggle");
+// 分屏的两个槽位（声明放这里而不是挨着 syncSplit：`setActive` 会用到它们，
+// 放在文件中部会落进暂时性死区）
+/** 右侧 pane 显示哪个会话（null = 没分屏） */
+let splitViewId = null;
+/** 左 pane 固定显示哪个会话（null = 跟随当前标签） */
+let splitLeftId = null;
 const tabsEl = document.getElementById("tabs");
 
 /** 攒够这么多未确认字节就先确认一次，减少 IPC 往返 */
@@ -714,7 +720,12 @@ function createView(label) {
     true,
   );
 
-  el.addEventListener("mousedown", () => term.focus());
+  el.addEventListener("mousedown", () => {
+    term.focus();
+    // 分屏时点右半边只是「焦点换边」：`active` 跟过去（复制/查找/保存输出按它走），
+    // 但左右两个槽不动——否则用户一点右边，左边就空了
+    if (splitView() && active !== view) setActive(view);
+  });
 
   sessions.set(view.id, view);
   // 新标签连上后广播目标会变（`TER-004`）：栏开着时立刻把计数刷新过来
@@ -933,11 +944,17 @@ function setActive(view) {
   refreshButtons();
   termFoot.hidden = !view;
   if (!view) {
+    syncSplit();
     setStatus("已关闭");
     return;
   }
+  // 分屏时 DOM 要跟着当前标签/左槽重排：不在这里同步，切完标签右半边就会空掉
+  syncSplit();
   view.fit.fit();
-  view.term.focus();
+  // 有模态对话框开着时**不要**把焦点抢到终端。
+  // 典型场景：点了「连接」马上打开设置/命令面板开始输入，会话恰好在这时连好——
+  // 焦点一跳，后面敲的字全进了终端（在搜索框里打字却打到了远端，是很吓人的事）。
+  if (!document.querySelector("dialog[open]")) view.term.focus();
   setStatus(view.status || `已连接 ${view.label}`);
 }
 
@@ -995,6 +1012,13 @@ async function pump(view) {
 function activateByUser(view) {
   for (const v of sessions.values()) {
     if (v !== view && !v.running) v.focusOnReady = false;
+  }
+  if (splitView() && splitLeftView() !== view) {
+    // 左 pane 跟着标签走；用户选中的正好是右槽那个，就左右对调——
+    // 别让两个 pane 显示同一个会话（那等于右边凭空消失一块）
+    const prevLeft = splitLeftView();
+    splitLeftId = view.id;
+    if (splitViewId === view.id) splitViewId = prevLeft?.id ?? null;
   }
   setActive(view);
 }
@@ -1274,6 +1298,8 @@ async function closeView(view) {
     splitViewId = null;
     syncSplit();
   }
+  // 关掉的是左槽那个：左槽回到「跟随当前标签」
+  if (splitLeftId === view.id) splitLeftId = null;
   const next = sessions.values().next().value ?? null;
   setActive(next);
 }
@@ -5685,26 +5711,41 @@ function syncTunnelKind() {
 // 只做两个 pane：Terminal 的尺寸由各自的 pane 决定，fit 按容器算，
 // 所以分屏后两边行列数会各自重算（远端 stty size 也跟着变）。
 
-/** 右侧 pane 显示哪个会话（null = 没分屏） */
-let splitViewId = null;
 
 function splitView() {
   return splitViewId === null ? null : (sessions.get(splitViewId) ?? null);
 }
 
+/** 左槽：没分屏时就是当前标签；分屏时是开分屏那一刻的那个会话，直到用户自己切标签 */
+function splitLeftView() {
+  if (splitViewId === null) return active;
+  return (splitLeftId === null ? active : sessions.get(splitLeftId)) ?? active;
+}
+
 function syncSplit() {
-  const second = splitView();
-  paneB.hidden = second === null;
-  splitToggle.classList.toggle("on", second !== null);
-  if (second) {
-    if (second.el.parentElement !== paneB) paneB.appendChild(second.el);
-    second.fit.fit();
+  const right = splitView();
+  paneB.hidden = right === null;
+  splitToggle.classList.toggle("on", right !== null);
+  if (!right) {
+    // 关掉分屏：所有会话回左 pane，左槽也取消（回到「跟随当前标签」）
+    splitLeftId = null;
+    for (const v of sessions.values()) {
+      v.el.classList.remove("pane-shown");
+      if (v.el.parentElement !== paneA) paneA.appendChild(v.el);
+    }
+    active?.fit.fit();
+    return;
   }
-  // 其余会话都回到左 pane（关掉分屏时也靠这一步把元素搬回来）
+  const left = splitLeftView();
+  splitLeftId = left?.id ?? null;
+  // 左右两个槽各就各位，其余会话都回左 pane（不显示，只是等着被切成当前标签）
   for (const v of sessions.values()) {
-    if (v !== second && v.el.parentElement !== paneA) paneA.appendChild(v.el);
+    const to = v === right ? paneB : paneA;
+    if (v.el.parentElement !== to) to.appendChild(v.el);
+    v.el.classList.toggle("pane-shown", left !== null && v === left);
   }
-  active?.fit.fit();
+  left?.fit.fit();
+  right.fit.fit();
 }
 
 splitToggle.addEventListener("click", () => {
@@ -5720,6 +5761,8 @@ splitToggle.addEventListener("click", () => {
     setStatus("分屏需要至少两个已连接的会话");
     return;
   }
+  // 左槽钉住当前标签：之后点右边那个终端只换焦点，左边不会变空
+  splitLeftId = active?.id ?? null;
   splitViewId = other.id;
   syncSplit();
   setStatus(`右侧显示：${other.label}`);
@@ -7482,11 +7525,25 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-122",
+  ui: "wt-ui-124",
   /** 验收用：主窗口当前是否全屏（`TER-020`） */
   get fullscreen() {
     return isFullscreen;
   },
+  /**
+   * 验收用：模拟「某个会话刚连好、自己激活」这条路径（就是 `setActive`）。
+   *
+   * 为什么需要它：会话连好时会把焦点抢到终端——用户正在设置面板/命令面板里输入时，
+   * 后面敲的字就全打进远端了。这个竞态靠点击没法稳定复现（要看连上快还是打开面板快），
+   * 所以直接调同一条函数来验「模态框开着时不抢焦点」。
+   */
+  _simulateSessionReady(id) {
+    const v = sessions.get(id);
+    if (!v) return null;
+    setActive(v);
+    return document.activeElement?.id ?? "";
+  },
+
   /**
    * 命令面板的当前状态（`SES-022`）。
    *
@@ -7763,10 +7820,28 @@ window.__wt = {
   async knownHosts() {
     return invoke("known_hosts_list");
   },
-  /** 分屏状态（`G6`）：右侧显示哪个会话 */
+  /**
+   * 分屏状态（`G6`）：左右两个槽各是谁，以及**两边是不是真的画出来了**。
+   *
+   * 只报 DOM 里有几个节点是不够的：`.term-view` 默认 `display:none`，
+   * 「节点在、屏幕空白」曾经真的发生过。所以这里顺带量一下两边的实际宽高。
+   */
   get split() {
-    const v = splitView();
-    return { on: v !== null, right: v?.label ?? null };
+    const right = splitView();
+    const left = splitLeftView();
+    const box = (v) => {
+      if (!v) return null;
+      const r = v.el.getBoundingClientRect();
+      return { w: Math.round(r.width), h: Math.round(r.height) };
+    };
+    return {
+      on: right !== null,
+      right: right?.label ?? null,
+      left: left?.label ?? null,
+      leftBox: box(left),
+      rightBox: box(right),
+      active: active?.label ?? null,
+    };
   },
   /** 内嵌编辑器（`FIL-011`）：打开的文档与当前内容 */
   get editor() {

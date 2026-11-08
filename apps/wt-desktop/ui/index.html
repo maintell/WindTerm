@@ -1135,6 +1135,11 @@
       /* 每个会话一个绝对定位的视图；切走的只是隐藏，xterm 实例与滚动位置都留着 */
       .term-view { position: absolute; inset: 0; padding: 4px 0 0 6px; display: none; }
       .term-view.active { display: block; }
+      /* 分屏时两个 pane 里各有一个会话，但「当前标签」只有一个——只按 .active 显隐，
+         另一半就永远是空白（DOM 里明明有一个 view，屏幕上一个字都没有）。
+         所以：右 pane 里的会话一律显示；左 pane 除 .active 外，左槽那个（.pane-shown）也显示。 */
+      #term-b .term-view { display: block; }
+      #term-a .term-view.pane-shown { display: block; }
     </style>
   </head>
   <body>
