@@ -68,6 +68,7 @@ const cases = [
   ["保存终端输出失败：磁盘满", "Failed to save terminal output: 磁盘满"],
   ["已选中「prod-web」：填好密码后点「连接」", "Selected prod-web: fill in the password, then click Connect"],
   ["「关闭查找栏」现在没有可作用的对象", "Nothing for 关闭查找栏 to act on right now"],
+  ["已生成打印内容：42 行", "Print content ready: 42 lines"],
 ];
 
 let bad = 0;

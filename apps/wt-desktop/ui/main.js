@@ -135,6 +135,7 @@ let uiLang = "zh";
  * 且「表里没有没人用的死词条」。加一条状态文案却忘了配英文，检查会直接失败。
  */
 const STATUS_EN = {
+  "当前标签没有可打印的输出": "Nothing to print in this tab",
   "已关闭": "Closed",
   "没有选中内容": "Nothing selected",
   "打开失败": "Open failed",
@@ -253,6 +254,7 @@ const STATUS_TPL_EN = [
   // 命令面板（`SES-022`）
   [/^已选中「(.+)」：填好密码后点「连接」$/, "Selected $1: fill in the password, then click Connect"],
   [/^「(.+)」现在没有可作用的对象$/, "Nothing for $1 to act on right now"],
+  [/^已生成打印内容：(\d+) 行$/, "Print content ready: $1 lines"],
 ];
 
 let lastStatus = "";
@@ -2414,6 +2416,7 @@ const KEYMAP_DEFAULT = {
   splitToggle: { label: "左右分屏", chords: ["Ctrl+Shift+E"] },
   splitVertical: { label: "上下分屏", chords: ["Ctrl+Shift+H"] },
   splitQuad: { label: "四宫格分屏", chords: ["Ctrl+Shift+G"] },
+  printTerminal: { label: "打印终端输出", chords: ["Ctrl+Alt+P"] },
   saveOutput: { label: "保存终端输出", chords: ["Ctrl+Shift+S"] },
   fullscreen: { label: "全屏", chords: ["F11"] },
   // 第二批量：标签管理、滚动、清屏、全选、侧栏。**每一条都有真行为**——
@@ -2575,6 +2578,8 @@ function runAction(action) {
     case "splitQuad":
       setSplitMode(splitMode() === "quad" ? "none" : "quad");
       return true;
+    case "printTerminal":
+      return printTerminal();
     case "splitToggle":
       document.getElementById("split-toggle").click();
       return true;
@@ -7291,6 +7296,44 @@ async function savePasswordIfAsked() {
   }
 }
 
+// ── 打印（`TER-020`）────────────────────────────────────
+//
+// 「打印」在无头验收里没法整条验：`window.print()` 会弹系统打印对话框，把整轮跑卡死。
+// 所以把两件事分开——**打印内容**由 `buildPrintDoc` 生成（可断言），
+// **调起对话框**只是最后一行 `window.print()`（需手工点一次，如实记在文档里）。
+
+/** 生成打印内容：标题 + 元信息 + 整个滚动缓冲的纯文本（与「保存终端输出」同一份口径） */
+function buildPrintDoc(view) {
+  if (!view) return null;
+  const buf = view.term.buffer.active;
+  const lines = [];
+  for (let i = 0; i < buf.length; i += 1) {
+    lines.push(buf.getLine(i)?.translateToString(true) ?? "");
+  }
+  // 尾部整行空白去掉：纸上看不出来，却会多出好几页
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  return {
+    title: view.label,
+    meta: `${view.status || "会话输出"} · 打印时间 ${new Date().toLocaleString()}`,
+    text: lines.join("\n"),
+    lines: lines.length,
+  };
+}
+
+/** 打印当前标签的整个滚动缓冲。没有输出就明说，不弹一个空白打印框 */
+function printTerminal() {
+  const doc = buildPrintDoc(active);
+  if (!doc || !doc.lines) {
+    setStatus("当前标签没有可打印的输出");
+    return false;
+  }
+  document.getElementById("print-title").textContent = doc.title;
+  document.getElementById("print-meta").textContent = doc.meta;
+  document.getElementById("print-body").textContent = doc.text;
+  setStatus(`已生成打印内容：${doc.lines} 行`);
+  window.print();
+  return true;
+}
 // ── 命令面板（`SES-022`）────────────────────────────────────
 //
 // 规格里的原话是「这是可发现性的主要手段——MobaXterm 的很多能力藏在多级菜单里，
@@ -7635,7 +7678,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-130",
+  ui: "wt-ui-131",
   /** 验收用：主窗口当前是否全屏（`TER-020`） */
   get fullscreen() {
     return isFullscreen;
@@ -8086,6 +8129,14 @@ window.__wt = {
    * 本地 shell 起来后会用 OSC 2 标题把 label 改写（"本地 s14-18" → "pwsh.exe"），
    * 拿建标签时的 label 快照去判「切到哪一条」会偶发假失败。
    */
+  /**
+   * 打印内容（`TER-020`）：与真正打印时填进 `#print-root` 的是同一份。
+   *
+   * 只能验到这里：`window.print()` 会弹系统对话框，无头环境里没法自动点。
+   */
+  printPreview() {
+    return buildPrintDoc(active);
+  },
   /** 验收用：关标签卡在哪一步（见 `closeStage`） */
   closeTrace() {
     return closeStep;

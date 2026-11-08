@@ -1145,6 +1145,33 @@
       #find-bar button:hover { border-color: var(--accent); }
       #find-count { color: var(--muted); min-width: 48px; }
       /* 每个会话一个绝对定位的视图；切走的只是隐藏，xterm 实例与滚动位置都留着 */
+      /* 打印（`TER-020`）：只留打印内容，其余界面全部隐藏。
+         用 visibility 而不是 display:none——display 会让布局塌掉，分页位置跟着乱。 */
+      #print-root { display: none; }
+      @media print {
+        body * { visibility: hidden; }
+        #print-root, #print-root * { visibility: visible; }
+        #print-root {
+          display: block;
+          position: absolute;
+          left: 0;
+          top: 0;
+          width: 100%;
+          color: #000;
+          background: #fff;
+          padding: 12px 16px;
+        }
+        #print-root h1 { font-size: 14px; margin: 0 0 4px; }
+        #print-root .meta { font-size: 11px; color: #555; margin: 0 0 10px; }
+        #print-root pre {
+          font-family: Consolas, "Courier New", monospace;
+          font-size: 10px;
+          line-height: 1.25;
+          white-space: pre-wrap;
+          word-break: break-all;
+          margin: 0;
+        }
+      }
       .term-view { position: absolute; inset: 0; padding: 4px 0 0 6px; display: none; }
       .term-view.active { display: block; }
       /* 分屏时两个 pane 里各有一个会话，但「当前标签」只有一个——只按 .active 显隐，
@@ -1677,6 +1704,12 @@
         <menu><button value="yes">关闭</button></menu>
       </form>
     </dialog>
+    <!-- 打印内容（`TER-020`）：平时 display:none，@media print 时只显示它 -->
+    <div id="print-root">
+      <h1 id="print-title"></h1>
+      <p class="meta" id="print-meta"></p>
+      <pre id="print-body"></pre>
+    </div>
     <!-- 命令面板（`SES-022` / `TER-020` 的「命令面板」动作）。规格里说得很清楚：
          MobaXterm 的能力藏在多级菜单里、用户不知道存在，所以这里把全部能力拉平到
          一个搜索框。刻意不用 `<form method="dialog">`——回车要执行选中项，

@@ -9142,6 +9142,36 @@ try {
     savedText.includes("save-marker-ok"),
     savedPath ? `${savedText.length} 字符` : "没有文件",
   );
+  // 打印（`TER-020`）：`window.print()` 会弹系统打印对话框，无头环境里点不了，
+  // 所以把 print 本身 stub 掉，验两件**可验**的事：内容填对了、确实调用了 print。
+  // 对话框本身仍是手工项（README 与 p0 表都写了）。
+  await cdp.eval(`(() => {
+    window.__printCalls = 0;
+    window.__origPrint = window.print;
+    window.print = () => { window.__printCalls += 1; };
+    return true;
+  })()`);
+  await pressChord(3, "p", "KeyP", 80); // Ctrl+Alt+P
+  const printed = await waitFor(
+    async () => {
+      const st = await cdp.eval(`({
+        calls: window.__printCalls,
+        body: document.getElementById("print-body").textContent,
+        title: document.getElementById("print-title").textContent,
+      })`);
+      return st.calls > 0 && st.body.includes("save-marker-ok") ? st : null;
+    },
+    { timeout: 8000, label: "打印动作" },
+  ).catch(() => null);
+  await cdp.eval(`(() => { window.print = window.__origPrint; return true; })()`);
+  check(
+    "Ctrl+Alt+P 把整屏输出填进打印内容并调用 print（TER-020）",
+    printed !== null && printed.title.length > 0,
+    printed
+      ? `print 调用 ${printed.calls} 次，${printed.body.split("\n").length} 行，标题「${printed.title}」`
+      : "没触发",
+  );
+
   // 清掉自己造的文件：下载目录里的残留会干扰别的断言
   if (savedPath) rmSync(savedPath, { force: true });
   // 19v. 网络活动面板（`SEC-015`）：把「零外发」这句承诺变成可核对的东西
