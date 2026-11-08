@@ -66,6 +66,8 @@ const cases = [
   ["广播目标 2 台（跳过 1 个非 SSH 会话）", "Broadcast targets: 2 (skipped 1 non-SSH session(s))"],
   ["已保存终端输出：C:/dl/a.txt", "Terminal output saved: C:/dl/a.txt"],
   ["保存终端输出失败：磁盘满", "Failed to save terminal output: 磁盘满"],
+  ["已选中「prod-web」：填好密码后点「连接」", "Selected prod-web: fill in the password, then click Connect"],
+  ["「关闭查找栏」现在没有可作用的对象", "Nothing for 关闭查找栏 to act on right now"],
 ];
 
 let bad = 0;

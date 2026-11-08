@@ -882,6 +882,60 @@
         font: inherit;
         margin-bottom: 10px;
       }
+      /* 命令面板（SES-022）：贴在顶部、窄一点，像编辑器的 Ctrl+Shift+P。
+         居中弹会盖住终端，而用户往往要一边看着输出一边搜动作。 */
+      #cmd-dialog {
+        background: #24242a;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 8px;
+        padding: 10px 12px;
+        width: min(620px, 92vw);
+        margin: 8vh auto 0;
+        vertical-align: top;
+      }
+      #cmd-dialog::backdrop { background: #0009; }
+      #cmd-input {
+        width: 100%;
+        box-sizing: border-box;
+        background: #2a2a30;
+        color: var(--fg);
+        border: 1px solid #3a3a44;
+        border-radius: 4px;
+        padding: 6px 8px;
+        font: inherit;
+      }
+      #cmd-list { margin-top: 8px; max-height: 46vh; overflow-y: auto; }
+      #cmd-list:empty { display: none; }
+      .cmd-row {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        padding: 5px 6px;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      .cmd-row.active { background: #2f4f7f; }
+      .cmd-kind { flex: 0 0 2.6em; color: var(--muted); font-size: 11px; }
+      .cmd-title { flex: 0 1 auto; }
+      .cmd-detail {
+        flex: 1 1 auto;
+        color: var(--muted);
+        font-size: 11px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .cmd-chord {
+        flex: 0 0 auto;
+        color: var(--muted);
+        font-size: 11px;
+        border: 1px solid #3a3a44;
+        border-radius: 3px;
+        padding: 0 4px;
+      }
+      #cmd-empty,
+      #cmd-hint { color: var(--muted); font-size: 12px; margin: 8px 2px 0; }
       #term-foot select,
       #term-foot input {
         background: #2a2a30;
@@ -1136,6 +1190,9 @@
           <!-- 设置放在这里而不是只在终端底栏：底栏在没有会话时是隐藏的，
                想改编码/字体却还没连机器就进不去（G15） -->
           <button id="tree-settings" data-i18n="btn.settings" title="设置（可搜索）">设置</button>
+          <!-- 命令面板放在这里而不是只放终端底栏：底栏在没有会话时是隐藏的，
+               而「连哪台机器」恰恰是没会话时最想搜的东西 -->
+          <button id="tree-cmd" title="命令面板：一个搜索框找全部动作、会话、隧道与设置项（Ctrl+Shift+P）">命令</button>
           <button id="vault-toggle" title="查看保险库里保存的密码">保险库</button>
           <button id="files-toggle" data-i18n="btn.files" title="打开 SFTP 文件面板">文件</button>
         <button id="tunnels-toggle" data-i18n="btn.tunnels" title="端口转发（把远端端口映射到本地）">隧道</button>
@@ -1229,6 +1286,7 @@
           <button id="keys-open" title="键位设置（可重绑、冲突检测、导入导出）">键位</button>
           <button id="keygen-open" title="生成或导入 SSH 密钥，查看指纹">密钥</button>
           <button id="net-open" title="网络活动：当前所有出站连接（WindTerm 不发送遥测）">网络</button>
+          <button id="cmd-open" title="命令面板：一个搜索框找全部动作、会话、隧道与设置项（Ctrl+Shift+P）">命令</button>
         </div>
         <div id="find-bar" hidden>
           <input id="find-input" placeholder="查找（Ctrl+F）" spellcheck="false" />
@@ -1596,6 +1654,21 @@
         </ul>
         <menu><button value="yes">关闭</button></menu>
       </form>
+    </dialog>
+    <!-- 命令面板（`SES-022` / `TER-020` 的「命令面板」动作）。规格里说得很清楚：
+         MobaXterm 的能力藏在多级菜单里、用户不知道存在，所以这里把全部能力拉平到
+         一个搜索框。刻意不用 `<form method="dialog">`——回车要执行选中项，
+         不能被表单的默认提交吃掉。 -->
+    <dialog id="cmd-dialog">
+      <input
+        id="cmd-input"
+        placeholder="搜索动作、会话、隧道、设置项…"
+        spellcheck="false"
+        autocomplete="off"
+      />
+      <div id="cmd-list" role="listbox" aria-label="命令"></div>
+      <p id="cmd-empty" hidden>没有匹配项</p>
+      <p id="cmd-hint"></p>
     </dialog>
     <!-- 选文件夹：用原生 dialog + select，和命名对话框同一套路数 -->
     <dialog id="pick-dialog">

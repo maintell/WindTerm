@@ -241,6 +241,9 @@ const STATUS_TPL_EN = [
   [/^正在打开 (\d+) 个会话…$/, "Opening $1 sessions…"],
   [/^广播目标 (\d+) 台$/, "Broadcast targets: $1"],
   [/^广播目标 (\d+) 台（跳过 (\d+) 个非 SSH 会话）$/, "Broadcast targets: $1 (skipped $2 non-SSH session(s))"],
+  // 命令面板（`SES-022`）
+  [/^已选中「(.+)」：填好密码后点「连接」$/, "Selected $1: fill in the password, then click Connect"],
+  [/^「(.+)」现在没有可作用的对象$/, "Nothing for $1 to act on right now"],
 ];
 
 let lastStatus = "";
@@ -2336,6 +2339,8 @@ document.addEventListener(
 // 触发 `paste` 事件，拦下按键反而会让事件不产生。它是浏览器行为，不是我们的键位。
 
 const KEYMAP_DEFAULT = {
+  // 排在最前面是有意的：命令面板是「其余所有动作」的入口，用户找不到功能时先按它
+  commandPalette: { label: "命令面板", chords: ["Ctrl+Shift+P"] },
   copy: { label: "复制选区", chords: ["Ctrl+Shift+C", "Ctrl+Insert"] },
   find: { label: "查找", chords: ["Ctrl+F"] },
   zoomIn: { label: "放大字号", chords: ["Ctrl+=", "Ctrl++"] },
@@ -2443,6 +2448,9 @@ function cycleTab(delta) {
 
 function runAction(action) {
   switch (action) {
+    case "commandPalette":
+      togglePalette();
+      return true;
     case "copy":
       void copySelection();
       return true;
@@ -3481,6 +3489,9 @@ document.addEventListener(
     if (keysDialog.open) return;
     const chord = chordOf(ev);
     if (!chord) return;
+    // 命令面板开着时，键盘归它自己：否则在搜索框里按 Shift+PageUp 会把终端滚走、
+    // 按 Ctrl+Shift+A 会把终端全选，用户会以为输入框坏了。只放行「再按一次关掉它」。
+    if (cmdDialog.open && !(keymap.commandPalette?.chords ?? []).includes(chord)) return;
     for (const [action, v] of Object.entries(keymap)) {
       if (!v.chords.includes(chord)) continue;
       // 动作自己判断「这次不该触发」（比如查找栏没开时按 Esc）就放行
@@ -7147,6 +7158,301 @@ async function savePasswordIfAsked() {
   }
 }
 
+// ── 命令面板（`SES-022`）────────────────────────────────────
+//
+// 规格里的原话是「这是可发现性的主要手段——MobaXterm 的很多能力藏在多级菜单里，
+// 用户根本不知道存在」。所以它不只是一个搜索框：**来源必须覆盖全部能力**，
+// 少一类就等于那类能力仍然藏在菜单里。这里是五类：动作（带快捷键）、工具、
+// 会话（连接）、隧道（启停）、设置项（跳转）。
+const cmdDialog = document.getElementById("cmd-dialog");
+const cmdInput = document.getElementById("cmd-input");
+const cmdList = document.getElementById("cmd-list");
+const cmdEmpty = document.getElementById("cmd-empty");
+const cmdHint = document.getElementById("cmd-hint");
+
+/** 来源的显示名与排序权重：动作在最前（最常用），设置项垫底（最多、最不常搜） */
+const CMD_KIND = { action: "动作", tool: "工具", session: "会话", tunnel: "隧道", setting: "设置" };
+const CMD_KIND_ORDER = { action: 0, tool: 1, session: 2, tunnel: 3, setting: 4 };
+/** 一次最多画多少行：几百条设置项全画出来既慢又没人看 */
+const CMD_LIMIT = 50;
+
+/** 这次打开面板时的全部候选 */
+let cmdItems = [];
+/** 过滤后实际画出来的那批（下标与 DOM 子节点一一对应） */
+let cmdShown = [];
+let cmdIndex = 0;
+
+/**
+ * 收集全部可搜的东西。
+ *
+ * 每次打开都重建：会话树、隧道状态、设置项都会变，缓存住就会搜到已经删掉的会话。
+ * 这些来源本身都是内存里的数组或现成 DOM，重建一次没有成本。
+ *
+ * `run` 返回 false 表示「这个动作现在没有可作用的对象」（比如查找栏没开时按「关闭查找栏」），
+ * 面板据此给一句话，而不是关掉面板却什么都没发生。
+ */
+function collectCommands() {
+  const items = [];
+  for (const [action, v] of Object.entries(keymap)) {
+    items.push({
+      kind: "action",
+      title: v.label,
+      detail: "",
+      // 只显示首个组合键：`copy` 这种有备选键位的，后面那个写进快捷键对话框看
+      chord: v.chords[0] ?? "",
+      keywords: action,
+      run: () => runAction(action),
+    });
+  }
+  items.push(
+    {
+      kind: "tool",
+      title: "生成或导入 SSH 密钥",
+      detail: "查看指纹",
+      chord: "",
+      keywords: "keygen 密钥 指纹",
+      run: () => {
+        document.getElementById("keygen-open").click();
+        return true;
+      },
+    },
+    {
+      kind: "tool",
+      title: "网络活动",
+      detail: "当前所有出站连接",
+      chord: "",
+      keywords: "net 出站 遥测 白名单",
+      run: () => {
+        document.getElementById("net-open").click();
+        return true;
+      },
+    },
+  );
+  for (const s of lastTree?.sessions ?? []) {
+    items.push({
+      kind: "session",
+      title: `连接：${s.name}`,
+      detail: `${s.username ?? ""}@${s.host ?? ""}${s.port ? `:${s.port}` : ""}`,
+      chord: "",
+      keywords: `${s.host ?? ""} ${s.username ?? ""} ${s.kind}`,
+      run: () => {
+        void connectFromPalette(s);
+        return true;
+      },
+    });
+  }
+  for (const t of lastTunnels) {
+    items.push({
+      kind: "tunnel",
+      title: `${t.running ? "停止" : "启动"}隧道：${t.name}`,
+      detail: `${t.listen}${t.target ? ` → ${t.target}` : ""}`,
+      chord: "",
+      keywords: `tunnel 隧道 ${t.group ?? ""}`,
+      run: () => {
+        if (t.running) void stopTunnel(t.id);
+        else void startSavedTunnel(t.id);
+        return true;
+      },
+    });
+  }
+  for (const row of document.querySelectorAll("#set-body .set-row")) {
+    const nameEl = row.querySelector(".set-name");
+    // 与 `filterSettings` 同一个取值口径：`data-raw` 是没被搜索高亮切碎的原名
+    const name = nameEl?.dataset.raw ?? nameEl?.textContent ?? "";
+    if (!name) continue;
+    items.push({
+      kind: "setting",
+      title: `打开设置：${name}`,
+      detail: row.closest(".set-group")?.dataset.group ?? "",
+      chord: "",
+      keywords: row.dataset.kw ?? "",
+      run: () => {
+        jumpToSetting(row, name);
+        return true;
+      },
+    });
+  }
+  return items;
+}
+
+/** 会话命令：先走真实的「选中会话」路径（带出跳板、自动填口令），填得齐就直接连 */
+async function connectFromPalette(s) {
+  await selectSession(s);
+  if (s.kind === "sftp") return; // 文件面板已经打开，SFTP 没有「连接」这一步
+  if (passInput.value || useKeyBox.checked || useAgentBox.checked) {
+    await openSsh();
+    return;
+  }
+  // 口令要人填：把话说清楚，而不是假装连上了
+  setStatus(`已选中「${s.name}」：填好密码后点「连接」`);
+}
+
+/** 设置项命令：打开设置 → 搜到它 → 焦点落到控件上 */
+function jumpToSetting(row, name) {
+  openSettings();
+  setSearch.value = name;
+  filterSettings(name);
+  const ctl = row.querySelector("select, input, button");
+  if (!ctl) return;
+  ctl.focus();
+  ctl.scrollIntoView({ block: "center" });
+  setStatus(`已跳到「${name}」`);
+}
+
+/**
+ * 过滤 + 排序 + 画出来。
+ *
+ * 多个词按「都要命中」处理（`连 prod` 能找到 `连接：prod-web-01`）：中文没有空格分词，
+ * 但用户很自然会用空格把「干什么」和「哪一台」分开写。
+ */
+function renderPalette() {
+  const q = cmdInput.value.trim().toLowerCase();
+  const tokens = q.split(/\s+/).filter(Boolean);
+  const scored = [];
+  for (const item of cmdItems) {
+    const title = item.title.toLowerCase();
+    const hay = `${title} ${item.detail} ${item.keywords} ${CMD_KIND[item.kind]}`.toLowerCase();
+    if (!tokens.every((t) => hay.includes(t))) continue;
+    let score = 0;
+    if (q) {
+      if (title === q) score = 100;
+      else if (title.startsWith(q)) score = 80;
+      else if (title.includes(q)) score = 60;
+      // 整串没命中但每个词都在标题里（`命令` + `面板` 命中「命令面板」）
+      else if (tokens.every((t) => title.includes(t))) score = 50;
+      else score = 20; // 只在细节/关键词里命中
+    }
+    scored.push({ item, score });
+  }
+  scored.sort(
+    (a, b) =>
+      b.score - a.score ||
+      CMD_KIND_ORDER[a.item.kind] - CMD_KIND_ORDER[b.item.kind] ||
+      a.item.title.localeCompare(b.item.title, "zh"),
+  );
+  cmdShown = scored.slice(0, CMD_LIMIT).map((x) => x.item);
+  cmdIndex = 0;
+  paintPalette(scored.length);
+}
+
+function paintPalette(total) {
+  cmdList.textContent = "";
+  cmdShown.forEach((item, i) => {
+    const row = document.createElement("div");
+    row.className = "cmd-row";
+    row.dataset.kind = item.kind;
+    row.setAttribute("role", "option");
+    const kind = document.createElement("span");
+    kind.className = "cmd-kind";
+    kind.textContent = CMD_KIND[item.kind] ?? "";
+    const title = document.createElement("span");
+    title.className = "cmd-title";
+    title.textContent = item.title;
+    const detail = document.createElement("span");
+    detail.className = "cmd-detail";
+    detail.textContent = item.detail ?? "";
+    row.append(kind, title, detail);
+    if (item.chord) {
+      const kbd = document.createElement("kbd");
+      kbd.className = "cmd-chord";
+      kbd.textContent = item.chord;
+      row.appendChild(kbd);
+    }
+    // 用 mousedown + preventDefault 保住输入框的焦点：焦点一跑到行上，方向键就不再
+    // 改选中项，用户会以为键盘坏了
+    row.addEventListener("mousedown", (ev) => ev.preventDefault());
+    row.addEventListener("click", () => runPaletteItem(i));
+    row.addEventListener("mousemove", () => setPaletteIndex(i));
+    if (i === cmdIndex) row.classList.add("active");
+    cmdList.appendChild(row);
+  });
+
+  cmdEmpty.hidden = cmdShown.length > 0;
+  cmdHint.textContent = total > CMD_LIMIT
+    ? `共 ${total} 项，只显示前 ${CMD_LIMIT} 项——再输几个字缩小范围`
+    : cmdShown.length
+      ? `${cmdShown.length} 项 · ↑↓ 选择 · 回车执行 · Esc 关闭`
+      : "";
+  cmdList.children[cmdIndex]?.scrollIntoView({ block: "nearest" });
+}
+
+function setPaletteIndex(i) {
+  if (!cmdShown.length) return;
+  const next = (i + cmdShown.length) % cmdShown.length;
+  if (next === cmdIndex) return;
+  cmdList.children[cmdIndex]?.classList.remove("active");
+  cmdIndex = next;
+  const el = cmdList.children[cmdIndex];
+  el?.classList.add("active");
+  el?.scrollIntoView({ block: "nearest" });
+}
+
+function runPaletteItem(i) {
+  const item = cmdShown[i];
+  if (!item) return;
+  // 先关面板再执行：动作可能自己开一个对话框（设置/键位/密钥），两个模态叠在一起时
+  // Esc 只关掉上面那个，用户会以为卡住了
+  cmdDialog.close();
+  if (item.run() === false) setStatus(`「${item.title}」现在没有可作用的对象`);
+}
+
+function openPalette() {
+  cmdItems = collectCommands();
+  cmdInput.value = "";
+  cmdDialog.showModal();
+  renderPalette();
+  cmdInput.focus();
+  // 隧道面板没开过时 `lastTunnels` 还是空的：补一次读库，读完再刷一遍列表。
+  // 少了这一步，用户搜不到任何隧道，还会以为隧道没保存。
+  if (!lastTunnels.length) {
+    void refreshTunnels().then(() => {
+      if (!cmdDialog.open) return;
+      cmdItems = collectCommands();
+      renderPalette();
+    });
+  }
+}
+
+function togglePalette() {
+  if (cmdDialog.open) cmdDialog.close();
+  else openPalette();
+}
+
+document.getElementById("cmd-open").addEventListener("click", openPalette);
+document.getElementById("tree-cmd").addEventListener("click", openPalette);
+
+cmdInput.addEventListener("input", () => renderPalette());
+cmdInput.addEventListener("keydown", (ev) => {
+  if (ev.key === "ArrowDown") {
+    ev.preventDefault();
+    setPaletteIndex(cmdIndex + 1);
+  } else if (ev.key === "ArrowUp") {
+    ev.preventDefault();
+    setPaletteIndex(cmdIndex - 1);
+  } else if (ev.key === "PageDown") {
+    ev.preventDefault();
+    setPaletteIndex(cmdIndex + 10);
+  } else if (ev.key === "PageUp") {
+    ev.preventDefault();
+    setPaletteIndex(cmdIndex - 10);
+  } else if (ev.key === "Enter") {
+    ev.preventDefault();
+    runPaletteItem(cmdIndex);
+  } else if (ev.key === "Escape") {
+    // 自己关，不依赖 `<dialog>` 的默认取消：默认取消在 Esc 被别处 preventDefault 时
+    // 会静默失效，那时用户会觉得「按 Esc 没反应」
+    ev.preventDefault();
+    cmdDialog.close();
+  }
+});
+
+// 关掉（Esc / 执行完）就把查询清干净：下次打开不该还停在上次的搜索词上
+cmdDialog.addEventListener("close", () => {
+  cmdInput.value = "";
+  cmdShown = [];
+  cmdIndex = 0;
+});
+
 // 自动化验收接口（`scripts/e2e-desktop.mjs` 用 CDP 读它）。
 // 只读、无副作用：靠 DOM 文本反推会话句柄会变成脆弱实现，
 // 而「界面可被脚本驱动」本身也是 AI Agent 体验的一部分。
@@ -7169,10 +7475,30 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-121",
+  ui: "wt-ui-122",
   /** 验收用：主窗口当前是否全屏（`TER-020`） */
   get fullscreen() {
     return isFullscreen;
+  },
+  /**
+   * 命令面板的当前状态（`SES-022`）。
+   *
+   * 验收要能断言「搜出来的第一项是哪一个」「选中项在第几个」「这一项挂着什么快捷键」，
+   * 这些从截图看不出来，从 DOM 文本反推又脆弱。所以直接给结构化的快照。
+   */
+  palette() {
+    return {
+      open: cmdDialog.open,
+      query: cmdInput.value,
+      index: cmdIndex,
+      total: cmdItems.length,
+      shown: [...cmdList.children].map((el) => ({
+        kind: el.dataset.kind,
+        title: el.querySelector(".cmd-title")?.textContent ?? "",
+        chord: el.querySelector(".cmd-chord")?.textContent ?? "",
+        active: el.classList.contains("active"),
+      })),
+    };
   },
   /**
    * 验收用：刷新会话树并等它**画完**。

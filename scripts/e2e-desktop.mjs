@@ -9005,6 +9005,190 @@ try {
   );
   await closeAllTabs();
 
+  // 19. 命令面板（`SES-022`）：把全部能力拉平到一个搜索框。
+  //     规格里的理由是「MobaXterm 的很多能力藏在多级菜单里，用户根本不知道存在」，
+  //     所以这里要验的不是「有个搜索框」，而是**五类来源都真的搜得到**。
+  await clickElement("#open"); // 起一个本地标签：底栏的「命令」按钮要有会话才可见
+  await waitFor(
+    async () => {
+      const n = await cdp.eval(`window.__wt.tabs().length`);
+      return n === 1 ? n : null;
+    },
+    { timeout: 20000, label: "命令面板用例：本地标签就绪" },
+  );
+
+  // 真实的 Ctrl+Shift+P（CDP 修饰键位掩码：Ctrl=2、Shift=8）
+  await pressChord(10, "P", "KeyP", 80);
+  const palOpen = await waitFor(
+    async () => {
+      const p = await cdp.eval(`window.__wt.palette()`);
+      return p.open ? p : null;
+    },
+    { timeout: 5000, label: "Ctrl+Shift+P 打开命令面板" },
+  );
+  check("Ctrl+Shift+P 打开命令面板（SES-022）", palOpen.open === true, `${palOpen.total} 项候选`);
+
+  const palKinds = new Set(palOpen.shown.map((x) => x.kind));
+  check(
+    "面板默认就列出动作与工具（不是只有会话）",
+    palKinds.has("action") && palKinds.has("tool"),
+    [...palKinds].join("/"),
+  );
+  const palPaletteRow = palOpen.shown.find((x) => x.kind === "action" && x.title === "命令面板");
+  check(
+    "动作行带自己的快捷键（规格「每个动作显示其快捷键」）",
+    palPaletteRow?.chord === "Ctrl+Shift+P",
+    `命令面板 → ${palPaletteRow?.chord || "（无）"}`,
+  );
+
+  // 真键盘打字：ASCII 走关键词匹配（`copy` 是动作 id），顺带验「在输入框里打字
+  // 不会被全局快捷键吃掉」——`Ctrl+Shift+C` 之外的键必须照常进到输入框
+  const typeQuery = async (text) => {
+    for (const ch of text) {
+      const { key, code, vk, shift } = keyFor(ch);
+      const base = {
+        key,
+        code,
+        windowsVirtualKeyCode: vk,
+        nativeVirtualKeyCode: vk,
+        modifiers: shift ? 8 : 0,
+      };
+      await cdp.send("Input.dispatchKeyEvent", {
+        type: "keyDown",
+        ...base,
+        text: ch,
+        unmodifiedText: ch,
+      });
+      await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
+    }
+  };
+  const pressKey = async (key, vk, code) => {
+    const base = {
+      key,
+      code,
+      windowsVirtualKeyCode: vk,
+      nativeVirtualKeyCode: vk,
+    };
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", ...base });
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
+  };
+
+  await typeQuery("copy");
+  const palCopy = await waitFor(
+    async () => {
+      const p = await cdp.eval(`window.__wt.palette()`);
+      return p.query === "copy" ? p : null;
+    },
+    { timeout: 5000, label: "命令面板接受键盘输入" },
+  );
+  check(
+    "边打边过滤，命中的第一项是「复制选区」并带着它的快捷键",
+    palCopy.shown[0]?.title === "复制选区" && palCopy.shown[0]?.chord === "Ctrl+Shift+C",
+    JSON.stringify(palCopy.shown.slice(0, 2)),
+  );
+  check(
+    "过滤把候选从全部收窄（不是只画了个框）",
+    palCopy.shown.length > 0 && palCopy.shown.length < palCopy.total,
+    `${palCopy.shown.length}/${palCopy.total}`,
+  );
+
+  await pressKey("ArrowDown", 40, "ArrowDown");
+  const palDown = await cdp.eval(`window.__wt.palette()`);
+  await pressKey("ArrowUp", 38, "ArrowUp");
+  const palUp = await cdp.eval(`window.__wt.palette()`);
+  check(
+    "↑↓ 移动选中项（选中项跟着高亮走）",
+    palDown.index === 1 && palDown.shown[1]?.active === true && palUp.index === 0,
+    `下移后 index=${palDown.index}、上移后 index=${palUp.index}`,
+  );
+
+  await pressKey("Escape", 27, "Escape");
+  const palEsc = await waitFor(
+    async () => {
+      const p = await cdp.eval(`window.__wt.palette()`);
+      return p.open === false ? p : null;
+    },
+    { timeout: 3000, label: "Esc 关闭命令面板" },
+  ).catch(() => null);
+  check("Esc 关闭面板", palEsc !== null, palEsc ? "已关闭" : "仍是打开状态");
+
+  // 底栏「命令」按钮：与 Ctrl+Shift+P 同一个入口
+  await clickElement("#cmd-open");
+  const palBtn = await waitFor(
+    async () => {
+      const p = await cdp.eval(`window.__wt.palette()`);
+      return p.open ? p : null;
+    },
+    { timeout: 5000, label: "底栏「命令」按钮打开面板" },
+  );
+  check("底栏「命令」按钮打开同一个面板", palBtn.open === true, `${palBtn.total} 项`);
+
+  // 设置项（跳转）：中文查询走 setInputValue——真键盘打不出中文
+  await setInputValue("#cmd-input", "字体");
+  const palFont = await cdp.eval(`window.__wt.palette()`);
+  check(
+    "设置项也能搜到（规格「设置项（跳转）」）",
+    palFont.shown[0]?.kind === "setting" && palFont.shown[0]?.title === "打开设置：字体",
+    JSON.stringify(palFont.shown.slice(0, 2)),
+  );
+  await pressKey("Enter", 13, "Enter");
+  const palJump = await waitFor(
+    async () => {
+      const open = await cdp.eval(`document.getElementById("settings").open`);
+      const focus = await cdp.eval(`document.activeElement?.id ?? ""`);
+      return open === true && focus === "look-font" ? { open, focus } : null;
+    },
+    { timeout: 5000, label: "回车跳到设置项" },
+  );
+  check(
+    "回车真的跳到该项：设置面板打开、焦点落在字体下拉上",
+    palJump.focus === "look-font",
+    `focus=${palJump.focus}`,
+  );
+  await clickElement("#set-close");
+
+  // 会话 / 工具 / 隧道：另外三类来源
+  await clickElement("#tree-cmd");
+  await waitFor(
+    async () => {
+      const p = await cdp.eval(`window.__wt.palette()`);
+      return p.open ? p : null;
+    },
+    { timeout: 5000, label: "侧栏「命令」按钮打开面板" },
+  );
+  await setInputValue("#cmd-input", "mock");
+  const palSess = await cdp.eval(`window.__wt.palette()`);
+  check(
+    "会话也能搜到（规格「会话（连接）」）",
+    palSess.shown.some((x) => x.kind === "session" && x.title.startsWith("连接：")),
+    JSON.stringify(palSess.shown.slice(0, 2)),
+  );
+
+  await setInputValue("#cmd-input", "keygen");
+  const palTool = await cdp.eval(`window.__wt.palette()`);
+  check(
+    "工具也能搜到（规格「工具（打开编辑器/密钥生成器/诊断）」）",
+    palTool.shown[0]?.kind === "tool" && palTool.shown[0]?.title === "生成或导入 SSH 密钥",
+    JSON.stringify(palTool.shown.slice(0, 2)),
+  );
+
+  await setInputValue("#cmd-input", "隧道");
+  const palTun = await waitFor(
+    async () => {
+      const p = await cdp.eval(`window.__wt.palette()`);
+      return p.shown.some((x) => x.kind === "tunnel") ? p : null;
+    },
+    { timeout: 5000, label: "命令面板列出隧道" },
+  ).catch(() => null);
+  check(
+    "隧道启停也能搜到（规格「隧道（启停）」）",
+    palTun !== null,
+    palTun ? `${palTun.shown.filter((x) => x.kind === "tunnel").length} 条隧道命令` : "一条都没有",
+  );
+
+  await pressKey("Escape", 27, "Escape");
+  await closeAllTabs();
+
   // 18. 页面无未捕获异常
   check("页面无未捕获异常", cdp.exceptions.length === 0, cdp.exceptions.join(" | ") || "0 条");
 

@@ -15,6 +15,10 @@
 
 ### Added
 
+- `SES-022` / `TER-020` 命令面板（`Ctrl+Shift+P`）：一个搜索框拉平五类来源——动作（标着自己的快捷键）、
+  工具、会话（连接）、隧道（启停）、设置项（跳转），回车即执行，设置项回车后焦点直接落在控件上。
+  `↑↓` / `PageUp` / `PageDown` 选择、`Esc` 关闭，多词用空格分开且「都要命中」；侧栏与终端底栏的
+  「命令」按钮是同一个入口（动作数 34 → 35）。
 - `SYS-008` 多平台打包（Windows 便携 zip 链路）：`release.yml` 推 `v*` 标签触发一条 Windows runner
   编译并产出便携 zip + SHA256SUMS + GitHub Release；本地 `verify-package.ps1` 复现整条打包链路
   并自校验（解包字节一致、哈希对得上、SHA256SUMS 无 BOM、解包出的 exe 真能启动并建起 WebView2
