@@ -5839,6 +5839,40 @@ try {
     splitOff ? `左 ${splitOff.a} 个` : "前提没连上，跳过",
   );
 
+  // 上下分屏（`TER-002` 的「垂直 2 分屏」）：Ctrl+Shift+H。
+  // 判据要能证明是**叠着**的：两块宽度一致，且下面那块的 y 落在上面那块的下半段之后。
+  if (firstConnected) await pressChord(10, "H", "KeyH", 72);
+  const vSplit = firstConnected
+    ? await waitFor(
+        async () => {
+          const s = await cdp.eval(`window.__wt.split`);
+          const [top, bottom] = s.cells ?? [];
+          const ok =
+            s.mode === "v" &&
+            top?.box &&
+            bottom?.box &&
+            Math.abs(top.box.w - bottom.box.w) <= 4 &&
+            bottom.box.y > top.box.y + top.box.h / 2;
+          return ok ? s : null;
+        },
+        { timeout: 10000, label: "上下分屏生效" },
+      ).catch(() => null)
+    : null;
+  check(
+    "上下分屏：两块叠着放（宽度一致、第二块在第一块下面）",
+    vSplit !== null,
+    vSplit
+      ? `上 ${vSplit.cells[0].box.w}×${vSplit.cells[0].box.h}@y${vSplit.cells[0].box.y} / 下 ${vSplit.cells[1].box.w}×${vSplit.cells[1].box.h}@y${vSplit.cells[1].box.y}`
+      : `${JSON.stringify(await cdp.eval(`window.__wt.split`))}；状态栏：${await cdp.eval(`document.getElementById("status").textContent`)}；已连接 ${await cdp.eval(`window.__wt.tabs().filter((t) => t.handle).length`)} 个`,
+  );
+  if (vSplit) await pressChord(10, "H", "KeyH", 72);
+  const vOff = vSplit ? await cdp.eval(`window.__wt.split`) : null;
+  check(
+    "再按一次退出上下分屏",
+    vOff === null || vOff.mode === "none",
+    vOff ? `模式=${vOff.mode}` : "没进上下分屏，跳过",
+  );
+
   // 四宫格（`TER-002`）：再补两个本地终端凑够四个已连接会话。
   // 用本地终端而不是再开两条 SSH——这一条验的是**布局**，不是建连。
   await clickElement("#open");
@@ -9292,8 +9326,7 @@ try {
       open: document.getElementById("settings").open,
       focus: document.activeElement?.id ?? "",
       status: document.getElementById("status").textContent,
-      paletteOpen: window.__wt.palette().open,
-      paletteShown: window.__wt.palette().shown.length,
+      palette: window.__wt.palette(),
     })`));
   check(
     "回车真的跳到该项：设置面板打开、焦点落在字体下拉上",

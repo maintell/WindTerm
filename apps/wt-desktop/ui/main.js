@@ -1043,6 +1043,7 @@ function openTermMenu(x, y, view) {
       { label: t("ctx.find"), run: () => openFind() },
       { label: t("ctx.clear"), run: () => view.term.clear() },
       { label: t("ctx.split"), run: () => runAction("splitToggle") },
+      { label: t("ctx.vsplit"), run: () => runAction("splitVertical") },
       { label: t("ctx.quad"), run: () => runAction("splitQuad") },
     ],
     "terminal",
@@ -2389,6 +2390,7 @@ const KEYMAP_DEFAULT = {
   // 左右分屏原来占着 Ctrl+Shift+S，和规格里「保存终端输出」的键位撞了。
   // 规格优先：分屏让到 Ctrl+Shift+E（与「分屏」语义一致），Ctrl+Shift+S 还给保存输出。
   splitToggle: { label: "左右分屏", chords: ["Ctrl+Shift+E"] },
+  splitVertical: { label: "上下分屏", chords: ["Ctrl+Shift+H"] },
   splitQuad: { label: "四宫格分屏", chords: ["Ctrl+Shift+G"] },
   saveOutput: { label: "保存终端输出", chords: ["Ctrl+Shift+S"] },
   fullscreen: { label: "全屏", chords: ["F11"] },
@@ -2545,6 +2547,9 @@ function runAction(action) {
       })();
       return true;
     }
+    case "splitVertical":
+      setSplitMode(splitMode() === "v" ? "none" : "v");
+      return true;
     case "splitQuad":
       setSplitMode(splitMode() === "quad" ? "none" : "quad");
       return true;
@@ -5718,11 +5723,14 @@ function syncTunnelKind() {
 // Terminal 的尺寸由各自 pane 决定，fit 按容器算，所以每个格子的行列数各自重算
 // （远端 `stty size` 也跟着变）。
 
-/** 当前模式：none / h（左右两格）/ quad（四宫格） */
+/** 两格时的方向：h 左右 / v 上下（`TER-002` 要求水平与垂直两种 2 分屏） */
+let splitDir = "h";
+
+/** 当前模式：none / h（左右两格）/ v（上下两格）/ quad（四宫格） */
 function splitMode() {
   const n = splitIds.filter((id) => id !== null).length;
   if (n === 0) return "none";
-  return n >= 3 ? "quad" : "h";
+  return n >= 3 ? "quad" : splitDir;
 }
 
 function splitView(i) {
@@ -5738,11 +5746,14 @@ function splitLeftView() {
 
 function syncSplit() {
   const mode = splitMode();
-  const slots = mode === "quad" ? 3 : mode === "h" ? 1 : 0;
-  // 多出来的槽位一律清空：关掉四宫格里的一格后会退回左右两格，剩下的那个 id
-  // 如果留着，`splitMode()` 会一直把它算进去，模式就再也回不到「左右」
+  // 别写成「h 才 1」：上下两格同样是一个格子。写漏了 v 会被当成「没分屏」，
+  // splitDir 刚设好就被归一化清掉，表现为「按了没反应」
+  const slots = mode === "quad" ? 3 : mode === "none" ? 0 : 1;
+  // 多出来的槽位一律清空：关掉四宫格里的一格后会退回两格，剩下的那个 id
+  // 如果留着，`splitMode()` 会一直把它算进去，模式就再也回不到两格
   for (let i = slots; i < splitIds.length; i += 1) splitIds[i] = null;
   termHost.classList.toggle("quad", mode === "quad");
+  termHost.classList.toggle("v", mode === "v");
   paneB.hidden = slots < 1;
   paneC.hidden = slots < 2;
   paneD.hidden = slots < 3;
@@ -5788,13 +5799,15 @@ function setSplitMode(want) {
     return;
   }
   const need = want === "quad" ? 4 : 2;
-  const name = want === "quad" ? "四宫格" : "左右分屏";
+  const name = want === "quad" ? "四宫格" : want === "v" ? "上下分屏" : "左右分屏";
   const connected = [...sessions.values()].filter((v) => v.handle);
   if (!active?.handle || connected.length < need) {
     setStatus(`${name}需要 ${need} 个已连接会话，当前 ${connected.length} 个`);
     return;
   }
   const others = connected.filter((v) => v !== active).slice(0, need - 1);
+  // 记住两格时的方向：`splitMode()` 靠它区分「左右」与「上下」
+  splitDir = want === "v" ? "v" : "h";
   splitLeftId = active.id;
   splitIds.fill(null);
   others.forEach((v, i) => {
@@ -5804,12 +5817,12 @@ function setSplitMode(want) {
   setStatus(
     want === "quad"
       ? `四宫格：${[active, ...others].map((v) => v.label).join(" / ")}`
-      : `右侧显示：${others[0].label}`,
+      : `${want === "v" ? "下方" : "右侧"}显示：${others[0].label}`,
   );
 }
 
 splitToggle.addEventListener("click", () => {
-  setSplitMode(splitMode() === "none" ? "h" : "none");
+  setSplitMode(splitMode() === "h" ? "none" : "h");
 });
 
 function syncTunnelPersistable() {
@@ -6917,6 +6930,7 @@ const I18N = {
     "ctx.find": "查找…",
     "ctx.clear": "清屏",
     "ctx.split": "左右分屏",
+    "ctx.vsplit": "上下分屏",
     "ctx.quad": "四宫格分屏",
     "ctx.moveTo": "移动到…",
     "ctx.broadcastFolder": "多执行到此文件夹（{n} 个 SSH）",
@@ -6995,6 +7009,7 @@ const I18N = {
     "ctx.find": "Find…",
     "ctx.clear": "Clear",
     "ctx.split": "Split view",
+    "ctx.vsplit": "Split view (vertical)",
     "ctx.quad": "Quad view",
     "ctx.moveTo": "Move to…",
     "ctx.broadcastFolder": "Broadcast to this folder ({n} SSH)",
@@ -7277,6 +7292,8 @@ let cmdItems = [];
 /** 过滤后实际画出来的那批（下标与 DOM 子节点一一对应） */
 let cmdShown = [];
 let cmdIndex = 0;
+/** 验收用：`runPaletteItem` 被调用了几次（分清「回车没到」与「到了但没执行」） */
+let cmdRuns = 0;
 
 /**
  * 收集全部可搜的东西。
@@ -7484,6 +7501,7 @@ function setPaletteIndex(i) {
 }
 
 function runPaletteItem(i) {
+  cmdRuns += 1;
   const item = cmdShown[i];
   if (!item) return;
   // 先关面板再执行：动作可能自己开一个对话框（设置/键位/密钥），两个模态叠在一起时
@@ -7571,7 +7589,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-125",
+  ui: "wt-ui-126",
   /** 验收用：主窗口当前是否全屏（`TER-020`） */
   get fullscreen() {
     return isFullscreen;
@@ -7602,6 +7620,7 @@ window.__wt = {
       query: cmdInput.value,
       index: cmdIndex,
       total: cmdItems.length,
+      runs: cmdRuns,
       shown: [...cmdList.children].map((el) => ({
         kind: el.dataset.kind,
         title: el.querySelector(".cmd-title")?.textContent ?? "",
@@ -7879,10 +7898,17 @@ window.__wt = {
     const box = (v) => {
       if (!v) return null;
       const r = v.el.getBoundingClientRect();
-      return { w: Math.round(r.width), h: Math.round(r.height) };
+      return {
+        x: Math.round(r.x),
+        y: Math.round(r.y),
+        w: Math.round(r.width),
+        h: Math.round(r.height),
+      };
     };
     // 四宫格时四格都要能核对：只报左右两格的话，下面两格是空是满根本看不出来
-    const slots = mode === "quad" ? 3 : mode === "h" ? 1 : 0;
+    // 别写成「h 才 1」：上下两格同样是一个格子。写漏了 v 会被当成「没分屏」，
+  // splitDir 刚设好就被归一化清掉，表现为「按了没反应」
+  const slots = mode === "quad" ? 3 : mode === "none" ? 0 : 1;
     const cells = [{ id: left?.id ?? null, label: left?.label ?? null, box: box(left) }];
     for (let i = 0; i < slots; i += 1) {
       const v = splitView(i);

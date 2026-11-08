@@ -350,6 +350,9 @@
       #term .pane { flex: 1; min-width: 0; min-height: 0; position: relative; }
       #term .pane[hidden] { display: none; }
       #term .pane + .pane { border-left: 1px solid #33333a; }
+      /* 上下分屏（`TER-002` 的垂直 2 分屏）：两块纵向排，边框换到上边 */
+      #term.v { flex-direction: column; }
+      #term.v .pane + .pane { border-left: 0; border-top: 1px solid #33333a; }
       /* 四宫格：2×2 网格。B 右上、C 左下、D 右下，A 在左上。
          边框用 outline 而不是 border，免得每格尺寸被边框吃掉、xterm 的 fit 算歪 */
       #term.quad { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
