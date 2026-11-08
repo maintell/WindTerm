@@ -260,6 +260,19 @@ function Assert-ReadmeNumber([string]$pattern, [int]$expected, [string]$label) {
     if ($got -ne $expected) { Fail ("README 的「{0}」写 {1}，实际应为 {2}" -f $label, $got, $expected) }
 }
 
+# 同上，但要求**每一处**都对：同一个数在 README 里常出现两次（进度表一处、缺口表一处），
+# `Assert-ReadmeNumber` 只看第一处，第二处漂了也发现不了。
+function Assert-AllReadmeNumbers([string]$pattern, [int]$expected, [string]$label) {
+    $ms = [regex]::Matches($readmeText, $pattern)
+    if ($ms.Count -eq 0) { Fail ("README 里找不到「{0}」的数字" -f $label); return }
+    foreach ($m in $ms) {
+        $got = [int]$m.Groups[1].Value
+        if ($got -ne $expected) {
+            Fail ("README 的「{0}」有一处写 {1}，实际应为 {2}" -f $label, $got, $expected)
+        }
+    }
+}
+
 # 9a. i18n：index.html 的 data-i18n 元素数 / 唯一键数
 $dq = [char]34
 $i18nPat = "data-i18n=" + $dq + "([^" + $dq + "]+)" + $dq
@@ -323,6 +336,20 @@ if (Test-Path $handoverPath) {
 $kmMatch = [regex]::Match($mainText, "const KEYMAP_DEFAULT = [{].*?[}];", [System.Text.RegularExpressions.RegexOptions]::Singleline)
 $kmKeys = [regex]::Matches($kmMatch.Value, "[ \t]{2}([A-Za-z][A-Za-z0-9]*):[ \t]*[{][ \t]*label:").Count
 Assert-ReadmeNumber "可用（([0-9]+)[ \t]*个动作可重绑）" $kmKeys "TER-020 动作数"
+# 同一个数在 README 里还有别的写法。只盯一种等于没盯：2026-11-09 加动作后，
+# 「**35 个动作全部可重绑**」这句没人改，门禁全绿——正是这一行漏掉的。
+foreach ($pat in @(
+    "\*\*([0-9]+) 个动作全部可重绑\*\*",
+    "已做 \*\*([0-9]+) 个动作\*\*",
+    "\*\*([0-9]+) 个动作\*\*："
+)) {
+    Assert-ReadmeNumber $pat $kmKeys "TER-020 动作数（写法：$pat）"
+}
+# 9c-2. 配色套数：THEME_DATA 的条目数。README 里这同一个数出现在两处，
+#       用 Assert-AllReadmeNumbers 要求**两处都对**（2026-11-09 就漂过一处：一处 21、一处 20）。
+$thMatch = [regex]::Match($mainText, "const THEME_DATA = \[.*?\];", [System.Text.RegularExpressions.RegexOptions]::Singleline)
+$thCount = [regex]::Matches($thMatch.Value, "name:").Count
+Assert-AllReadmeNumbers "([0-9]+) 套配色" $thCount "TER-005 配色套数"
 # 9d. 状态栏文案 i18n（SET-012）：纯字面量的 setStatus 必须有英文词条，表里也不许留死词条
 #     带变量的模板字符串不在此列（它们仍是中文，如实记在 README 缺口里），但只写字面量
 #     的那批必须能翻——否则「切成 English 后状态栏还是中文」只能靠人肉发现。
@@ -484,6 +511,11 @@ if (-not (Test-Path $statusTplCheck)) {
         Fail ("状态栏模板骨架自测未通过：" + (($nodeOut | Select-Object -Last 3) -join ' '))
     } else {
         Write-Host ("状态栏模板：" + ($nodeOut | Select-Object -Last 1))
+        # README 里那个条数也得盯住：它一直没人管，已经从 51 漂到 59 了
+        $tplLine = [string]($nodeOut | Select-Object -Last 1)
+        $tplCount = [int]([regex]::Match($tplLine, "skeletons=([0-9]+)").Groups[1].Value)
+        if ($tplCount -le 0) { Fail "状态栏模板自测没报出骨架数（输出：$tplLine）" }
+        else { Assert-ReadmeNumber "带变量状态栏模板 ([0-9]+) 条" $tplCount "SET-012 状态栏模板条数" }
     }
 }
 
