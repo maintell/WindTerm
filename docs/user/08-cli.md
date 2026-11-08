@@ -40,6 +40,29 @@ wt sftp get --host H --user U --password P --remote /etc/hosts --local hosts.txt
 wt sftp put --host H --user U --password P --local hosts.txt --remote /tmp/hosts.txt
 ```
 
+`ls` 加 `--json` 输出机器可读结果（脚本与 AI Agent 用），字段与界面那份一致：
+
+```bash
+wt sftp ls --host H --user U --agent --path / --json
+```
+
+```json
+[
+  {
+    "name": "etc",
+    "isDir": true,
+    "size": 4096,
+    "isSymlink": false,
+    "linkTarget": null,
+    "broken": false,
+    "mode": 16877,
+    "mtime": 1730000000
+  }
+]
+```
+
+服务端没给的字段是 `null`，不编造。
+
 ## 自检
 
 ```bash

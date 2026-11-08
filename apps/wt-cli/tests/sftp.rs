@@ -47,13 +47,79 @@ async fn ls_lists_remote_directory() {
         .insert("/beta.txt".into(), b"bb".to_vec());
 
     let mut out: Vec<u8> = Vec::new();
-    run_sftp(&target(server.port), &SftpAction::Ls { path: "/".into() }, &mut out)
-        .await
-        .expect("ls 应成功");
+    run_sftp(
+        &target(server.port),
+        &SftpAction::Ls {
+            path: "/".into(),
+            json: false,
+        },
+        &mut out,
+    )
+    .await
+    .expect("ls 应成功");
 
     let text = String::from_utf8_lossy(&out);
     assert!(text.contains("alpha.txt"), "实际输出: {text}");
     assert!(text.contains("beta.txt"), "实际输出: {text}");
+}
+
+#[tokio::test]
+async fn ls_json_is_machine_readable() {
+    // `--json` 是给脚本与 AI Agent 用的（`spec/01`「每个 UI 能力都要能脚本化」）：
+    // 输出必须是**能解析的 JSON**，字段与界面那份 DTO 一致，而不是另造一套。
+    let server = MockSshServer::start().await;
+    server
+        .fs
+        .lock()
+        .await
+        .insert("/alpha.txt".into(), b"abc".to_vec());
+    server.fs.lock().await.insert("/dir".into(), Vec::new());
+
+    let mut out: Vec<u8> = Vec::new();
+    run_sftp(
+        &target(server.port),
+        &SftpAction::Ls {
+            path: "/".into(),
+            json: true,
+        },
+        &mut out,
+    )
+    .await
+    .expect("ls --json 应成功");
+
+    let text = String::from_utf8_lossy(&out);
+    let rows: Vec<serde_json::Value> = serde_json::from_str(text.trim())
+        .unwrap_or_else(|e| panic!("输出不是合法 JSON：{e}；实际：{text}"));
+    let alpha = rows
+        .iter()
+        .find(|r| r["name"] == "alpha.txt")
+        .unwrap_or_else(|| panic!("没找到 alpha.txt：{text}"));
+    // 不钉 `alpha.txt` 的 isDir：mock 的 `FileAttributes::dummy()` 把权限位写死成
+    // `0o777 | S_IFDIR`，每个条目都会被报成目录（README 的 G8 复盘记着这条）。
+    // 这条用例验的是**输出的形状**，不是 mock 的属性保真度。
+    // 字段名必须是 camelCase（与界面 DTO 同一套），不是 Rust 那边的 snake_case。
+    assert!(alpha.get("isDir").is_some(), "缺 isDir 字段：{text}");
+    assert!(alpha.get("linkTarget").is_some(), "缺 linkTarget 字段：{text}");
+    assert!(alpha.get("size").is_some(), "缺 size 字段：{text}");
+    // 每一行都必须是同一套字段：脚本按这些键取值，少一个就是断的
+    for row in &rows {
+        for key in [
+            "name",
+            "isDir",
+            "size",
+            "isSymlink",
+            "linkTarget",
+            "broken",
+            "mode",
+            "mtime",
+        ] {
+            assert!(
+                row.get(key).is_some(),
+                "缺字段 {key}：{row}；完整输出：{text}"
+            );
+        }
+    }
+    assert!(rows.len() >= 2, "至少两条：{text}");
 }
 
 #[tokio::test]

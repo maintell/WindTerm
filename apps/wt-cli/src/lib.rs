@@ -78,7 +78,11 @@ pub enum SshAuth {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SftpAction {
     /// 列目录
-    Ls { path: String },
+    Ls {
+        path: String,
+        /// 输出机器可读的 JSON（`spec/01` §「每个 UI 能力都要能脚本化」）
+        json: bool,
+    },
     /// 下载
     Get {
         remote: String,
@@ -463,6 +467,8 @@ fn parse_sftp(rest: &[String]) -> Result<Command, String> {
     let mut remote = None;
     let mut local = None;
     let mut jump = JumpArgs::default();
+    // `sftp ls --json`：输出机器可读结果
+    let mut json = false;
 
     let mut i = 1;
     while i < rest.len() {
@@ -518,6 +524,12 @@ fn parse_sftp(rest: &[String]) -> Result<Command, String> {
                 local = Some(std::path::PathBuf::from(need(rest, i, "--local")?));
                 i += 2;
             }
+            // `sftp ls --json`：输出机器可读结果（脚本与 AI Agent 用），
+            // 字段与界面那份 DTO 一致，不另造一套
+            "--json" => {
+                json = true;
+                i += 1;
+            }
             other => return Err(format!("sftp 不认识的参数 `{other}`")),
         }
     }
@@ -527,6 +539,7 @@ fn parse_sftp(rest: &[String]) -> Result<Command, String> {
     let action = match action {
         "ls" => SftpAction::Ls {
             path: path.unwrap_or_else(|| ".".to_string()),
+            json,
         },
         "get" => SftpAction::Get {
             remote: remote.ok_or_else(|| "sftp get 需要 --remote <远端路径>".to_string())?,
@@ -992,11 +1005,36 @@ pub async fn run_sftp(
         .map_err(|e| e.to_string())?;
 
     match action {
-        SftpAction::Ls { path } => {
+        SftpAction::Ls { path, json } => {
             let entries = sftp.list_dir(path).await.map_err(|e| e.to_string())?;
-            for e in entries {
-                let kind = if e.is_dir { "d" } else { "-" };
-                writeln!(out, "{kind} {:>10} {}", e.size, e.name).map_err(|e| e.to_string())?;
+            if *json {
+                // 字段与界面那份 DTO 一致（`RemoteEntryDto`）：脚本拿到的和看到的同一套
+                let rows: Vec<serde_json::Value> = entries
+                    .iter()
+                    .map(|e| {
+                        serde_json::json!({
+                            "name": e.name,
+                            "isDir": e.is_dir,
+                            "size": e.size,
+                            "isSymlink": e.is_symlink,
+                            "linkTarget": e.link_target,
+                            "broken": e.broken,
+                            "mode": e.mode,
+                            "mtime": e.mtime,
+                        })
+                    })
+                    .collect();
+                writeln!(
+                    out,
+                    "{}",
+                    serde_json::to_string_pretty(&rows).map_err(|e| e.to_string())?
+                )
+                .map_err(|e| e.to_string())?;
+            } else {
+                for e in entries {
+                    let kind = if e.is_dir { "d" } else { "-" };
+                    writeln!(out, "{kind} {:>10} {}", e.size, e.name).map_err(|e| e.to_string())?;
+                }
             }
         }
         SftpAction::Get { remote, local } => {
@@ -1204,9 +1242,10 @@ mod tests {
         match cmd {
             Command::Sftp {
                 target,
-                action: SftpAction::Ls { path },
+                action: SftpAction::Ls { path, json },
             } => {
                 assert_eq!(path, ".");
+                assert!(!json, "默认不该输出 JSON");
                 assert_eq!(target.port, 22);
                 assert_eq!(target.host, "h");
             }

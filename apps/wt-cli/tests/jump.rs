@@ -71,7 +71,10 @@ async fn sftp_also_goes_through_the_jump_host() {
     let mut out: Vec<u8> = Vec::new();
     run_sftp(
         &target_via(jump.port, target.port),
-        &SftpAction::Ls { path: "/".into() },
+        &SftpAction::Ls {
+            path: "/".into(),
+            json: false,
+        },
         &mut out,
     )
     .await
