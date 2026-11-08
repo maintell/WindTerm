@@ -15,6 +15,9 @@
 
 ### Added
 
+- `wt doctor --json`：环境自检输出一个对象（version/os/arch/shell/shellArgs/pty），CI 里可直接判。
+  顺带修掉一处静默失效：`wt doctor --nope` 以前**照样返回 0**（多写的参数被丢掉），
+  现在明确报「只支持 --json」。
 - `wt sftp ls --json`：输出机器可读的目录列表，字段与界面那份 DTO 同一套（camelCase、
   服务端没给的字段是 `null`，不编造）。`spec/01` 要求「每个 UI 能力都能脚本化」，
   这条把文件列表补齐——之前只有 `session list` 支持 `--json`。

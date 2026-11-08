@@ -27,7 +27,10 @@ pub const EXIT_TIMEOUT: i32 = 124;
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     Version,
-    Doctor,
+    /// `wt doctor [--json]`
+    Doctor {
+        json: bool,
+    },
     LocalExec {
         program: String,
         args: Vec<String>,
@@ -131,7 +134,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
 
     match first {
         "version" | "--version" | "-V" => Ok(Command::Version),
-        "doctor" => Ok(Command::Doctor),
+        "doctor" => parse_doctor(&args[1..]),
         "help" | "--help" | "-h" => Ok(Command::Help),
         "local" => parse_local(&args[1..]),
         "ssh" => parse_ssh(&args[1..]),
@@ -1170,15 +1173,49 @@ fn emit(
     Ok(())
 }
 
+/// `wt doctor [--json]` 的参数解析。
+///
+/// 以前这里直接 `Ok(Command::Doctor)`，多写的参数被**静默忽略**——`wt doctor --nope`
+/// 照样返回 0。用户以为带上了开关，实际什么也没发生，这正是本项目最反感的那类失效。
+fn parse_doctor(rest: &[String]) -> Result<Command, String> {
+    let mut json = false;
+    for a in rest {
+        match a.as_str() {
+            "--json" => json = true,
+            other => return Err(format!("doctor 不认识的参数 `{other}`（只支持 --json）")),
+        }
+    }
+    Ok(Command::Doctor { json })
+}
+
 /// 环境自检：把「能不能用」的关键前提逐条打出来。
-pub fn doctor(out: &mut dyn Write) -> Result<(), String> {
+///
+/// `json = true` 时输出一个对象（字段固定），给脚本与 CI 用；否则是人看的几行。
+pub fn doctor(out: &mut dyn Write, json: bool) -> Result<(), String> {
     let (shell, args) = wt_term::pty::default_shell();
+    let pty = if cfg!(windows) { "ConPTY" } else { "openpty" };
+    if json {
+        let payload = serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "os": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
+            "shell": shell,
+            "shellArgs": args,
+            "pty": pty,
+        });
+        writeln!(
+            out,
+            "{}",
+            serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?
+        )
+        .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
     writeln!(out, "wt {}", env!("CARGO_PKG_VERSION")).map_err(|e| e.to_string())?;
     writeln!(out, "os           : {}", std::env::consts::OS).map_err(|e| e.to_string())?;
     writeln!(out, "arch         : {}", std::env::consts::ARCH).map_err(|e| e.to_string())?;
     writeln!(out, "default shell: {shell} {}", args.join(" ")).map_err(|e| e.to_string())?;
-    writeln!(out, "pty support  : {}", if cfg!(windows) { "ConPTY" } else { "openpty" })
-        .map_err(|e| e.to_string())?;
+    writeln!(out, "pty support  : {pty}").map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -1324,7 +1361,16 @@ mod tests {
     fn parses_version_and_doctor() {
         assert_eq!(parse(&s(&["version"])).unwrap(), Command::Version);
         assert_eq!(parse(&s(&["--version"])).unwrap(), Command::Version);
-        assert_eq!(parse(&s(&["doctor"])).unwrap(), Command::Doctor);
+        assert_eq!(
+        parse(&s(&["doctor"])).unwrap(),
+        Command::Doctor { json: false }
+    );
+    // 多写的参数不能静默忽略：`wt doctor --nope` 以前照样返回 0，用户以为开关生效了
+    assert!(parse(&s(&["doctor", "--nope"])).is_err());
+    assert_eq!(
+        parse(&s(&["doctor", "--json"])).unwrap(),
+        Command::Doctor { json: true }
+    );
         assert_eq!(parse(&s(&["help"])).unwrap(), Command::Help);
         assert_eq!(parse(&[]).unwrap(), Command::Help);
     }
@@ -1466,10 +1512,24 @@ mod tests {
     #[test]
     fn doctor_reports_shell_and_pty() {
         let mut buf: Vec<u8> = Vec::new();
-        doctor(&mut buf).unwrap();
+        doctor(&mut buf, false).unwrap();
         let text = String::from_utf8_lossy(&buf);
         assert!(text.contains("default shell"));
         assert!(text.contains("pty support"));
+    }
+
+    #[test]
+    fn doctor_json_is_machine_readable() {
+        // `--json` 是给脚本与 CI 用的：输出必须是能解析的 JSON，字段固定。
+        let mut buf: Vec<u8> = Vec::new();
+        doctor(&mut buf, true).unwrap();
+        let text = String::from_utf8_lossy(&buf);
+        let v: serde_json::Value = serde_json::from_str(text.trim())
+            .unwrap_or_else(|e| panic!("输出不是合法 JSON：{e}；实际：{text}"));
+        for key in ["version", "os", "arch", "shell", "shellArgs", "pty"] {
+            assert!(v.get(key).is_some(), "缺字段 {key}：{text}");
+        }
+        assert!(v["shellArgs"].is_array(), "shellArgs 应该是数组：{text}");
     }
 }
 

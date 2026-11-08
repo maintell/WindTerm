@@ -40,7 +40,7 @@ fn main() -> ExitCode {
             println!("wt {}", env!("CARGO_PKG_VERSION"));
             ExitCode::from(EXIT_OK as u8)
         }
-        Command::Doctor => match wt_cli::doctor(&mut std::io::stdout()) {
+        Command::Doctor { json } => match wt_cli::doctor(&mut std::io::stdout(), json) {
             Ok(()) => ExitCode::from(EXIT_OK as u8),
             Err(e) => {
                 eprintln!("自检失败：{e}");

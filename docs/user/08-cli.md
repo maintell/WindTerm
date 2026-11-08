@@ -68,6 +68,15 @@ wt sftp ls --host H --user U --agent --path / --json
 ```bash
 wt version
 wt doctor
+wt doctor --json
 ```
 
 `doctor` 会检查终端能力、agent、路径等，报错时把输出发出来最有用。
+
+`--json` 输出一个对象（`version` / `os` / `arch` / `shell` / `shellArgs` / `pty`），CI 里可以直接判：
+
+```bash
+wt doctor --json | grep -q '"pty": "ConPTY"'
+```
+
+不认识的参数会**报错退出**（不会静默忽略）——`wt doctor --nope` 会明确说只支持 `--json`。
