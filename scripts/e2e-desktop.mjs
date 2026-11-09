@@ -9510,6 +9510,111 @@ try {
   await pressKey("Escape", 27, "Escape");
   await closeAllTabs();
 
+  // 20. 文件面板多选与批量删除（`FIL-001` 规格第 8 条）。
+  //     批量删除是**破坏性**操作，所以判据不能只是「删掉了几个」，必须是
+  //     「删的正好是选中的那几个、没选中的还在」——少验一半就可能把没选中的也删了。
+  await closeAllTabs();
+  // 上一段刚销毁过 xterm 实例，WebView2 主线程可能还没缓过来：不等它一下，
+  // 紧接着的 eval 会等满 CDP 超时（这条已经坑过好几次）
+  await waitPageResponsive("多选用例开始前");
+  const msSeed = Buffer.from("x").toString("base64");
+  // 自带按键助手：这段不依赖别处定义的局部 const（位置一变就踩 TDZ）
+  const msKey = async (key, vk, code) => {
+    const base = { key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk };
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", ...base });
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
+  };
+  for (const n of ["/ms-a.txt", "/ms-b.txt", "/ms-c.txt"]) {
+    // 种文件是幂等的，允许重试：刚关完标签时页面可能短暂不响应
+    await waitFor(
+      async () => {
+        const ok = await cdp
+          .eval(`window.__TAURI__.core.invoke("mock_seed_file", { path: ${JSON.stringify(n)}, content: ${JSON.stringify(msSeed)} }).then(() => true)`)
+          .catch(() => false);
+        return ok === true ? true : null;
+      },
+      { timeout: 20000, label: `种文件 ${n}` },
+    ).catch(() => null);
+  }
+  await clickSessionNode("mock-ssh");
+  await fillInput("#port", String(sshPort));
+  await fillInput("#password", "secret");
+  const msConn = await connectOnce("多选用例连接", 45000).catch((e) => `ERR:${e}`);
+  await ensureFilesPanel(true);
+  // 面板跟随「连接表单」而不是某条历史会话：那几条在 closeAllTabs 之后已经不可用了
+  await cdp.eval(`(() => {
+    const sel = document.getElementById("files-session");
+    sel.value = "";
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  })()`);
+  const msReady = await waitFor(
+    async () => {
+      const f = await cdp.eval(`window.__wt.files`);
+      const names = f.rows.map((r) => r.replace(/\/$/, ""));
+      return names.includes("ms-a.txt") && names.includes("ms-b.txt") ? names : null;
+    },
+    { timeout: 20000, label: "多选：文件就绪" },
+  ).catch(() => null);
+  // 前提单独一条：不成立时直接说出「连没连上、面板列了什么、报错是什么」，
+  // 否则后面三条会一起红，读起来像是多选功能坏了
+  const msState = await cdp.eval(`window.__wt.files`);
+  check(
+    "多选用例：会话与文件列表就绪（前提）",
+    msReady !== null,
+    `连接=${msConn}，路径=${msState.path}，条目=${msState.total}，错误=${msState.error || "无"}`,
+  );
+
+  await cdp.eval(`document.getElementById("files-list").focus()`);
+  await pressChord(2, "a", "KeyA", 65); // Ctrl+A
+  const msAll = await cdp.eval(`window.__wt.files`);
+  check(
+    "Ctrl+A 全选文件列表（FIL-001）",
+    msReady !== null && msAll.selectedCount === msAll.total && msAll.selectedCount >= 3,
+    `选中 ${msAll.selectedCount}/${msAll.total}`,
+  );
+
+  // Ctrl+点击把 ms-a 移出选区。直接派发带 ctrlKey 的 click：要验的是**选区逻辑**
+  // （Ctrl 点击是切换而不是替换），不是 CDP 合成鼠标的修饰键传递。
+  const msToggle = await cdp.eval(`(() => {
+    const r = [...document.querySelectorAll("#files-list .vrow")].find((x) => x.dataset.name === "ms-a.txt");
+    if (!r) return "没有 ms-a 这一行";
+    r.dispatchEvent(new MouseEvent("click", { bubbles: true, ctrlKey: true }));
+    return "ok";
+  })()`);
+  const msToggled = await cdp.eval(`window.__wt.files`);
+  check(
+    "Ctrl+点击把一项移出选区",
+    msToggle === "ok" &&
+      msToggled.selectedCount === msAll.selectedCount - 1 &&
+      !msToggled.selectedNames.includes("ms-a.txt"),
+    `${msToggle}；选中 ${msToggled.selectedCount}，含 ms-a：${msToggled.selectedNames.includes("ms-a.txt")}`,
+  );
+
+  // 删掉整个选区（除 ms-a 之外的全部），确认后只该少掉选中的那些
+  await msKey("Delete", 46, "Delete");
+  const msAsked = await waitFor(
+    async () => ((await cdp.eval(`document.getElementById("ask-dialog").open`)) ? true : null),
+    { timeout: 5000, label: "批量删除确认" },
+  ).catch(() => null);
+  await cdp.eval(`document.getElementById("ask-ok").click()`);
+  const msAfter = await waitFor(
+    async () => {
+      const f = await cdp.eval(`window.__wt.files`);
+      const names = f.rows.map((r) => r.replace(/\/$/, ""));
+      return names.includes("ms-a.txt") && !names.includes("ms-b.txt") ? f : null;
+    },
+    { timeout: 20000, label: "批量删除完成" },
+  ).catch(() => null);
+  check(
+    "批量删除删的正好是选区，没选中的还在（FIL-001）",
+    msAsked === true && msAfter !== null && msAfter.selectedCount === 0,
+    msAfter
+      ? `剩余选中 ${msAfter.selectedCount}，列表 ${JSON.stringify(msAfter.rows.slice(0, 5))}`
+      : "删除后没等到列表更新",
+  );
+  await closeAllTabs();
+
   // 18. 页面无未捕获异常
   check("页面无未捕获异常", cdp.exceptions.length === 0, cdp.exceptions.join(" | ") || "0 条");
 

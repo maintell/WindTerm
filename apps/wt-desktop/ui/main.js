@@ -3600,6 +3600,10 @@ const renameInput = document.getElementById("name-input");
 
 /** 文件面板里当前选中的项（单击选中，双击才进入/下载——与文件管理器一致） */
 let selectedEntry = null;
+/** 多选：选中的条目名（同一目录里名字唯一；列表会重建，所以存名字不存对象） */
+const selectedNames = new Set();
+/** Shift 连选的锚点（上一次单击的那一项） */
+let selectAnchor = null;
 /** 删除的二次确认（3 秒窗口，与会话删除同一个模式） */
 let removeArmed = false;
 
@@ -4093,8 +4097,10 @@ function entryLabel(e) {
 
 function buildFileRow(e, index) {
   const row = document.createElement("div");
-  const selected = selectedEntry && selectedEntry.name === e.name;
+  const selected = selectedNames.has(e.name);
   row.className = selected ? "row name vrow selected" : "row name vrow";
+  // 行上记名字：`paintFileSelection` 与 Shift 连选都靠它，不去解析显示文本
+  row.dataset.name = e.name;
   row.style.top = `${index * FILES_ROW_H}px`;
   const label = document.createElement("span");
   // 注意字段名：`RemoteEntryDto` 没有 camelCase 重命名，序列化出来就是 snake_case
@@ -4136,7 +4142,7 @@ function buildFileRow(e, index) {
     row.appendChild(mt);
   }
   // 单击只选中，双击才动作：与文件管理器一致，也让「改名/删除」有明确的操作对象
-  row.addEventListener("click", () => selectEntry(e, row));
+  row.addEventListener("click", (ev) => selectEntry(e, row, ev));
   row.addEventListener("dblclick", () => {
     if (e.is_dir) void loadDir(joinPath(sftpPath, e.name));
     else void downloadFile(joinPath(sftpPath, e.name));
@@ -4240,6 +4246,18 @@ function moveSelection(delta) {
 // 加多选要连删/移动/拖拽一起改，先别用半套假的多选糊过去。这里遇到带修饰键的
 // 一律放行，交给别处的快捷键处理。
 filesList.addEventListener("keydown", (ev) => {
+  // Ctrl+A 全选（`FIL-001` 规格第 8 条）：只在可见条目里选，隐藏文件不该被"顺手删掉"
+  if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "a") {
+    ev.preventDefault();
+    selectedNames.clear();
+    for (const e of visibleFiles()) selectedNames.add(e.name);
+    selectedEntry = firstSelected();
+    selectAnchor = selectedEntry?.name ?? null;
+    paintFileSelection();
+    refreshFileActions();
+    setFilesMsg(`已全选 ${selectedNames.size} 项`);
+    return;
+  }
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
   switch (ev.key) {
     case "ArrowDown":
@@ -4251,7 +4269,8 @@ filesList.addEventListener("keydown", (ev) => {
       moveSelection(-1);
       break;
     case "Enter":
-      if (!selectedEntry) return;
+      // 多选时「打开」没有明确对象：让用户先收成一个再回车
+      if (selectedNames.size !== 1 || !selectedEntry) return;
       ev.preventDefault();
       // 文件走「编辑」按钮那条流程：先把远端文件下载成临时副本再交给编辑器。
       // 直接把远端路径传给 openEditor 是错的——它读的是**本地**文件。
@@ -4268,9 +4287,9 @@ filesList.addEventListener("keydown", (ev) => {
       void renameEntry();
       break;
     case "Delete":
-      if (!selectedEntry) return;
+      if (!selectedNames.size) return;
       ev.preventDefault();
-      void removeEntryConfirmed(selectedEntry);
+      void removeSelected();
       break;
     default:
       break;
@@ -4334,33 +4353,6 @@ filesChmod.addEventListener("click", () => void chmodEntry());
 let ctxEntry = null;
 
 /** 删除（右键菜单版）：菜单里没法「再点一次确认」，所以直接弹确认框 */
-async function removeEntryConfirmed(target) {
-  const ok = await askConfirm(
-    `删除 ${target.name}？`,
-    target.is_dir ? "目录非空时服务端会拒绝；不做递归删除。" : "删除后不可恢复。",
-    "删除",
-  );
-  if (!ok) return;
-  setFilesMsg("删除中…");
-  try {
-    await withDeadline(
-      invoke("sftp_remove", {
-        req: filesReq(),
-        path: joinPath(sftpPath, target.name),
-        isDir: target.is_dir,
-        jump: jumpReq(),
-      }),
-      20000,
-      "删除",
-    );
-    setFilesMsg(`已删除 ${target.name}`);
-    clearSelection();
-    await loadDir(sftpPath);
-  } catch (e) {
-    setFilesMsg(`删除失败：${e}`);
-  }
-}
-
 /**
  * 新建空文件（`FIL-001` 规格第 9 条）：走「上传零字节」这条路，不新增后端命令。
  * 没有内容就不发分块，`end` 一落盘文件名就出现了。
@@ -4446,7 +4438,7 @@ function fileMenuItems() {
   items.push({ label: t("ctx.newFile"), run: () => createEmptyFile() });
   if (e) {
     items.push({ label: t("ctx.rename"), run: () => renameEntry(e) });
-    items.push({ label: t("ctx.remove"), run: () => removeEntryConfirmed(e) });
+    items.push({ label: t("ctx.remove"), run: () => void removeSelected() });
     items.push({ label: t("ctx.perms"), run: () => chmodEntry(e) });
     items.push({ label: t("ctx.copyPath"), run: () => copyEntryPath(e) });
     if (e.is_dir) {
@@ -4463,37 +4455,86 @@ filesList.addEventListener("contextmenu", (ev) => {
   if (row) {
     const label = row.querySelector("span")?.textContent ?? "";
     entry = filesEntries.find((x) => entryLabel(x) === label) ?? null;
-    // 右键同时选中：菜单里的动作都作用在这个对象上，界面得看得出来是哪一个
-    if (entry) selectEntry(entry, row);
+    // 右键同时选中：菜单里的动作都作用在这个对象上，界面得看得出来是哪一个。
+    // 但**已经在选区里就别动选区**——批量操作前用户刚选好一堆，右键一下全清掉就白选了。
+    if (entry && !selectedNames.has(entry.name)) selectEntry(entry, row);
   }
   ctxEntry = entry;
   showCtxMenu(ev.clientX, ev.clientY, fileMenuItems(), "files");
 });
 
-function selectEntry(entry, row) {
-  selectedEntry = entry;
+/**
+ * 单击 / Ctrl 点击 / Shift 连选（`FIL-001` 规格第 8 条的 `Ctrl+A` 与批量删除靠它）。
+ *
+ * 选中态存**名字**不存对象：列表每次重排都会重建行，对象引用会飘；同一目录里名字唯一。
+ * `selectedEntry` 仍是「主选中项」——改名/权限/编辑这些单对象操作按它走。
+ */
+function selectEntry(entry, row, ev) {
+  const ctrl = Boolean(ev?.ctrlKey || ev?.metaKey);
+  const shift = Boolean(ev?.shiftKey);
+  if (shift && selectAnchor) {
+    const list = visibleFiles();
+    const a = list.findIndex((e) => e.name === selectAnchor);
+    const b = list.findIndex((e) => e.name === entry.name);
+    if (a >= 0 && b >= 0) {
+      selectedNames.clear();
+      for (let i = Math.min(a, b); i <= Math.max(a, b); i += 1) selectedNames.add(list[i].name);
+    }
+  } else if (ctrl) {
+    if (selectedNames.has(entry.name)) selectedNames.delete(entry.name);
+    else selectedNames.add(entry.name);
+    selectAnchor = entry.name;
+  } else {
+    selectedNames.clear();
+    selectedNames.add(entry.name);
+    selectAnchor = entry.name;
+  }
+  // 主选中项：刚点的这个还在选区里就是它，否则退回选区的第一个（Ctrl 点掉自己时）
+  selectedEntry = selectedNames.has(entry.name) ? entry : (firstSelected() ?? null);
   // 键盘导航要求列表本身能拿焦点（`FIL-001` 规格第 8 条）：行是 div，点它不会移焦点。
   // `preventScroll` 不能省：聚焦一个可滚动容器会把它滚一下，双击的第二次点击就落到
   // 别的位置上，`dblclick` 不再触发——表现为「双击没反应」，查半天以为事件没绑。
   if (document.activeElement !== filesList) filesList.focus({ preventScroll: true });
-  for (const r of filesList.children) r.classList.remove?.("selected");
-  row.classList.add("selected");
-  filesRename.disabled = false;
-  filesRemove.disabled = false;
-  filesChmod.disabled = false;
-  // 目录不能「编辑」（先凑成 FIL-005 的语义：只对文件）
-  filesEdit.disabled = Boolean(entry.is_dir);
+  paintFileSelection();
+  refreshFileActions();
+}
+
+/** 按名字把选中态画到行上（不重建列表：重建会把双击/滚动位置一起打乱） */
+function paintFileSelection() {
+  for (const r of filesList.children) {
+    const name = r.dataset.name;
+    r.classList.toggle("selected", name !== undefined && selectedNames.has(name));
+  }
+}
+
+/** 选区里的条目（按列表顺序，不是点击顺序） */
+function selectedEntries() {
+  return visibleFiles().filter((e) => selectedNames.has(e.name));
+}
+
+function firstSelected() {
+  return selectedEntries()[0] ?? null;
+}
+
+/** 按选区大小决定哪些按钮可用。批量操作只做「删除」：改名/权限/编辑天然是单对象的 */
+function refreshFileActions() {
+  const n = selectedNames.size;
+  filesRemove.disabled = n === 0;
+  filesRename.disabled = n !== 1;
+  filesChmod.disabled = n !== 1;
+  // 目录不能「编辑」（`FIL-005` 的语义：只对文件）
+  filesEdit.disabled = n !== 1 || Boolean(selectedEntry?.is_dir);
+  filesRemove.textContent = n > 1 ? `删除 ${n} 项` : "删除";
 }
 
 /** 清掉选中态（换目录后旧选中项已经不属于当前列表）。 */
 function clearSelection() {
   selectedEntry = null;
-  filesRename.disabled = true;
-  filesRemove.disabled = true;
-  filesChmod.disabled = true;
-  filesEdit.disabled = true;
+  selectedNames.clear();
+  selectAnchor = null;
   removeArmed = false;
-  filesRemove.textContent = "删除";
+  paintFileSelection();
+  refreshFileActions();
 }
 
 /**
@@ -4568,39 +4609,78 @@ async function renameEntry(target = selectedEntry) {
 
 /** 删除要二次确认：第一次点变「确认删除」，3 秒内再点才真的删。 */
 async function onRemoveClick() {
-  if (!selectedEntry) return;
+  if (!selectedNames.size) return;
   if (!removeArmed) {
     removeArmed = true;
-    filesRemove.textContent = "确认删除";
+    filesRemove.textContent =
+      selectedNames.size > 1 ? `确认删除 ${selectedNames.size} 项` : "确认删除";
     setTimeout(() => {
       if (removeArmed) {
         removeArmed = false;
-        filesRemove.textContent = "删除";
+        refreshFileActions();
       }
     }, 3000);
     return;
   }
   removeArmed = false;
-  filesRemove.textContent = "删除";
-  const target = selectedEntry;
-  setFilesMsg("删除中…");
-  try {
-    await withDeadline(
-      invoke("sftp_remove", {
-        req: filesReq(),
-        path: joinPath(sftpPath, target.name),
-        isDir: target.is_dir,
-        jump: jumpReq(),
-      }),
-      20000,
-      "删除",
-    );
-    setFilesMsg(`已删除 ${target.name}`);
-    clearSelection();
-    await loadDir(sftpPath);
-  } catch (e) {
-    setFilesMsg(`删除失败：${e}`);
+  refreshFileActions();
+  // 按钮已经「点两次」了，不再弹对话框
+  void removeSelected(false);
+}
+
+/**
+ * 删除整个选区（`FIL-001` 规格第 8 条的批量删除）。
+ *
+ * 一次确认、逐条删、把失败**逐条列出来**：一条失败不该中断其余，
+ * 也不该让用户以为「都删掉了」。
+ */
+async function removeSelected(confirmFirst = true) {
+  const targets = selectedEntries();
+  if (!targets.length) return;
+  const one = targets.length === 1 ? targets[0] : null;
+  const dirs = targets.filter((t) => t.is_dir).length;
+  // 按钮那条路已经「二次确认」过了（点一下变「确认删除 N 项」，再点才删），
+  // 再弹一个对话框就是**两次确认**——用户会以为第一次没生效。键盘/右键没有那一步，才要问。
+  const ok = !confirmFirst || (await askConfirm(
+    one ? `删除 ${one.name}？` : `删除 ${targets.length} 项？`,
+    one
+      ? one.is_dir
+        ? "目录非空时服务端会拒绝；不做递归删除。"
+        : "删除后不可恢复。"
+      : `其中 ${dirs} 个目录（非空时服务端会拒绝，不做递归删除）。删除后不可恢复。`,
+    "删除",
+  ));
+  if (!ok) return;
+  setFilesMsg(targets.length > 1 ? `删除中…（0/${targets.length}）` : "删除中…");
+  const failed = [];
+  let done = 0;
+  for (const target of targets) {
+    try {
+      await withDeadline(
+        invoke("sftp_remove", {
+          req: filesReq(),
+          path: joinPath(sftpPath, target.name),
+          isDir: target.is_dir,
+          jump: jumpReq(),
+        }),
+        20000,
+        "删除",
+      );
+      done += 1;
+    } catch (e) {
+      failed.push(`${target.name}：${e}`);
+    }
+    if (targets.length > 1) {
+      setFilesMsg(`删除中…（${done + failed.length}/${targets.length}）`);
+    }
   }
+  if (failed.length) {
+    setFilesMsg(`已删除 ${done} 项，${failed.length} 项失败：${failed.join("；")}`);
+  } else {
+    setFilesMsg(targets.length > 1 ? `已删除 ${done} 项` : `已删除 ${targets[0].name}`);
+  }
+  clearSelection();
+  await loadDir(sftpPath);
 }
 
 filesMkdir.addEventListener("click", () => void makeDir());
@@ -7706,7 +7786,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-134",
+  ui: "wt-ui-135",
   /** 验收用：主窗口当前是否全屏（`TER-020`） */
   get fullscreen() {
     return isFullscreen;
@@ -7917,8 +7997,11 @@ window.__wt = {
       savePrefsCount,
       /** 列目录失败的原因（空串表示这次是成功的） */
       error: filesLoadError,
-      /** 当前选中项的名字（验收与脚本用） */
+      /** 主选中项的名字（改名/权限/编辑按它走） */
       selected: selectedEntry?.name ?? null,
+      /** 选区（多选）：名字列表 + 条数。验收靠它断言「批量删的就是这几个」 */
+      selectedNames: [...selectedNames],
+      selectedCount: selectedNames.size,
       /** 最近一次上传的进度快照：`{name,total,last,events}` */
       upload: lastUpload,
       /** 原始修改时间映射（name → Unix 秒），验收读它，不去解析 DOM 的格式化文本 */
