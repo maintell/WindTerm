@@ -72,6 +72,8 @@ struct AppState {
     /// 每次开终端都探一次太贵（PowerShell 冷启动几百毫秒），而版本在一次运行里不会变。
     /// `None` 表示「探过但拿不到」，也要缓存——否则每次开终端都白跑一次子进程。
     shell_versions: std::sync::Mutex<HashMap<String, Option<String>>>,
+    /// 本机字体族缓存（`TER-005`）：扫一遍系统字体要几百毫秒，一次运行内不变
+    font_cache: std::sync::Mutex<Option<ListFontsDto>>,
     /// 最近一次建连用的跳板链，**离本机由近到远**（`host:port`）。
     ///
     /// 只放地址、不放凭据：这条是给人核对「到底走的哪几台」用的——链的顺序排反时
@@ -330,6 +332,92 @@ struct ShellChoiceDto {
     available: bool,
     /// 没找到时给用户的话（去哪儿装、怎么开）
     hint: String,
+}
+
+
+/// 本机一个字体族（`TER-005`）。
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct FontFamilyDto {
+    /// 字体族名（不是文件名：`consola.ttf` 的族名是 `Consolas`）
+    name: String,
+    /// 这个族里**至少有一种**是等宽的。用来把等宽族排前面——
+    /// 终端用等宽才不错位，但用户也可能想选个非等宽看看效果，所以只排序不隐藏。
+    monospace: bool,
+}
+
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ListFontsDto {
+    families: Vec<FontFamilyDto>,
+    /// 枚举到的族数（去重后）
+    total: usize,
+    /// 其中等宽的族数
+    monospace_count: usize,
+    /// 超过上限被截断了吗（枚举本身走完了全部字体，只是返回时截断）
+    truncated: bool,
+}
+
+/// 返回的族数上限。Windows 上一般 200~400 个族，500 足够；
+/// 真超了也只是下拉里少几个，并且 `truncated` 会如实说。
+const FONT_LIST_MAX: usize = 500;
+
+/// 枚举本机字体族（`TER-005`：从本机字体列表里挑，而不是只给预设）。
+///
+/// 只做两件事：去重、标出等宽。**不做**「这个族好不好看」之类的判断——
+/// 那是用户的品味，程序只负责把事实摆出来。
+///
+/// 结果缓存：扫一遍系统字体要读几百个字体文件的 `name` 表，几百毫秒起；
+/// 而字体装了/卸了在一次运行里不会变。装完字体想刷新就重启，比每次开设置都卡一下好。
+#[tauri::command]
+fn list_fonts(state: State<'_, AppState>) -> ListFontsDto {
+    if let Ok(guard) = state.font_cache.lock() {
+        if let Some(cached) = guard.as_ref() {
+            return cached.clone();
+        }
+    }
+    let mut db = fontdb::Database::new();
+    // `load_system_fonts` 内部按平台走系统字体目录（Windows 读注册表 + 字体目录），
+    // 比自己拼路径可靠——我们不需要知道字体装在哪。
+    db.load_system_fonts();
+    // 族名 → 是否等宽。用 `BTreeMap` 让结果天然按名字有序，输出稳定、便于断言。
+    let mut map: std::collections::BTreeMap<String, bool> = std::collections::BTreeMap::new();
+    for face in db.faces() {
+        for (family, _lang) in &face.families {
+            let name = family.trim();
+            if name.is_empty() {
+                continue;
+            }
+            let slot = map.entry(name.to_string()).or_insert(false);
+            *slot = *slot || face.monospaced;
+        }
+    }
+    let mono_count = map.values().filter(|m| **m).count();
+    let total = map.len();
+    // 等宽优先，其次按名字：终端场景下等宽的是绝大多数人的选择，
+    // 但非等宽的不隐藏（用户点开就能看到，界面另有「不是等宽」的警告）。
+    let mut families: Vec<FontFamilyDto> = map
+        .into_iter()
+        .map(|(name, monospace)| FontFamilyDto { name, monospace })
+        .collect();
+    families.sort_by(|a, b| {
+        b.monospace
+            .cmp(&a.monospace)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    let truncated = families.len() > FONT_LIST_MAX;
+    families.truncate(FONT_LIST_MAX);
+    let dto = ListFontsDto {
+        families,
+        total,
+        monospace_count: mono_count,
+        truncated,
+    };
+    trace(&format!("[fonts] {} 个族（等宽 {}）", dto.total, dto.monospace_count));
+    if let Ok(mut guard) = state.font_cache.lock() {
+        *guard = Some(dto.clone());
+    }
+    dto
 }
 
 #[tauri::command]
@@ -4256,6 +4344,7 @@ fn main() {
         jump_reuses: std::sync::atomic::AtomicU64::new(0),
         jump_last_chain: std::sync::Mutex::new(Vec::new()),
         shell_versions: std::sync::Mutex::new(HashMap::new()),
+        font_cache: std::sync::Mutex::new(None),
         })
         .setup(|app| {
             create_main_window(app)?;
@@ -4265,6 +4354,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             local_open,
             local_shells,
+        list_fonts,
             term_read,
             term_ack,
             term_write,
@@ -4524,6 +4614,101 @@ mod editor_limits_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
+
+/// 本机字体枚举（`TER-005`）的整形规则。
+///
+/// 这里不 mock 字体库：枚举的是**这台机器真实装了什么**，
+/// 所以断言只能落在「形状」上——非空、无重复、等宽排前面、等宽计数自洽。
+/// 钉具体族名会在别的机器（CI、没装 Consolas 的 Mac）上直接红。
+#[cfg(test)]
+mod font_list_tests {
+    use super::*;
+
+    fn enumerate() -> ListFontsDto {
+        let mut db = fontdb::Database::new();
+        db.load_system_fonts();
+        let mut map: std::collections::BTreeMap<String, bool> = std::collections::BTreeMap::new();
+        for face in db.faces() {
+            for (family, _lang) in &face.families {
+                let name = family.trim();
+                if name.is_empty() {
+                    continue;
+                }
+                let slot = map.entry(name.to_string()).or_insert(false);
+                *slot = *slot || face.monospaced;
+            }
+        }
+        let mono_count = map.values().filter(|m| **m).count();
+        let total = map.len();
+        let mut families: Vec<FontFamilyDto> = map
+            .into_iter()
+            .map(|(name, monospace)| FontFamilyDto { name, monospace })
+            .collect();
+        families.sort_by(|a, b| {
+            b.monospace
+                .cmp(&a.monospace)
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+        let truncated = families.len() > FONT_LIST_MAX;
+        families.truncate(FONT_LIST_MAX);
+        ListFontsDto {
+            families,
+            total,
+            monospace_count: mono_count,
+            truncated,
+        }
+    }
+
+    #[test]
+    fn enumerates_some_fonts_without_duplicates() {
+        let got = enumerate();
+        // 带上数字：失败时能立刻看出「一个都没有」还是「少得可疑」
+        eprintln!(
+            "枚举到 {} 个族（等宽 {}），返回 {} 条，truncated={}",
+            got.total,
+            got.monospace_count,
+            got.families.len(),
+            got.truncated
+        );
+        assert!(got.total > 0, "这台机器一个字体族都没枚举到，多半是字体目录/注册表读不到");
+        let mut names: Vec<&str> = got.families.iter().map(|f| f.name.as_str()).collect();
+        let before = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(before, names.len(), "族名有重复：同一族被枚举了两次");
+    }
+
+    #[test]
+    fn monospace_families_come_first() {
+        let got = enumerate();
+        // 找到第一个非等宽的位置，它之后不该再出现等宽（排序不变量）
+        let first_plain = got.families.iter().position(|f| !f.monospace);
+        if let Some(i) = first_plain {
+            assert!(
+                got.families[i..].iter().all(|f| !f.monospace),
+                "等宽的族没有全部排在前面（第 {i} 个之后又出现了等宽族）"
+            );
+        }
+        assert_eq!(
+            got.monospace_count,
+            got.families.iter().filter(|f| f.monospace).count().min(got.monospace_count),
+            "等宽计数与列表对不上"
+        );
+    }
+
+    #[test]
+    fn truncation_is_reported_truthfully() {
+        let got = enumerate();
+        if got.total > FONT_LIST_MAX {
+            assert!(got.truncated, "族数超过上限时 truncated 必须为 true");
+            assert_eq!(got.families.len(), FONT_LIST_MAX, "截断后条数应正好等于上限");
+        } else {
+            assert!(!got.truncated, "没超上限却报 truncated，会让界面写出「只显示前 N 项」");
+            assert_eq!(got.families.len(), got.total, "没截断条数应等于 total");
+        }
+    }
+}
+
 /// 跳板链缓存键（`SES-024` AC-3 的多跳版）。
 ///
 /// 单跳的键必须与合并之前逐字节一致——把单跳/多跳两条路径并成一条时，最容易在这里

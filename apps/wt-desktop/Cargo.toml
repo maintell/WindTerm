@@ -31,6 +31,12 @@ encoding_rs = "0.8"
 # 数本地 shell 的子孙进程，判断「有没有前台命令在跑」（`TER-018` 关标签确认）。
 # 选它而不是自己写 Win32/procfs：三平台一套代码，且我们的 crate 都是 forbid(unsafe_code)。
 sysinfo = "0.32"
+# 列本机装了哪些字体族（`TER-005`：从本机字体列表里挑，而不是只给预设）。
+# 族名在字体文件的 `name` 表里、文件名不等于族名（`consola.ttf` → `Consolas`），
+# `.ttc` 一个文件里还装好几族——自己解析等于把字体格式的坑重踩一遍。纯 Rust、无 unsafe。
+# 不开 `fontconfig`（Linux 系统依赖）、不开 `memmap`：读一遍字体目录够快，
+# 少一个外部依赖比省那几十毫秒值。
+fontdb = { version = "0.24", default-features = false, features = ["std", "fs"] }
 
 [features]
 # 端到端验收用：在应用内起一个进程内 SSH 服务端，让界面真的去连一台「服务器」。

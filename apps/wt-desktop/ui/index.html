@@ -1461,6 +1461,9 @@
         <div class="set-row" data-kw="字体 font family 等宽">
           <span class="set-name" data-i18n="set.font">字体</span>
           <span class="set-scope">全局</span>
+          <!-- 字体：预设 + 本机字体（`TER-005`）。本机族有上百个，所以给一个过滤框，
+               并把等宽的排在最前——终端用等宽才不错位，但非等宽的不隐藏（选了会警告）。 -->
+          <input id="look-font-filter" placeholder="过滤本机字体" spellcheck="false" />
           <select id="look-font">
             <option value='"JetBrains Mono", Consolas, "Cascadia Mono", monospace'>JetBrains Mono</option>
             <option value='"Cascadia Mono", Consolas, monospace'>Cascadia Mono</option>
@@ -1468,6 +1471,7 @@
             <option value='"Courier New", Courier, monospace'>Courier New</option>
             <option value="monospace">系统等宽</option>
           </select>
+          <span id="look-font-note" class="set-warn" hidden></span>
           <span id="look-font-warn" class="set-warn" hidden></span>
           <span id="look-mono-warn" class="set-warn" hidden></span>
         </div>

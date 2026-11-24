@@ -91,6 +91,18 @@ if ($WithE2e) {
     # 本机连跑久了会在**任意位置**挂掉（建连超时 / CDP 超时 / 回到根目录失败，位置每轮不同），
     # 末尾这几条于是永远轮不到执行——用「跑不到」冒充「已验过」是最糟的一种绿。
     # 这个探针自带干净数据目录、只做这一件事，一分钟出结果。
+    # 本机字体列表（TER-005）也单独跑：要验「本机字体真的进了下拉且选中即生效」，
+    # 同样需要一次干净的启动（理由见 e2e-multiselect.mjs 顶部）。
+    Run-Step '本机字体列表（独立探针）' {
+        $fontOut = & node (Join-Path $PSScriptRoot 'e2e-fonts.mjs') 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            $tail = ($fontOut | Select-Object -Last 6) -join $nl
+            throw ("字体探针未通过" + $nl + $tail)
+        }
+        $fontLine = $fontOut | Where-Object { $_ -match '\d+/\d+ 项通过' } | Select-Object -Last 1
+        "$fontLine"
+    }
+
     Run-Step '文件面板多选（独立探针）' {
         $msOut = & node (Join-Path $PSScriptRoot 'e2e-multiselect.mjs') 2>&1
         if ($LASTEXITCODE -ne 0) {

@@ -5471,6 +5471,7 @@ const bcExtraRulesBox = document.getElementById("bc-extra-rules");
 const lookWordSepInput = document.getElementById("look-word-sep");
 const lookPasteTrimBox = document.getElementById("look-paste-trim");
 const lookFontSelect = document.getElementById("look-font");
+const lookFontFilter = document.getElementById("look-font-filter");
 const lookFontWarn = document.getElementById("look-font-warn");
 const lookMonoWarn = document.getElementById("look-mono-warn");
 const lookSizeInput = document.getElementById("look-size");
@@ -6160,6 +6161,89 @@ function refreshFontWarn() {
   }
 }
 
+
+// ── 本机字体列表（`TER-005`）──────────────────────────────
+//
+// 预设那 5 项覆盖不了「我就想用 Fira Code / 更纱黑体」。这里把本机字体族拉进来，
+// 等宽的排前面；非等宽的不隐藏（用户可能就想看看效果，选完界面会警告）。
+// 一次运行里只取一次：扫描系统字体要读几百个文件的 `name` 表，几百毫秒起。
+let localFonts = null;
+
+/** 拉本机字体族（失败就退回只剩预设，并如实说一句） */
+async function loadLocalFonts() {
+  if (localFonts) return localFonts;
+  try {
+    localFonts = await invoke("list_fonts");
+  } catch (e) {
+    localFonts = null;
+    const note = document.getElementById("look-font-note");
+    note.hidden = false;
+    note.textContent = `读不到本机字体列表（${e}），只能选预设`;
+  }
+  return localFonts;
+}
+
+/**
+ * 把「预设 + 本机字体」写进下拉，按过滤词收窄。
+ *
+ * 用 `<optgroup>` 分三组而不是混在一起：用户在「本机等宽」里挑，
+ * 完全不必滚过一百多个非等宽的族。
+ */
+function renderFontOptions(filter = "") {
+  const keep = look.fontFamily;
+  const needle = filter.trim().toLowerCase();
+  // 预设的值是字体**栈**（带引号和逗号），本机的值是裸族名——两种都要能显示在选择里
+  const presets = [
+    { value: '"JetBrains Mono", Consolas, "Cascadia Mono", monospace', label: "JetBrains Mono" },
+    { value: '"Cascadia Mono", Consolas, monospace', label: "Cascadia Mono" },
+    { value: 'Consolas, "Courier New", monospace', label: "Consolas" },
+    { value: '"Courier New", Courier, monospace', label: "Courier New" },
+    { value: "monospace", label: "系统等宽" },
+  ];
+  lookFontSelect.textContent = "";
+  const addGroup = (label, items) => {
+    const shown = needle ? items.filter((i) => i.label.toLowerCase().includes(needle)) : items;
+    if (!shown.length) return;
+    const g = document.createElement("optgroup");
+    g.label = label;
+    for (const it of shown) {
+      const o = document.createElement("option");
+      o.value = it.value;
+      o.textContent = it.label;
+      o.dataset.mono = it.mono === false ? "0" : "1";
+      g.appendChild(o);
+    }
+    lookFontSelect.appendChild(g);
+  };
+  addGroup("预设", presets);
+  if (localFonts) {
+    addGroup(
+      `本机等宽（${localFonts.monospaceCount}）`,
+      localFonts.families.filter((f) => f.monospace).map((f) => ({ value: f.name, label: f.name })),
+    );
+    addGroup(
+      `本机其他（${localFonts.total - localFonts.monospaceCount}）`,
+      localFonts.families
+        .filter((f) => !f.monospace)
+        .map((f) => ({ value: f.name, label: f.name, mono: false })),
+    );
+  }
+  // 当前值不在列表里（存的是栈、或过滤后不可见）：补一条并选中，否则 select.value 静默落空
+  if (![...lookFontSelect.options].some((o) => o.value === keep)) {
+    const o = document.createElement("option");
+    o.value = keep;
+    o.textContent = String(keep).split(",")[0].replaceAll('"', "");
+    lookFontSelect.appendChild(o);
+  }
+  lookFontSelect.value = keep;
+  const note = document.getElementById("look-font-note");
+  if (localFonts?.truncated) {
+    note.hidden = false;
+    note.textContent = `本机字体超过 ${localFonts.families.length} 个族，只列出一部分`;
+  } else if (!needle) {
+    note.hidden = true;
+  }
+}
 function initLookControls() {
   // 先清空：导入配色后这里会再被调用一次，不清就会攒出重复项
   lookThemeSelect.textContent = "";
@@ -6170,15 +6254,10 @@ function initLookControls() {
     lookThemeSelect.appendChild(o);
   }
   lookThemeSelect.value = look.theme;
-  // 存下来的字体可能不在预设里（换过机器/手改过 localStorage）：补一条再选中，
-  // 否则 select.value 静默落空，用户会看到「字体没生效」
-  if (![...lookFontSelect.options].some((o) => o.value === look.fontFamily)) {
-    const o = document.createElement("option");
-    o.value = look.fontFamily;
-    o.textContent = look.fontFamily.split(",")[0].replaceAll('"', "");
-    lookFontSelect.appendChild(o);
-  }
-  lookFontSelect.value = look.fontFamily;
+  // 字体列表由 `renderFontOptions` 统一负责：它会补上「存下来的字体不在列表里」那条，
+  // 也会按当前过滤词重建分组。这里不清空它——本机字体是异步拉来的，
+  // 清空会让下拉在下一次打开设置前变成空的。
+  renderFontOptions(lookFontFilter.value);
   lookSizeInput.value = String(look.fontSize);
   lookHeightInput.value = String(look.lineHeight);
   lookScrollbackInput.value = String(look.scrollback);
@@ -6226,8 +6305,21 @@ lookThemeSelect.addEventListener("change", () => {
 
 lookFontSelect.addEventListener("change", () => {
   look.fontFamily = lookFontSelect.value;
+  // 选到非等宽的本机字体时，界面上要立刻看得见代价（`TER-005` 的等宽警告另有测量，
+  // 这里只按字体库自己报的 monospaced 做一个即时提示，两者互为补充）
+  const opt = lookFontSelect.selectedOptions[0];
+  const note = document.getElementById("look-font-note");
+  if (opt?.dataset.mono === "0") {
+    note.hidden = false;
+    note.textContent = `「${opt.textContent}」不是等宽字体，表格与 TUI 会错位`;
+  } else if (!localFonts?.truncated) {
+    note.hidden = true;
+  }
   applyLook();
 });
+
+// 过滤本机字体：上百个族逐个滚不现实，打几个字就收窄
+lookFontFilter.addEventListener("input", () => renderFontOptions(lookFontFilter.value));
 
 // 右键行为（`TER-011`）：规格默认弹菜单，可配成直接粘贴——那时用 `Ctrl+右键`
 // 或 `Shift+右键` 唤出菜单。
@@ -7260,6 +7352,11 @@ function openSettings() {
   filterSettings("");
   settingsDialog.showModal();
   setSearch.focus();
+  // 本机字体按需拉（`TER-005`）：扫一遍系统字体几百毫秒，不该拖慢应用启动；
+  // 拿到后重画一次下拉，用户滚到「字体」那行时列表已经齐了。
+  void loadLocalFonts().then((got) => {
+    if (got) renderFontOptions(lookFontFilter.value);
+  });
 }
 
 document.getElementById("settings-open").addEventListener("click", openSettings);
@@ -7804,7 +7901,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-137",
+  ui: "wt-ui-139",
   /** 验收用：主窗口当前是否全屏（`TER-020`） */
   get fullscreen() {
     return isFullscreen;
@@ -8221,6 +8318,10 @@ window.__wt = {
     return {
       ...look,
       appliedBackground: active?.term.options.theme?.background ?? null,
+      // 实际生效的字体（`TER-005`）：只验下拉框的话，把字体传丢也能过。
+      // 读 xterm 自己的 options 而不是计算样式——计算样式会被 CSS 继承链糊住，
+      // 拿到的可能是外层容器的 `system-ui`，而不是终端真正在用的那个。
+      appliedFontFamily: active?.term.options.fontFamily ?? null,
       appliedScrollback: active?.term.options.scrollback ?? null,
       // 双击选词的分隔符（`TER-011`）：验收要能分清「设置没生效」与「xterm 不认」，
       // 只看最终选区是分不出来的
