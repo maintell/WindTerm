@@ -3902,11 +3902,25 @@ async function loadDir(path) {
   try {
     // 后端如果挂住，前端只会一直显示「读取中…」——既看不出是慢还是死，
     // 也没法让用户重试。deadline 把它变成一条明确的错误，界面才有出路。
-    const r = await withDeadline(
-      invoke("sftp_list", { arg: { req: filesReq(), path, jump: jumpReq() } }),
-      20000,
-      "列目录",
-    );
+    // 列目录是**只读且幂等**的，所以失败后自动重试一次。
+    // 真实理由：连接池里那条 SFTP 会话可能已经死了（对端超时、网络短暂中断），
+    // 第一次调用会得到「session closed」——后端顺手把死连接摘掉了，
+    // 但界面只弹一条错误，用户得自己点刷新才能恢复。重试一次就把这一步省掉，
+    // 幂等操作多一次往返的代价远小于「明明能连上却报错」。
+    const listOnce = () =>
+      withDeadline(
+        invoke("sftp_list", { arg: { req: filesReq(), path, jump: jumpReq() } }),
+        20000,
+        "列目录",
+      );
+    let r;
+    try {
+      r = await listOnce();
+    } catch (first) {
+      if (gen !== filesGen) return;
+      setFilesMsg("重新连接…");
+      r = await listOnce();
+    }
     // 期间又换过目录或会话：这份结果已经过期，写进去就是覆盖正确视图
     if (gen !== filesGen) return;
     sftpPath = r.path || path;
@@ -4860,6 +4874,10 @@ document.getElementById("files-toggle").addEventListener("click", async () => {
   openSidePanel(filesPanel);
   await loadDir("/");
   await initFileTree();
+  // 手动打开面板时把焦点交给列表：用户点「文件」就是想操作文件，
+  // 这时再要求「先点一行」键盘才管用，等于让 ↑↓ / Ctrl+A / Delete 藏在暗处。
+  // **只在手动打开时做**：连上 SSH 自动打开那一路不抢焦点（用户可能正要敲终端）。
+  filesList.focus({ preventScroll: true });
 });
 
 /**
@@ -7786,7 +7804,7 @@ window.__wt = {
    * 时，页面里跑的可能是旧 JS——排查时就会把「旧代码的行为」当成新代码的 bug。
    * 验收先读这个值，对不上就直接判失败，省掉一整类假结论。
    */
-  ui: "wt-ui-135",
+  ui: "wt-ui-137",
   /** 验收用：主窗口当前是否全屏（`TER-020`） */
   get fullscreen() {
     return isFullscreen;

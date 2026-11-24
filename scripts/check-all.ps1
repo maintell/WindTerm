@@ -85,6 +85,21 @@ if ($WithE2e) {
         $line = $out | Where-Object { $_ -match '\d+/\d+ 项通过' } | Select-Object -Last 1
         "$line"
     }
+
+    # 文件面板多选单跑一遍（`FIL-001` 规格第 8 条）。
+    # 为什么单独一步：那几条断言原本在全量脚本末尾，而全量脚本 450+ 条、跑十分钟，
+    # 本机连跑久了会在**任意位置**挂掉（建连超时 / CDP 超时 / 回到根目录失败，位置每轮不同），
+    # 末尾这几条于是永远轮不到执行——用「跑不到」冒充「已验过」是最糟的一种绿。
+    # 这个探针自带干净数据目录、只做这一件事，一分钟出结果。
+    Run-Step '文件面板多选（独立探针）' {
+        $msOut = & node (Join-Path $PSScriptRoot 'e2e-multiselect.mjs') 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            $tail = ($msOut | Select-Object -Last 6) -join $nl
+            throw ("多选探针未通过" + $nl + $tail)
+        }
+        $msLine = $msOut | Where-Object { $_ -match '\d+/\d+ 项通过' } | Select-Object -Last 1
+        "$msLine"
+    }
 }
 
 Write-Host ""
